@@ -484,6 +484,88 @@ static GMutex global_session_lock;
 static ESourceRegistry *global_registry = NULL;
 static EdsCamelSession *global_session = NULL;
 
+/* The Camel providers directory is compiled into libcamel. Inside the Flatpak
+ * sandbox that path does not exist, so the providers are shipped in the app
+ * prefix and registered explicitly. */
+static gboolean
+eds_camel_load_bundled_providers (void)
+{
+    const gchar *dir_path = g_getenv ("MERIDIAN_CAMEL_PROVIDER_DIR");
+    GDir *dir;
+    const gchar *name;
+    gboolean loaded_any = FALSE;
+
+    if (!dir_path || !*dir_path)
+        dir_path = "/app/lib/camel-providers";
+
+    dir = g_dir_open (dir_path, 0, NULL);
+    if (!dir)
+        return FALSE;
+
+    while ((name = g_dir_read_name (dir)) != NULL) {
+        gchar *path;
+        GError *local_error = NULL;
+
+        if (!g_str_has_suffix (name, ".so"))
+            continue;
+
+        path = g_build_filename (dir_path, name, NULL);
+        if (!camel_provider_load (path, &local_error)) {
+            g_warning ("Failed to load Camel provider '%s': %s",
+                       path,
+                       local_error ? local_error->message : "unknown error");
+            g_clear_error (&local_error);
+        } else {
+            loaded_any = TRUE;
+        }
+        g_free (path);
+    }
+
+    g_dir_close (dir);
+    return loaded_any;
+}
+
+static gsize bundled_providers_state = 0;
+
+/* Registers the bundled providers (if any) exactly once. ESourceCamel subtypes
+ * (one per protocol) are generated from the list of known providers, and ESource
+ * instances only pick up extension types that exist when they are created, so
+ * this must run before the first ESource is constructed. */
+static void
+eds_camel_init_bundled_providers_once (void)
+{
+    if (g_once_init_enter (&bundled_providers_state)) {
+        if (eds_camel_load_bundled_providers ())
+            e_source_camel_register_types ();
+        g_once_init_leave (&bundled_providers_state, 1);
+    }
+}
+
+/* Initializes Camel and, once, registers the bundled providers (if any). */
+static void
+eds_camel_provider_init (void)
+{
+    camel_provider_init ();
+    eds_camel_init_bundled_providers_once ();
+}
+
+/* Inside the Flatpak sandbox, set everything up at process start, before the
+ * UI code creates its first ESource. Outside the sandbox the directory does not
+ * exist and nothing happens here. */
+static void __attribute__ ((constructor))
+eds_camel_early_init (void)
+{
+    const gchar *dir_path = g_getenv ("MERIDIAN_CAMEL_PROVIDER_DIR");
+
+    if (!dir_path || !*dir_path)
+        dir_path = "/app/lib/camel-providers";
+
+    if (g_file_test (dir_path, G_FILE_TEST_IS_DIR)) {
+        camel_provider_init ();
+        eds_camel_init_bundled_providers_once ();
+    }
+}
+
 static ESourceRegistry *
 eds_camel_ref_registry (GError **error)
 {
@@ -491,7 +573,7 @@ eds_camel_ref_registry (GError **error)
 
     g_mutex_lock (&global_session_lock);
     if (!global_registry) {
-        camel_provider_init ();
+        eds_camel_provider_init ();
         global_registry = e_source_registry_new_sync (NULL, error);
     }
     res = global_registry ? g_object_ref (global_registry) : NULL;
@@ -2326,7 +2408,7 @@ meridian_eds_camel_load_messages (const char *source_uid,
     emit_progress (
         &context, MERIDIAN_EDS_CAMEL_SYNC_DISCOVERING, NULL, NULL, NULL);
 
-    camel_provider_init ();
+    eds_camel_provider_init ();
 
     registry = eds_camel_ref_registry (&error);
     if (!registry) {
@@ -2542,7 +2624,7 @@ meridian_eds_camel_sync_background_folders (
     context.cancellation_callback = cancellation_callback;
     context.cancellation_user_data = cancellation_user_data;
 
-    camel_provider_init ();
+    eds_camel_provider_init ();
 
     registry = eds_camel_ref_registry (&error);
     if (!registry) {
@@ -2727,7 +2809,7 @@ meridian_eds_camel_load_messages_by_uid (
 
     context.cancellation_callback = cancellation_callback;
     context.cancellation_user_data = cancellation_user_data;
-    camel_provider_init ();
+    eds_camel_provider_init ();
 
     registry = eds_camel_ref_registry (&error);
     if (!registry)
@@ -3031,7 +3113,7 @@ meridian_eds_camel_load_subscription_folders (
         return 0;
     }
 
-    camel_provider_init ();
+    eds_camel_provider_init ();
     registry = eds_camel_ref_registry (&error);
     if (!registry)
         goto finish;
@@ -3152,7 +3234,7 @@ meridian_eds_camel_set_folder_subscription (
         return 0;
     }
 
-    camel_provider_init ();
+    eds_camel_provider_init ();
     registry = eds_camel_ref_registry (&error);
     if (!registry)
         goto finish;
@@ -3399,7 +3481,7 @@ meridian_eds_camel_get_folder_mutation_capabilities (
         return 0;
     }
 
-    camel_provider_init ();
+    eds_camel_provider_init ();
     registry = eds_camel_ref_registry (&error);
     if (!registry)
         goto finish;
@@ -3512,7 +3594,7 @@ meridian_eds_camel_apply_folder_mutation (
         return 0;
     }
 
-    camel_provider_init ();
+    eds_camel_provider_init ();
     registry = eds_camel_ref_registry (&error);
     if (!registry)
         goto finish;
@@ -4133,7 +4215,7 @@ meridian_eds_camel_watcher_new (const char *source_uid,
     if (!out_watcher)
         return 0;
 
-    camel_provider_init ();
+    eds_camel_provider_init ();
     watcher = g_new0 (MeridianEdsCamelWatcher, 1);
     g_mutex_init (&watcher->lock);
     g_cond_init (&watcher->condition);
@@ -5031,7 +5113,7 @@ meridian_eds_camel_apply_operation (
 
     message_uid = operation->message_uid;
 
-    camel_provider_init ();
+    eds_camel_provider_init ();
     registry = eds_camel_ref_registry (&error);
     if (!registry)
         goto finish;
@@ -5609,7 +5691,7 @@ meridian_eds_camel_save_message (
     }
     drafts = folder == MERIDIAN_EDS_CAMEL_SAVE_DRAFT;
 
-    camel_provider_init ();
+    eds_camel_provider_init ();
     registry = eds_camel_ref_registry (&error);
     if (!registry)
         goto finish;
@@ -5733,7 +5815,7 @@ meridian_eds_camel_send_message (
         return 0;
     }
 
-    camel_provider_init ();
+    eds_camel_provider_init ();
     registry = e_source_registry_new_sync (NULL, &error);
     if (!registry)
         goto finish;
@@ -6092,7 +6174,7 @@ meridian_eds_camel_search_folder (
         return 0;
     }
 
-    camel_provider_init ();
+    eds_camel_provider_init ();
 
     registry = eds_camel_ref_registry (&error);
     if (!registry)

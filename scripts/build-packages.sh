@@ -102,6 +102,48 @@ sys.stdout.write('<?xml version="1.0" encoding="UTF-8"?>\n<components version="1
 PY
 }
 
+# Camel loads its providers (IMAP, SMTP, EWS, ...) from a directory that is
+# compiled into libcamel. That path does not exist inside the Flatpak sandbox,
+# so ship the providers (and the private libraries they need) in the app prefix.
+# The app registers them from /app/lib/camel-providers at startup.
+stage_camel_providers() {
+    local lib_dir="$1"
+    local provider_src="" libdir
+    for libdir in /usr/lib64 /usr/lib; do
+        if [ -d "$libdir/evolution-data-server/camel-providers" ]; then
+            provider_src="$libdir/evolution-data-server/camel-providers"
+            break
+        fi
+    done
+    if [ -z "$provider_src" ]; then
+        echo "Warning: Camel providers not found on this system, mail will not work in the Flatpak" >&2
+        return 0
+    fi
+
+    mkdir -p "$lib_dir/camel-providers"
+    cp -L "$provider_src"/*.so "$provider_src"/*.urls "$lib_dir/camel-providers/"
+
+    # Private libraries of the EWS and Microsoft 365 providers, and EDS helpers.
+    local extra
+    for extra in "$libdir"/evolution-ews/*.so "$libdir/evolution-data-server/libedbus-private.so"; do
+        [ -f "$extra" ] && cp -nL "$extra" "$lib_dir/"
+    done
+
+    # Pull in the EDS/Camel libraries the providers link against.
+    local file dep base
+    for file in "$lib_dir"/camel-providers/*.so "$lib_dir"/libcamelews-priv.so "$lib_dir"/libevolution-*.so; do
+        [ -f "$file" ] || continue
+        ldd "$file" 2>/dev/null | awk '/=> \// { print $3 }' | while read -r dep; do
+            base="$(basename "$dep")"
+            case "$base" in
+                libcamel*|libedataserver*|libecal*|libebook*|libedata-book*|libedata-cal*|libebackend*|libedbus*|libical*|libgoa*|libphonenumber*|libprotobuf*|libxml2*|libboost_*|libabsl_*|libevolution-*)
+                    cp -nL "$dep" "$lib_dir/$base"
+                    ;;
+            esac
+        done
+    done
+}
+
 build_flatpak_bundle() {
     ensure_binary
     local arch bundle work build_dir repo_dir gpg_key gpg_b64 repo_url homepage_url branch
@@ -169,6 +211,8 @@ EOF
             esac
         done
     fi
+
+    stage_camel_providers "$build_dir/files/lib"
 
     flatpak build-finish "$build_dir" \
         --command=meridian \

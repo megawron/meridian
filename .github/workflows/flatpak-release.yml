@@ -53,7 +53,7 @@ jobs:
             git tar gzip curl gcc gcc-c++ pkgconf-pkg-config \
             evolution-data-server-devel gtk4-devel libadwaita-devel \
             webkitgtk6.0-devel sqlite-devel gettext rpm-build file \
-            flatpak gnupg2 python3 glib2
+            flatpak gnupg2 python3 glib2 evolution-ews-core
           curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
 
       - name: Checkout repository
