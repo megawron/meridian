@@ -13,6 +13,8 @@
   <p>
     <a href="https://www.gnu.org/licenses/gpl-3.0"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg" alt="License: GPL-3.0-or-later" /></a>
   </p>
+
+  <img src="data/screenshots/mail.png" alt="Meridian mail view" />
 </div>
 
 > [!NOTE]
@@ -57,8 +59,14 @@ I build Meridian in my free time. If you find it useful and want to support my w
 
 For business inquiries, sponsored features, or direct contact, feel free to reach out at [martin@martingawron.com](mailto:martin@martingawron.com).
 
+## Acknowledgements
+
+Meridian would not exist without [Evolution](https://wiki.gnome.org/Apps/Evolution) and Evolution Data Server. Thank you to the Evolution project, its original authors at Ximian (including Miguel de Icaza and Nat Friedman), and to Milan Crha and all maintainers and contributors who have kept it alive for over two decades.
+
+Meridian is developed with the assistance of AI tools, and the app icon was created with AI image generation. All code is reviewed and maintained by me. Designers are welcome to contribute, especially on the app icon.
+
 ## License
 
 Meridian is free software, licensed under the GNU General Public License v3.0 or later ([GPL-3.0-or-later](LICENSE)).
 
-© 2026 Martin Gawron
+© 2026 Martin Gawron ([@megawron](https://github.com/megawron))
