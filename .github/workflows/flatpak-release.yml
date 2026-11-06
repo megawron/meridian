@@ -1,10 +1,10 @@
 name: Release
 
-# Builds all release packages and publishes them:
-#   - Fedora job:  RPM, Linux tarball, signed Flatpak bundle + repository
-#   - Debian job:  DEB (built on Debian Trixie for broad glibc compatibility)
-#   - Publish job: uploads everything to the GitHub release (created if
-#                  missing) and deploys the Flatpak repository to gh-pages.
+# Builds the release packages for x86_64 and aarch64 and publishes them:
+#   - Build jobs:   RPM and signed Flatpak bundle + repository (one job per architecture)
+#   - Publish job:  merges both Flatpak repositories into one, uploads everything to
+#                   the GitHub release (created if missing) and deploys the Flatpak
+#                   repository to gh-pages.
 #
 # Trigger from any machine:
 #   gh workflow run flatpak-release.yml -f tag=v0.1.0-beta.1
@@ -29,9 +29,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  fedora:
-    name: Fedora (RPM, tarball, Flatpak)
-    runs-on: ubuntu-24.04
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
     container:
       image: registry.fedoraproject.org/fedora:44
       # flatpak build-export validates icons in a bwrap sandbox, which needs user namespaces
@@ -77,75 +85,43 @@ jobs:
           chmod +x scripts/build-packages.sh
           ./scripts/build-packages.sh flatpak "${{ inputs.tag }}"
           ./scripts/build-packages.sh rpm "${{ inputs.tag }}"
-          ./scripts/build-packages.sh tarball "${{ inputs.tag }}"
-          tar -C packaging/out -czf packaging/out/flatpak-repo.tar.gz flatpak-repo
+          tar -C packaging/out -czf packaging/out/flatpak-repo-${{ matrix.arch }}.tar.gz flatpak-repo
           ls -lh packaging/out
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: fedora-packages
+          name: packages-${{ matrix.arch }}
           path: |
             packaging/out/*.rpm
-            packaging/out/*.tar.gz
             packaging/out/*.flatpak
-          if-no-files-found: error
-
-  deb:
-    name: Debian / Ubuntu (DEB)
-    runs-on: ubuntu-24.04
-    container:
-      image: docker.io/library/debian:trixie
-      env:
-        PATH: /root/.cargo/bin:/github/home/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-    steps:
-      - name: Install build dependencies
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            ca-certificates curl git tar gzip build-essential pkg-config dpkg-dev gettext file \
-            libglib2.0-bin libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
-            libcamel1.2-dev libedataserver1.2-dev libecal2.0-dev \
-            libebook1.2-dev libebook-contacts1.2-dev libsqlite3-dev
-          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag }}
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
-      - name: Build DEB package
-        shell: bash
-        run: |
-          chmod +x scripts/build-packages.sh
-          cargo build --release --locked --bin meridian
-          ./scripts/build-packages.sh deb "${{ inputs.tag }}"
-          ls -lh packaging/out/*.deb
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: deb-package
-          path: packaging/out/*.deb
+            packaging/out/flatpak-repo-*.tar.gz
           if-no-files-found: error
 
   publish:
     name: Publish release
-    needs: [fedora, deb]
+    needs: [build]
     runs-on: ubuntu-24.04
+    container:
+      image: registry.fedoraproject.org/fedora:44
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ inputs.tag }}
+      FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
     steps:
+      - name: Install tooling
+        run: dnf install -y --setopt=install_weak_deps=False git tar gzip flatpak ostree gnupg2 gh
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag }}
+
+      - name: Import Flatpak signing key
+        run: |
+          if [ -n "$FLATPAK_GPG_PRIVATE_KEY" ]; then
+            printf '%s\n' "$FLATPAK_GPG_PRIVATE_KEY" | gpg --batch --import
+          fi
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -153,11 +129,19 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Merge Flatpak repositories
+        run: |
+          for arch in x86_64 aarch64; do
+            mkdir -p "repos/$arch"
+            tar -C "repos/$arch" -xzf "dist/flatpak-repo-$arch.tar.gz"
+            rm "dist/flatpak-repo-$arch.tar.gz"
+          done
+          ./scripts/build-packages.sh merge-repos repos/x86_64/flatpak-repo repos/aarch64/flatpak-repo
+          mkdir -p packaging/out
+          cp -a repos/x86_64/flatpak-repo packaging/out/flatpak-repo
+
       - name: Prepare release files
         run: |
-          mkdir -p packaging/out
-          tar -C packaging/out -xzf dist/flatpak-repo.tar.gz
-          rm dist/flatpak-repo.tar.gz
           ( cd dist && sha256sum * > SHA256SUMS.txt )
           ls -lh dist
 
@@ -176,6 +160,7 @@ jobs:
         env:
           GH_PAGES_REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           ./scripts/build-packages.sh publish-repo "$TAG"

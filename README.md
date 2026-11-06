@@ -36,7 +36,7 @@ Meridian is conceived as a spiritual successor to [Evolution](https://gitlab.gno
 flatpak install --user --from https://meridian.martingawron.com/flatpak/com.martingawron.Meridian.flatpakref
 ```
 
-Standalone packages (`.flatpak`, `.rpm`, `.deb`, and `.tar.gz`) are also available on the [Releases](https://github.com/megawron/meridian/releases) page.
+Standalone `.flatpak` and `.rpm` packages for x86_64 and aarch64 are also available on the [Releases](https://github.com/megawron/meridian/releases) page.
 
 ## Building
 

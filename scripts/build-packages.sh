@@ -4,11 +4,11 @@
 # Build release packages for Meridian locally or in CI.
 #
 # Usage:
-#   ./scripts/build-packages.sh local [tag]     # builds Flatpak + DEB + tarball locally
+#   ./scripts/build-packages.sh local [tag]     # builds Flatpak + RPM locally
 #   ./scripts/build-packages.sh upload <tag>    # builds locally and uploads to GitHub release
 #   ./scripts/build-packages.sh flatpak [tag]   # builds Flatpak bundle (.flatpak) locally
 #   ./scripts/build-packages.sh rpm [tag]       # builds Fedora RPM (requires rpmbuild)
-#   ./scripts/build-packages.sh deb [tag]       # builds Debian/Ubuntu DEB
+#   ./scripts/build-packages.sh merge-repos <dest> <src>...  # merges per-arch Flatpak repos into <dest>
 
 set -euo pipefail
 
@@ -250,85 +250,6 @@ EOF
     echo "==> Flatpak repo ready:   $repo_dir"
 }
 
-build_deb() {
-    ensure_binary
-    local work pkg arch deb_file
-    work="$(mktemp -d)"
-    pkg="$work/data"
-    arch="amd64"
-    [ "$(uname -m)" = "aarch64" ] && arch="arm64"
-    deb_file="$OUT/meridian_${PKG_VERSION}-1_${arch}.deb"
-
-    echo "==> Packaging Debian/Ubuntu package: $(basename "$deb_file")"
-    mkdir -p "$pkg/usr" "$pkg/usr/share/doc/meridian" "$work/control"
-    stage_common "$pkg/usr"
-    rm -f "$pkg/usr/share/glib-2.0/schemas/gschemas.compiled"
-    cp "$ROOT/LICENSE" "$pkg/usr/share/doc/meridian/copyright"
-
-    cat > "$work/control/control" <<EOF
-Package: meridian
-Version: ${PKG_VERSION}-1
-Section: mail
-Priority: optional
-Architecture: $arch
-Maintainer: Martin Gawron <martin@martingawron.com>
-Installed-Size: $(du -sk "$pkg" | cut -f1)
-Depends: evolution-data-server, libgtk-4-1 (>= 4.16), libadwaita-1-0 (>= 1.6), libwebkitgtk-6.0-4, libsqlite3-0, librsvg2-common | glycin-loaders
-Recommends: gnome-keyring, gnome-online-accounts
-Homepage: https://github.com/megawron/meridian
-Description: GNOME-native mail, calendar, contacts, and tasks client
- Meridian is an all-in-one mail, calendar, contacts, and tasks application
- designed for the GNOME desktop, built with Rust, GTK 4, libadwaita, and
- WebKitGTK on top of Evolution Data Server (EDS).
-EOF
-
-    cat > "$work/control/postinst" <<'EOF'
-#!/bin/sh
-set -e
-if [ "$1" = "configure" ]; then
-    if command -v glib-compile-schemas >/dev/null 2>&1; then
-        glib-compile-schemas /usr/share/glib-2.0/schemas || true
-    fi
-    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-        gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
-    fi
-    if command -v update-desktop-database >/dev/null 2>&1; then
-        update-desktop-database -q /usr/share/applications || true
-    fi
-fi
-EOF
-    chmod 0755 "$work/control/postinst"
-
-    if command -v dpkg-deb >/dev/null 2>&1; then
-        mkdir -p "$pkg/DEBIAN"
-        cp "$work/control/"* "$pkg/DEBIAN/"
-        dpkg-deb --build --root-owner-group "$pkg" "$deb_file"
-    else
-        printf "2.0\n" > "$work/debian-binary"
-        tar --owner=0 --group=0 -C "$work/control" -czf "$work/control.tar.gz" .
-        tar --owner=0 --group=0 -C "$pkg" -czf "$work/data.tar.gz" .
-        rm -f "$deb_file"
-        ( cd "$work" && ar rcs "$deb_file" debian-binary control.tar.gz data.tar.gz )
-    fi
-
-    rm -rf "$work"
-    echo "==> DEB ready: $deb_file"
-}
-
-build_tarball() {
-    ensure_binary
-    local arch tar_name work
-    arch="$(uname -m)"
-    tar_name="meridian-${RAW_VERSION}-linux-${arch}.tar.gz"
-    work="$(mktemp -d)"
-    mkdir -p "$work/meridian-${RAW_VERSION}/usr"
-    stage_common "$work/meridian-${RAW_VERSION}/usr"
-    cp "$ROOT/LICENSE" "$ROOT/README.md" "$work/meridian-${RAW_VERSION}/"
-    tar --owner=0 --group=0 -C "$work" -czf "$OUT/$tar_name" "meridian-${RAW_VERSION}"
-    rm -rf "$work"
-    echo "==> Tarball ready: $OUT/$tar_name"
-}
-
 build_rpm() {
     ensure_binary
     local work stage arch
@@ -428,6 +349,46 @@ stage_flatpak() {
     rm -rf "$fp_stage"
 }
 
+merge_flatpak_repos() {
+    # Merges the refs of several single-architecture Flatpak repositories into
+    # the first one and regenerates the signed summary, so that one repository
+    # serves every architecture.
+    local dest="$1"; shift
+    local gpg_key="${FLATPAK_GPG_KEY:-5F5B2DAC0DFADFBA2627BB3E2654C3727A504079}"
+    local homepage_url="${FLATPAK_HOMEPAGE_URL:-https://github.com/megawron/meridian}"
+    local branch="stable"
+    local src ref
+    for src in "$@"; do
+        while read -r ref; do
+            [ -n "$ref" ] || continue
+            echo "==> Merging $ref from $src"
+            ostree pull-local --repo="$dest" "$src" "$ref" >/dev/null
+        done < <(ostree refs --repo="$src")
+    done
+
+    local gpg_args=()
+    if gpg --list-secret-keys "$gpg_key" >/dev/null 2>&1; then
+        gpg_args=(--gpg-sign="$gpg_key")
+        # Make sure every merged commit carries a signature.
+        while read -r ref; do
+            case "$ref" in app/*) flatpak build-sign "${gpg_args[@]}" "$dest" "${ref#app/}" 2>/dev/null || true ;; esac
+        done < <(ostree refs --repo="$dest")
+    fi
+
+    flatpak build-update-repo \
+        --title="Meridian Flatpak Repository" \
+        --comment="Official Flatpak repository for Meridian" \
+        --description="Official Flatpak repository for Meridian (Mail, Calendar, Contacts, and Tasks for GNOME)" \
+        --homepage="$homepage_url" \
+        --default-branch="$branch" \
+        --generate-static-deltas \
+        --static-delta-jobs=1 \
+        "${gpg_args[@]}" \
+        "$dest" >/dev/null
+    echo "==> Refs in merged repository:"
+    ostree refs --repo="$dest"
+}
+
 publish_gh_pages() {
     local repo_dir="$OUT/flatpak-repo"
     if [ ! -d "$repo_dir/objects" ]; then
@@ -490,8 +451,6 @@ EOF
 build_local_all() {
     rm -rf "$OUT"/*
     build_flatpak_bundle
-    build_deb
-    build_tarball
     if command -v rpmbuild >/dev/null 2>&1; then
         build_rpm
     fi
@@ -511,11 +470,9 @@ case "$WHAT" in
         echo "==> Uploaded successfully to $TAG!"
         ;;
     publish-repo) publish_gh_pages ;;
+    merge-repos) shift; merge_flatpak_repos "$@" ;;
     flatpak) build_flatpak_bundle ;;
     rpm) build_rpm ;;
-    deb) build_deb ;;
-    tarball) build_tarball ;;
     flatpak-stage) stage_flatpak ;;
-    deb-and-flatpak-stage) build_deb; stage_flatpak ;;
-    *) echo "Usage: $0 {local|upload|publish-repo|flatpak|rpm|deb|tarball} [tag]" >&2; exit 1 ;;
+    *) echo "Usage: $0 {local|upload|publish-repo|merge-repos|flatpak|rpm} [tag]" >&2; exit 1 ;;
 esac
