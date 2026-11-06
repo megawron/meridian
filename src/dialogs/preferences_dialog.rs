@@ -1356,11 +1356,6 @@ pub const SIDEBAR_SECTIONS: &[SideSectionDef] = &[
                 icon: "avatar-default-symbolic",
             },
             SidePageDef {
-                id: "signatures",
-                title: "Signatures",
-                icon: "accessories-text-editor-symbolic",
-            },
-            SidePageDef {
                 id: "labels",
                 title: "Labels",
                 icon: "mail-flag-symbolic",
@@ -1612,6 +1607,7 @@ pub fn resolve_sidebar_page_id(id: &str) -> &str {
     let canonical = match id {
         "sub_backup_advanced" => "advanced",
         "sub_filters" => "filters",
+        "signatures" => "accounts",
         "receiving" | "network" => "mail_general",
         "replies" => "composer",
         "calendar_display" => "calendar",
@@ -4321,10 +4317,6 @@ impl PreferencesDialog {
             .build();
         row_composer_charset.set_visible(true);
         group_composer_charset.add(&row_composer_charset);
-
-        let group_signature_options = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Signature Options"))
-            .build();
 
         let signature_store = SignatureStore::from_environment();
         let initial_signatures = signature_store.load();
@@ -7708,416 +7700,56 @@ impl PreferencesDialog {
         page_composer_general.add(&group_composer_prompts);
         page_composer_general.add(&group_composer_charset);
 
-        // ── Signatures Detail Box (GNOME HIG Dedicated Page with Scalable Selector & Inline Editor) ──
-        let page_signatures = adw::PreferencesPage::builder()
+        // ── Signatures Group under Accounts (GNOME HIG Native + Studio Modal) ──
+        let group_signatures = adw::PreferencesGroup::builder()
             .title(&gettext("Signatures"))
             .build();
 
-        let group_signatures_list = adw::PreferencesGroup::builder()
-            .title(&gettext("Signatures"))
+        let row_manage_signatures = adw::ActionRow::builder()
+            .title(&gettext("Manage Signatures…"))
+            .activatable(true)
             .build();
-
-        let btn_add_sig = gtk::Button::builder()
-            .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create Signature"))
-            .css_classes(vec!["flat"])
+        let lbl_sig_count = gtk::Label::builder()
+            .css_classes(vec!["dim-label"])
             .valign(gtk::Align::Center)
             .build();
-        group_signatures_list.set_header_suffix(Some(&btn_add_sig));
+        row_manage_signatures.add_suffix(&lbl_sig_count);
+        let sig_chevron = gtk::Image::from_icon_name("go-next-symbolic");
+        sig_chevron.add_css_class("dim-label");
+        row_manage_signatures.add_suffix(&sig_chevron);
 
-        let signatures_list_box = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list", "signature-selector-list"])
-            .build();
-        let signatures_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_height(true)
-            .child(&signatures_list_box)
-            .build();
-        let signatures_card_frame = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["card", "signature-list-card"])
-            .overflow(gtk::Overflow::Hidden)
-            .build();
-        signatures_card_frame.append(&signatures_scroll);
-        group_signatures_list.add(&signatures_card_frame);
+        group_signatures.add(&row_manage_signatures);
+        group_signatures.add(&signature_row);
+        group_signatures.add(&row_top_signature);
+        group_signatures.add(&row_signature_outline);
 
-        let group_account_signatures = adw::PreferencesGroup::builder()
-            .title("Per-Account Signatures")
-            .build();
-        let account_signatures_list_box = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
-            .build();
-        group_account_signatures.add(&account_signatures_list_box);
+        page_accounts.remove(&group_oof);
+        page_accounts.add(&group_signatures);
+        page_accounts.add(&group_oof);
 
-        let group_signature_editor = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Edit Signature"))
-            .build();
-
-        let btn_sig_format_toggle = gtk::ToggleButton::builder()
-            .icon_name("format-text-rich-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Formatting Toolbar"))
-            .active(true)
-            .valign(gtk::Align::Center)
-            .css_classes(vec!["flat"])
-            .build();
-        group_signature_editor.set_header_suffix(Some(&btn_sig_format_toggle));
-
-        let editor_card_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
-            .build();
-
-        let row_sig_inline_name = adw::EntryRow::builder()
-            .title(&crate::i18n::gettext("Name"))
-            .build();
-        editor_card_list.append(&row_sig_inline_name);
-
-        let sig_inline_editor = crate::views::RichTextField::new(false, 170);
-        sig_inline_editor.set_flush(true);
-        sig_inline_editor.set_toolbar_scrollable(false);
-        sig_inline_editor.editor().set_format_toolbar_visible(true);
-        sig_inline_editor.set_vexpand(false);
-        sig_inline_editor.set_hexpand(true);
-        {
-            let ed_for_toggle = sig_inline_editor.clone();
-            btn_sig_format_toggle.connect_toggled(move |btn| {
-                ed_for_toggle.editor().set_format_toolbar_visible(btn.is_active());
-            });
-        }
-        let sig_editor_row = gtk::ListBoxRow::builder()
-            .activatable(false)
-            .selectable(false)
-            .focusable(false)
-            .child(&sig_inline_editor)
-            .build();
-        editor_card_list.append(&sig_editor_row);
-        group_signature_editor.add(&editor_card_list);
-
-        let group_signature_placement = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Default Signature"))
-            .build();
-        group_signature_placement.add(&signature_row);
-        group_signature_placement.add(&row_top_signature);
-        group_signature_placement.add(&row_signature_outline);
-
-        page_signatures.add(&group_signatures_list);
-        page_signatures.add(&group_signature_editor);
-        page_signatures.add(&group_signature_placement);
-
-        // Reactive signature list & inline editor state
         let dialog_weak = self.downgrade();
-        let signatures_list_box_weak = signatures_list_box.downgrade();
-        let signatures_scroll_weak = signatures_scroll.downgrade();
-        let account_signatures_list_box_weak = account_signatures_list_box.downgrade();
         let signature_row_weak = signature_row.downgrade();
+        let lbl_sig_count_weak = lbl_sig_count.downgrade();
 
         let is_updating_combo = Rc::new(Cell::new(false));
         let is_updating_for_rebuild = is_updating_combo.clone();
         let is_updating_for_notify = is_updating_combo.clone();
 
-        let selected_sig_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(
-            SignatureStore::from_environment().active_id(),
-        ));
-        let is_loading_inline_sig = Rc::new(Cell::new(false));
-        let sig_row_widgets: Rc<RefCell<Vec<(String, adw::ActionRow, gtk::Image)>>> =
-            Rc::new(RefCell::new(Vec::new()));
-
-        let load_sig_into_inline_editor: Rc<dyn Fn()> = {
-            let selected_sig_id = selected_sig_id.clone();
-            let is_loading_inline_sig = is_loading_inline_sig.clone();
-            let name_row_weak = row_sig_inline_name.downgrade();
-            let editor_weak = sig_inline_editor.downgrade();
-            let editor_group_weak = group_signature_editor.downgrade();
-            let sig_row_widgets = sig_row_widgets.clone();
-            Rc::new(move || {
-                let Some(name_row) = name_row_weak.upgrade() else { return };
-                let Some(editor) = editor_weak.upgrade() else { return };
-
-                let store = SignatureStore::from_environment();
-                let signatures = store.load();
-                let has_sigs = !signatures.is_empty();
-                if let Some(grp) = editor_group_weak.upgrade() {
-                    grp.set_visible(has_sigs);
-                }
-                if !has_sigs {
-                    return;
-                }
-
-                let current_id = selected_sig_id.borrow().clone();
-                let target_idx = current_id
-                    .as_deref()
-                    .and_then(|id| signatures.iter().position(|s| s.id == id))
-                    .or_else(|| {
-                        store
-                            .active_id()
-                            .and_then(|aid| signatures.iter().position(|s| s.id == aid))
-                    })
-                    .unwrap_or(0);
-
-                if let Some(sig) = signatures.get(target_idx) {
-                    *selected_sig_id.borrow_mut() = Some(sig.id.clone());
-
-                    is_loading_inline_sig.set(true);
-                    if name_row.text().as_str() != sig.name.as_str() {
-                        name_row.set_text(&sig.name);
-                    }
-                    let trimmed = sig.text.trim();
-                    let looks_html = trimmed.contains('<') && trimmed.contains('>');
-                    if looks_html {
-                        editor.set_html(&sig.text);
-                    } else {
-                        editor.set_plain_text(&sig.text);
-                    }
-                    is_loading_inline_sig.set(false);
-
-                    for (rid, rwidget, check_icon) in sig_row_widgets.borrow().iter() {
-                        if rid == &sig.id {
-                            rwidget.add_css_class("selected-signature-row");
-                            check_icon.set_opacity(1.0);
-                        } else {
-                            rwidget.remove_css_class("selected-signature-row");
-                            check_icon.set_opacity(0.0);
-                        }
-                    }
-                }
-            })
-        };
-
-        {
-            let selected_sig_id = selected_sig_id.clone();
-            let is_loading = is_loading_inline_sig.clone();
-            let name_row_weak = row_sig_inline_name.downgrade();
-            let editor_weak = sig_inline_editor.downgrade();
-            let sig_row_widgets = sig_row_widgets.clone();
-            let sig_combo_weak_for_save = signature_row.downgrade();
-            let is_updating_for_save = is_updating_combo.clone();
-            let save_inline_changes = Rc::new(move || {
-                if is_loading.get() {
-                    return;
-                }
-                let Some(sig_id) = selected_sig_id.borrow().clone() else {
-                    return;
-                };
-                let Some(name_row) = name_row_weak.upgrade() else { return };
-                let Some(editor) = editor_weak.upgrade() else { return };
-                let new_name = {
-                    let t = name_row.text().trim().to_string();
-                    if t.is_empty() {
-                        crate::i18n::gettext("Untitled Signature")
-                    } else {
-                        t
-                    }
-                };
-                let raw_text = if editor.is_html() {
-                    editor.html()
-                } else {
-                    editor.plain_text()
-                };
-                let new_text = if raw_text.trim().is_empty() {
-                    "<p><br></p>".to_string()
-                } else {
-                    raw_text
-                };
-                let store = SignatureStore::from_environment();
-                let _ = store.upsert(SignatureProfile {
-                    id: sig_id.clone(),
-                    name: new_name.clone(),
-                    text: new_text.clone(),
-                    format: if editor.is_html() {
-                        "html".to_string()
-                    } else {
-                        "plain".to_string()
-                    },
-                });
-                if store.active_id().as_deref() == Some(sig_id.as_str()) {
-                    if let Some(settings) = AppSettings::try_new() {
-                        settings.set_signature_text(&new_text);
-                    }
-                }
-                for (rid, rwidget, _) in sig_row_widgets.borrow().iter() {
-                    if rid == &sig_id {
-                        rwidget.set_title(&new_name);
-                    }
-                }
-                if let Some(combo) = sig_combo_weak_for_save.upgrade() {
-                    let signatures = store.load();
-                    let none_lbl = crate::i18n::gettext("None");
-                    let mut names: Vec<&str> = vec![none_lbl.as_str()];
-                    names.extend(signatures.iter().map(|s| s.name.as_str()));
-                    is_updating_for_save.set(true);
-                    combo.set_model(Some(&gtk::StringList::new(&names)));
-                    if let Some(active_id) = store.active_id() {
-                        if let Some(pos) = signatures.iter().position(|s| s.id == active_id) {
-                            combo.set_selected((pos + 1) as u32);
-                        } else {
-                            combo.set_selected(0);
-                        }
-                    } else {
-                        combo.set_selected(0);
-                    }
-                    is_updating_for_save.set(false);
-                }
-            });
-
-            let save_on_name = save_inline_changes.clone();
-            row_sig_inline_name.connect_changed(move |_| {
-                save_on_name();
-            });
-            let save_on_body = save_inline_changes.clone();
-            sig_inline_editor.connect_changed(move |_| {
-                save_on_body();
-            });
-        }
-
         let rebuild_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
 
-        let rebuild_holder_for_add_sig = rebuild_holder.clone();
-        let selected_sig_for_add = selected_sig_id.clone();
-        let name_row_for_add = row_sig_inline_name.downgrade();
-        btn_add_sig.connect_clicked(move |_| {
-            let store = SignatureStore::from_environment();
-            let existing = store.load();
-            let base_label = crate::i18n::gettext("Signature");
-            let mut new_idx = existing.len() + 1;
-            let mut candidate_name = format!("{base_label} {new_idx}");
-            while store.has_name(&candidate_name, None) {
-                new_idx += 1;
-                candidate_name = format!("{base_label} {new_idx}");
-            }
-            let new_id = format!("sig-{}", uuid::Uuid::new_v4());
-            let new_sig = SignatureProfile {
-                id: new_id.clone(),
-                name: candidate_name,
-                text: "<p><br></p>".to_string(),
-                format: "html".to_string(),
-            };
-            let _ = store.upsert(new_sig);
-            if existing.is_empty() {
-                let _ = store.set_active(Some(&new_id));
-            }
-            *selected_sig_for_add.borrow_mut() = Some(new_id);
-            if let Some(f) = rebuild_holder_for_add_sig.borrow().as_ref() {
-                f();
-            }
-            if let Some(name_row) = name_row_for_add.upgrade() {
-                name_row.grab_focus();
-            }
-        });
-
         let rebuild_fn: Rc<dyn Fn()> = {
-            let rebuild_holder_for_rebuild = rebuild_holder.clone();
             let is_updating_for_rebuild = is_updating_for_rebuild.clone();
-            let selected_sig_for_rebuild = selected_sig_id.clone();
-            let load_inline_for_rebuild = load_sig_into_inline_editor.clone();
-            let sig_row_widgets_for_rebuild = sig_row_widgets.clone();
-            let editor_weak_for_row = sig_inline_editor.downgrade();
             Rc::new(move || {
-                let Some(list_box) = signatures_list_box_weak.upgrade() else { return };
-                let _ = dialog_weak.upgrade();
-
-                while let Some(child) = list_box.first_child() {
-                    list_box.remove(&child);
-                }
-                sig_row_widgets_for_rebuild.borrow_mut().clear();
-
                 let store = SignatureStore::from_environment();
                 let signatures = store.load();
 
-                if let Some(scroll) = signatures_scroll_weak.upgrade() {
-                    if signatures.len() > 4 {
-                        scroll.set_vscrollbar_policy(gtk::PolicyType::Automatic);
-                        scroll.set_max_content_height(216);
+                if let Some(lbl) = lbl_sig_count_weak.upgrade() {
+                    if signatures.is_empty() {
+                        lbl.set_label(&gettext("None"));
                     } else {
-                        scroll.set_vscrollbar_policy(gtk::PolicyType::Never);
-                        scroll.set_max_content_height(-1);
+                        lbl.set_label(&signatures.len().to_string());
                     }
                 }
-
-                if signatures.is_empty() {
-                    let empty_row = adw::ActionRow::builder()
-                        .title(&gettext("No signatures yet"))
-                        .build();
-                    list_box.append(&empty_row);
-                }
-
-                for sig in &signatures {
-                    let sig_id = sig.id.clone();
-
-                    let accounts_using: Vec<String> = AccountConfigStore::default()
-                        .load()
-                        .into_iter()
-                        .filter(|p| p.signature_id.as_deref() == Some(&sig_id))
-                        .map(|p| p.display_name)
-                        .collect();
-                    let subtitle = accounts_using.join(", ");
-
-                    let row = adw::ActionRow::builder()
-                        .title(&sig.name)
-                        .subtitle(&subtitle)
-                        .activatable(true)
-                        .build();
-
-                    let check_icon = gtk::Image::builder()
-                        .icon_name("object-select-symbolic")
-                        .css_classes(vec!["accent"])
-                        .valign(gtk::Align::Center)
-                        .opacity(0.0)
-                        .build();
-                    row.add_prefix(&check_icon);
-
-                    let is_active = store.active_id().as_deref() == Some(&sig.id);
-                    if is_active {
-                        let active_badge = gtk::Label::builder()
-                            .label(&gettext("Default"))
-                            .css_classes(vec!["dim-label", "caption", "signature-default-pill"])
-                            .valign(gtk::Align::Center)
-                            .build();
-                        row.add_suffix(&active_badge);
-                    }
-
-                    let selected_for_click = selected_sig_for_rebuild.clone();
-                    let load_for_click = load_inline_for_rebuild.clone();
-                    let id_for_click = sig_id.clone();
-                    let ed_for_click = editor_weak_for_row.clone();
-                    row.connect_activated(move |_| {
-                        *selected_for_click.borrow_mut() = Some(id_for_click.clone());
-                        load_for_click();
-                        if let Some(ed) = ed_for_click.upgrade() {
-                            ed.grab_focus();
-                        }
-                    });
-
-                    let btn_delete = gtk::Button::builder()
-                        .icon_name("user-trash-symbolic")
-                        .tooltip_text(&gettext("Delete signature"))
-                        .css_classes(vec!["flat", "circular", "dim-label"])
-                        .valign(gtk::Align::Center)
-                        .build();
-                    let rebuild_cb_del = rebuild_holder_for_rebuild.borrow().as_ref().cloned();
-                    let id_for_del = sig_id.clone();
-                    let selected_for_del = selected_sig_for_rebuild.clone();
-                    btn_delete.connect_clicked(move |_| {
-                        let store = SignatureStore::from_environment();
-                        let _ = store.remove(&id_for_del);
-                        if selected_for_del.borrow().as_deref() == Some(id_for_del.as_str()) {
-                            *selected_for_del.borrow_mut() = store.active_id();
-                        }
-                        if let Some(f) = rebuild_cb_del.as_ref() {
-                            f();
-                        }
-                    });
-                    row.add_suffix(&btn_delete);
-
-                    sig_row_widgets_for_rebuild
-                        .borrow_mut()
-                        .push((sig_id, row.clone(), check_icon));
-                    list_box.append(&row);
-                }
-
-                load_inline_for_rebuild();
 
                 if let Some(combo) = signature_row_weak.upgrade() {
                     is_updating_for_rebuild.set(true);
@@ -8137,178 +7769,45 @@ impl PreferencesDialog {
                     }
                     is_updating_for_rebuild.set(false);
                 }
-
-                // Populate per-account signature assignment rows
-                if let Some(acc_list_box) = account_signatures_list_box_weak.upgrade() {
-                    while let Some(child) = acc_list_box.first_child() {
-                        acc_list_box.remove(&child);
-                    }
-
-                    let mut choice_labels = vec![
-                        "Use Default Signature".to_string(),
-                        "No Signature".to_string(),
-                    ];
-                    for sig in &signatures {
-                        choice_labels.push(sig.name.clone());
-                    }
-                    let choice_refs: Vec<&str> = choice_labels.iter().map(String::as_str).collect();
-
-                    let eds_sources = EdsSourceCache::new().load(EdsSourceKind::Mail);
-                    let profiles = AccountConfigStore::default().load();
-
-                    struct AccountSigTarget {
-                        profile_id: String,
-                        display_name: String,
-                        email: String,
-                        icon_name: &'static str,
-                        protocol: AccountProtocol,
-                        current_sig_id: Option<String>,
-                    }
-
-                    let mut targets = Vec::<AccountSigTarget>::new();
-                    for source in &eds_sources {
-                        let uid_lower = source.uid.to_ascii_lowercase();
-                        let name_lower = source.display_name.to_ascii_lowercase();
-                        let backend_lower = source.backend_name.to_ascii_lowercase();
-                        if matches!(
-                            backend_lower.as_str(),
-                            "rss" | "vfolder" | "maildir" | "local" | "none"
-                        ) || uid_lower == "rss"
-                            || uid_lower == "vfolder"
-                            || uid_lower == "local"
-                            || name_lower.contains("news and blogs")
-                            || name_lower.contains("news & blogs")
-                            || name_lower.contains("computer")
-                            || name_lower.contains("search folders")
-                            || name_lower.contains("suchordner")
-                        {
-                            continue;
-                        }
-                        let goa_info = eds_service::resolve_goa_account_info(&source.uid);
-                        let backend_hint = goa_info
-                            .as_ref()
-                            .map(|(_, b)| b.as_str())
-                            .filter(|b| !b.is_empty())
-                            .unwrap_or(source.backend_name.as_str());
-                        let matched = profiles.iter().find(|p| {
-                            p.id == source.uid
-                                || p.id == format!("eds:{}", source.uid)
-                                || (!p.email.is_empty()
-                                    && p.email.eq_ignore_ascii_case(&source.display_name))
-                        });
-                        targets.push(AccountSigTarget {
-                            profile_id: matched
-                                .map(|p| p.id.clone())
-                                .unwrap_or_else(|| format!("eds:{}", source.uid)),
-                            display_name: source.display_name.clone(),
-                            email: if source.display_name.contains('@') {
-                                source.display_name.clone()
-                            } else {
-                                matched.map(|p| p.email.clone()).unwrap_or_default()
-                            },
-                            icon_name: Self::account_service_icon(&source.display_name, backend_hint),
-                            protocol: if goa_info.is_some() {
-                                AccountProtocol::Goa
-                            } else if backend_lower.contains("ews") {
-                                AccountProtocol::Exchange
-                            } else {
-                                AccountProtocol::ImapSmtp
-                            },
-                            current_sig_id: matched.and_then(|p| p.signature_id.clone()),
-                        });
-                    }
-
-                    for p in &profiles {
-                        let already_in_targets = targets.iter().any(|t| {
-                            t.profile_id == p.id
-                                || (!p.email.is_empty() && t.email.eq_ignore_ascii_case(&p.email))
-                        });
-                        if !already_in_targets {
-                            let icon_name = if p.is_shared_mailbox {
-                                "system-users-symbolic"
-                            } else {
-                                Self::account_service_icon(&p.email, &p.imap_host)
-                            };
-                            targets.push(AccountSigTarget {
-                                profile_id: p.id.clone(),
-                                display_name: p.display_name.clone(),
-                                email: p.email.clone(),
-                                icon_name,
-                                protocol: p.protocol,
-                                current_sig_id: p.signature_id.clone(),
-                            });
-                        }
-                    }
-
-                    for target in targets {
-                        let row_acc_sig = adw::ComboRow::builder()
-                            .title(&target.display_name)
-                            .model(&gtk::StringList::new(&choice_refs))
-                            .build();
-                        let icon = if target.icon_name.ends_with("-symbolic") {
-                            gtk::Image::builder()
-                                .icon_name(target.icon_name)
-                                .width_request(32)
-                                .build()
-                        } else {
-                            gtk::Image::builder()
-                                .icon_name(target.icon_name)
-                                .pixel_size(32)
-                                .width_request(32)
-                                .build()
-                        };
-                        row_acc_sig.add_prefix(&icon);
-
-                        let initial_sel = match target.current_sig_id.as_deref() {
-                            None | Some("") | Some("default") => 0,
-                            Some("none") => 1,
-                            Some(sig_id) => signatures
-                                .iter()
-                                .position(|s| s.id == sig_id)
-                                .map(|pos| (pos + 2) as u32)
-                                .unwrap_or(0),
-                        };
-                        row_acc_sig.set_selected(initial_sel);
-
-                        let target_profile_id = target.profile_id.clone();
-                        let target_display = target.display_name.clone();
-                        let target_email = target.email.clone();
-                        let target_protocol = target.protocol;
-                        let sigs_for_cb = signatures.clone();
-                        row_acc_sig.connect_selected_notify(move |combo_row| {
-                            let new_sig_id = match combo_row.selected() {
-                                0 => Some("default".to_string()),
-                                1 => Some("none".to_string()),
-                                idx => sigs_for_cb
-                                    .get((idx - 2) as usize)
-                                    .map(|s| s.id.clone()),
-                            };
-                            let store = AccountConfigStore::default();
-                            let existing = store.load().into_iter().find(|p| {
-                                p.id == target_profile_id
-                                    || (!target_email.is_empty()
-                                        && p.email.eq_ignore_ascii_case(&target_email))
-                            });
-                            let mut updated = existing.unwrap_or_else(|| AccountProfile {
-                                id: target_profile_id.clone(),
-                                display_name: target_display.clone(),
-                                email: target_email.clone(),
-                                protocol: target_protocol,
-                                enabled: true,
-                                ..Default::default()
-                            });
-                            updated.signature_id = new_sig_id;
-                            let _ = store.upsert(updated);
-                        });
-
-                        acc_list_box.append(&row_acc_sig);
-                    }
-                }
             })
         };
 
         *rebuild_holder.borrow_mut() = Some(rebuild_fn.clone());
         rebuild_fn();
+
+        {
+            let dialog_weak = dialog_weak.clone();
+            let rebuild_holder = rebuild_holder.clone();
+            let settings_for_modal = settings.clone();
+            row_manage_signatures.connect_activated(move |_| {
+                let Some(parent_dialog) = dialog_weak.upgrade() else {
+                    return;
+                };
+                let rebuild_on_save = rebuild_holder.clone();
+                let settings_on_save = settings_for_modal.clone();
+                let on_saved = move |_saved: SignatureProfile| {
+                    let store = SignatureStore::from_environment();
+                    if let Some(settings) = settings_on_save.as_ref() {
+                        if let Some(active) = store.active() {
+                            settings.set_signature_text(&active.text);
+                        } else {
+                            settings.set_signature_text("");
+                        }
+                    }
+                    if let Some(f) = rebuild_on_save.borrow().as_ref() {
+                        f();
+                    }
+                };
+                let dlg = crate::dialogs::SignatureEditorDialog::new_manager(Some(on_saved));
+                let rebuild_on_close = rebuild_holder.clone();
+                dlg.connect_closed(move |_| {
+                    if let Some(f) = rebuild_on_close.borrow().as_ref() {
+                        f();
+                    }
+                });
+                dlg.present(Some(&parent_dialog));
+            });
+        }
 
         let settings_for_select = settings.clone();
         let combo_weak = signature_row.downgrade();
@@ -8905,9 +8404,8 @@ impl PreferencesDialog {
             .vexpand(true)
             .build();
 
-        // 15 Top-Level Pages
+        // 14 Top-Level Pages
         detail_stack.add_named(&page_accounts, Some("accounts"));
-        detail_stack.add_named(&page_signatures, Some("signatures"));
         detail_stack.add_named(&page_mail_labels, Some("labels"));
         detail_stack.add_named(&page_filters, Some("filters"));
         detail_stack.add_named(&page_certificates, Some("certificates"));
@@ -9386,7 +8884,7 @@ impl PreferencesDialog {
             (Some("accounts"), Some("filters")) => "filters",
             (Some("accounts"), _) => "accounts",
             (Some("contacts"), _) => "contacts",
-            (Some("signatures"), _) => "signatures",
+            (Some("signatures"), _) => "accounts",
             (Some("labels"), _) => "labels",
             (Some("filters" | "sub_filters"), _) => "filters",
             (Some("mail"), Some("composer")) => "composer",
@@ -9435,6 +8933,7 @@ impl PreferencesDialog {
         let canonical_target = match target {
             "sub_backup_advanced" => "advanced",
             "sub_filters" => "filters",
+            "signatures" => "accounts",
             "receiving" | "network" => "mail_general",
             "replies" => "composer",
             "calendar_display" => "calendar",
@@ -14466,10 +13965,10 @@ mod tests {
         assert_eq!(SIDEBAR_SECTIONS[3].section, "System");
 
         let total_pages: usize = SIDEBAR_SECTIONS.iter().map(|s| s.pages.len()).sum();
-        assert_eq!(total_pages, 15, "Must define 15 consolidated preferences pages");
+        assert_eq!(total_pages, 14, "Must define 14 consolidated preferences pages");
 
         let expected_ids = [
-            "accounts", "signatures", "labels", "filters", "certificates",
+            "accounts", "labels", "filters", "certificates",
             "mail_general", "appearance", "mail_layout", "mail_reading", "composer",
             "calendar", "contacts", "tasks", "backup", "advanced",
         ];
@@ -14539,9 +14038,9 @@ mod tests {
             .and_then(|w| w.downcast::<gtk::Stack>().ok())
             .expect("Content toolbar content must be a Stack");
 
-        // Verify all 28 pages exist in detail_stack (15 top-level + 13 subpages)
+        // Verify all 27 pages exist in detail_stack (14 top-level + 13 subpages)
         let expected_ids = [
-            "accounts", "signatures", "labels", "filters", "certificates",
+            "accounts", "labels", "filters", "certificates",
             "mail_general", "appearance", "mail_layout", "mail_reading", "composer",
             "calendar", "contacts", "tasks", "backup", "advanced",
             "junk", "sub_smime", "sub_allowed_senders", "sub_sync_cache", "sub_header_toolbar",
@@ -14625,10 +14124,10 @@ mod tests {
             })
             .unwrap();
 
-        // Switch to "signatures"
+        // Switch to "signatures" (resolved alias -> "accounts")
         super::select_sidebar_page(&sidebar_list, "signatures");
         while context.iteration(false) {}
-        assert_eq!(detail_stack.visible_child_name().as_deref(), Some("signatures"));
+        assert_eq!(detail_stack.visible_child_name().as_deref(), Some("accounts"));
 
         // Switch to "appearance"
         super::select_sidebar_page(&sidebar_list, "appearance");

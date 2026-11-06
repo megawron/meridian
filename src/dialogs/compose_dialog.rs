@@ -1412,9 +1412,75 @@ impl ComposeDialog {
 
         let lbl_signature = gtk::Label::builder()
             .label(crate::i18n::gettext("Signature"))
-            .css_classes(vec!["dim-label", "composer-header-label"])
+            .tooltip_text(crate::i18n::gettext("Manage Signatures…"))
+            .css_classes(vec![
+                "dim-label",
+                "composer-header-label",
+                "composer-header-label-interactive",
+            ])
             .valign(gtk::Align::Center)
             .build();
+        lbl_signature.set_cursor_from_name(Some("pointer"));
+        {
+            let click = gtk::GestureClick::new();
+            let dialog_weak = self.downgrade();
+            click.connect_released(move |_, _, _, _| {
+                let Some(dialog) = dialog_weak.upgrade() else {
+                    return;
+                };
+                let current_sig_id = dialog
+                    .imp()
+                    .combo_signature
+                    .borrow()
+                    .as_ref()
+                    .and_then(|combo| {
+                        let idx = combo.selected() as usize;
+                        dialog
+                            .imp()
+                            .signature_choices
+                            .borrow()
+                            .get(idx)
+                            .and_then(|c| c.id.clone())
+                    });
+                let initial_profile = current_sig_id.and_then(|id| {
+                    SignatureStore::from_environment()
+                        .load()
+                        .into_iter()
+                        .find(|s| s.id == id)
+                });
+                let dialog_for_save = dialog.downgrade();
+                let on_saved = move |saved: crate::services::signature_store_service::SignatureProfile| {
+                    let Some(dlg) = dialog_for_save.upgrade() else {
+                        return;
+                    };
+                    dlg.refresh_signature_choices();
+                    if let Some(combo) = dlg.imp().combo_signature.borrow().as_ref() {
+                        let pos = dlg
+                            .imp()
+                            .signature_choices
+                            .borrow()
+                            .iter()
+                            .position(|c| c.id.as_deref() == Some(saved.id.as_str()));
+                        if let Some(pos) = pos {
+                            combo.set_selected(pos as u32);
+                        }
+                    }
+                };
+                let sig_dialog = if let Some(ref profile) = initial_profile {
+                    crate::dialogs::SignatureEditorDialog::new_for_edit(profile, Some(on_saved))
+                } else {
+                    crate::dialogs::SignatureEditorDialog::new_manager(Some(on_saved))
+                };
+                let dialog_for_close = dialog.downgrade();
+                sig_dialog.connect_closed(move |_| {
+                    if let Some(dlg) = dialog_for_close.upgrade() {
+                        dlg.refresh_signature_choices();
+                    }
+                });
+                sig_dialog.present(Some(&dialog));
+            });
+            lbl_signature.add_controller(click);
+        }
 
         let from_row_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -2256,6 +2322,7 @@ impl ComposeDialog {
             .margin_bottom(0)
             .css_classes(vec!["attachment-list-header"])
             .height_request(24)
+            .visible(false)
             .build();
 
         let icon_spacer = gtk::Box::builder().width_request(20).build();
@@ -2273,7 +2340,7 @@ impl ComposeDialog {
             .label(&crate::i18n::gettext("Type"))
             .width_request(140)
             .xalign(0.0)
-            .css_classes(vec!["attachment-col-header-label", "attachment-col-type"])
+            .css_classes(vec!["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_type);
 
@@ -2281,7 +2348,7 @@ impl ComposeDialog {
             .label(&crate::i18n::gettext("Modified"))
             .width_request(120)
             .xalign(0.0)
-            .css_classes(vec!["attachment-col-header-label", "attachment-col-modified"])
+            .css_classes(vec!["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_mod);
 

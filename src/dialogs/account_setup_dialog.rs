@@ -832,15 +832,50 @@ impl AccountSetupDialog {
 
                     let saved_for_closed = saved.clone();
                     let combo_for_closed = combo_weak.clone();
+                    let sigs_for_closed = sigs_rc.clone();
+                    let prev_for_closed = prev_idx.clone();
                     let is_updating_for_closed = is_updating.clone();
                     editor.connect_closed(move |_| {
-                        if !saved_for_closed.get() {
-                            if let Some(c) = combo_for_closed.upgrade() {
-                                is_updating_for_closed.set(true);
-                                c.set_selected(prev);
-                                is_updating_for_closed.set(false);
-                            }
+                        let Some(c) = combo_for_closed.upgrade() else { return };
+                        let loaded = crate::services::signature_store_service::SignatureStore::from_environment().load();
+                        let prev_sig_id = if prev >= 2 {
+                            sigs_for_closed
+                                .borrow()
+                                .get((prev - 2) as usize)
+                                .map(|s| s.id.clone())
+                        } else {
+                            None
+                        };
+                        *sigs_for_closed.borrow_mut() = loaded.clone();
+
+                        let mut labels = vec![
+                            "Use Default Signature".to_string(),
+                            "No Signature".to_string(),
+                        ];
+                        for sig in &loaded {
+                            labels.push(sig.name.clone());
                         }
+                        labels.push("New Signature…".to_string());
+                        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+
+                        is_updating_for_closed.set(true);
+                        c.set_model(Some(&gtk::StringList::new(&refs)));
+                        if !saved_for_closed.get() {
+                            let restored = if let Some(ref id) = prev_sig_id {
+                                loaded
+                                    .iter()
+                                    .position(|s| &s.id == id)
+                                    .map(|p| (p + 2) as u32)
+                                    .unwrap_or(0)
+                            } else if prev <= 1 {
+                                prev
+                            } else {
+                                0
+                            };
+                            c.set_selected(restored);
+                            prev_for_closed.set(restored);
+                        }
+                        is_updating_for_closed.set(false);
                     });
 
                     editor.present(Some(&dialog));
@@ -849,6 +884,117 @@ impl AccountSetupDialog {
                 }
             });
         }
+
+        let btn_manage_signatures = gtk::Button::builder()
+            .icon_name("document-edit-symbolic")
+            .tooltip_text("Manage Signatures…")
+            .css_classes(vec!["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        {
+            let is_updating = is_updating_sig_combo.clone();
+            let prev_idx = prev_selected_sig_idx.clone();
+            let sigs_rc = signatures_state.clone();
+            let combo_weak = row_signature.downgrade();
+            let dialog_weak = self.downgrade();
+            btn_manage_signatures.connect_clicked(move |_| {
+                let Some(dialog) = dialog_weak.upgrade() else { return };
+                let Some(combo) = combo_weak.upgrade() else { return };
+                let sel = combo.selected();
+                let current_profile = if sel >= 2 {
+                    sigs_rc.borrow().get((sel - 2) as usize).cloned()
+                } else {
+                    None
+                };
+
+                let combo_for_save = combo.downgrade();
+                let sigs_for_save = sigs_rc.clone();
+                let prev_for_save = prev_idx.clone();
+                let is_updating_for_save = is_updating.clone();
+                let on_saved = move |saved_sig: crate::services::signature_store_service::SignatureProfile| {
+                    let Some(c) = combo_for_save.upgrade() else { return };
+                    let loaded = crate::services::signature_store_service::SignatureStore::from_environment().load();
+                    let new_pos = loaded
+                        .iter()
+                        .position(|s| s.id == saved_sig.id)
+                        .map(|p| (p + 2) as u32)
+                        .unwrap_or(0);
+                    *sigs_for_save.borrow_mut() = loaded.clone();
+
+                    let mut labels = vec![
+                        "Use Default Signature".to_string(),
+                        "No Signature".to_string(),
+                    ];
+                    for sig in &loaded {
+                        labels.push(sig.name.clone());
+                    }
+                    labels.push("New Signature…".to_string());
+                    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+
+                    is_updating_for_save.set(true);
+                    c.set_model(Some(&gtk::StringList::new(&refs)));
+                    c.set_selected(new_pos);
+                    prev_for_save.set(new_pos);
+                    is_updating_for_save.set(false);
+                };
+
+                let editor = if let Some(ref prof) = current_profile {
+                    crate::dialogs::SignatureEditorDialog::new_for_edit(prof, Some(on_saved))
+                } else {
+                    crate::dialogs::SignatureEditorDialog::new_manager(Some(on_saved))
+                };
+
+                let combo_for_close = combo.downgrade();
+                let sigs_for_close = sigs_rc.clone();
+                let prev_for_close = prev_idx.clone();
+                let is_updating_for_close = is_updating.clone();
+                editor.connect_closed(move |_| {
+                    let Some(c) = combo_for_close.upgrade() else { return };
+                    let cur_sel = prev_for_close.get();
+                    let cur_id = if cur_sel >= 2 {
+                        sigs_for_close
+                            .borrow()
+                            .get((cur_sel - 2) as usize)
+                            .map(|s| s.id.clone())
+                    } else {
+                        None
+                    };
+                    let loaded = crate::services::signature_store_service::SignatureStore::from_environment().load();
+                    *sigs_for_close.borrow_mut() = loaded.clone();
+
+                    let mut labels = vec![
+                        "Use Default Signature".to_string(),
+                        "No Signature".to_string(),
+                    ];
+                    for sig in &loaded {
+                        labels.push(sig.name.clone());
+                    }
+                    labels.push("New Signature…".to_string());
+                    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+
+                    let restored = if let Some(ref id) = cur_id {
+                        loaded
+                            .iter()
+                            .position(|s| &s.id == id)
+                            .map(|p| (p + 2) as u32)
+                            .unwrap_or(0)
+                    } else if cur_sel <= 1 {
+                        cur_sel
+                    } else {
+                        0
+                    };
+
+                    is_updating_for_close.set(true);
+                    c.set_model(Some(&gtk::StringList::new(&refs)));
+                    c.set_selected(restored);
+                    prev_for_close.set(restored);
+                    is_updating_for_close.set(false);
+                });
+
+                editor.present(Some(&dialog));
+            });
+        }
+        row_signature.add_suffix(&btn_manage_signatures);
 
         group_user.add(&row_signature);
 
