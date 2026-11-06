@@ -60,6 +60,11 @@ stage_common() {
         install -Dm644 "$svg" "$prefix/share/icons/hicolor/scalable/apps/$(basename "$svg")"
     done
 
+    for svg in "$ROOT"/data/icons/hicolor/symbolic/apps/*.svg; do
+        [ -f "$svg" ] || continue
+        install -Dm644 "$svg" "$prefix/share/icons/hicolor/symbolic/apps/$(basename "$svg")"
+    done
+
     for po in "$ROOT"/po/*.po; do
         [ -f "$po" ] || continue
         lang="$(basename "$po" .po)"
@@ -86,6 +91,7 @@ path, app_id = sys.argv[1], sys.argv[2]
 with open(path, "r", encoding="utf-8") as f:
     xml = f.read()
 xml = xml.replace('<?xml version="1.0" encoding="UTF-8"?>\n', '')
+xml = xml.replace('  <pkgname>meridian</pkgname>\n', '')
 icons = (
     f'  <icon type="cached" height="128" width="128">{app_id}.png</icon>\n'
     f'  <icon type="cached" height="64" width="64">{app_id}.png</icon>\n'
@@ -278,8 +284,16 @@ EOF
     cat > "$work/control/postinst" <<'EOF'
 #!/bin/sh
 set -e
-if [ "$1" = "configure" ] && command -v glib-compile-schemas >/dev/null 2>&1; then
-    glib-compile-schemas /usr/share/glib-2.0/schemas || true
+if [ "$1" = "configure" ]; then
+    if command -v glib-compile-schemas >/dev/null 2>&1; then
+        glib-compile-schemas /usr/share/glib-2.0/schemas || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q /usr/share/applications || true
+    fi
 fi
 EOF
     chmod 0755 "$work/control/postinst"
@@ -332,7 +346,7 @@ build_rpm() {
 Name:           meridian
 Version:        $PKG_VERSION
 Release:        1%{?dist}
-Summary:        A GNOME-native mail, calendar, contacts, and tasks client
+Summary:        Mail, calendar, contacts, and tasks for GNOME
 License:        GPL-3.0-or-later
 URL:            https://github.com/megawron/meridian
 Source0:        %{name}-%{version}-bin.tar
@@ -342,13 +356,28 @@ Recommends:     gnome-keyring
 %description
 Meridian is an all-in-one mail, calendar, contacts, and tasks application
 designed for the GNOME desktop, built with Rust, GTK 4, libadwaita, and
-WebKitGTK on top of Evolution Data Server (EDS).
+WebKitGTK.
+
+Built on top of Evolution Data Server (EDS), Meridian works out of the box
+with your existing system accounts, local folders, and GNOME Online Accounts.
 
 %prep
 %setup -q -n %{name}-%{version}-bin
 
 %install
 cp -a usr %{buildroot}/usr
+
+%post
+glib-compile-schemas %{_datadir}/glib-2.0/schemas >/dev/null 2>&1 || :
+gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
+update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
+
+%postun
+if [ \$1 -eq 0 ] ; then
+    glib-compile-schemas %{_datadir}/glib-2.0/schemas >/dev/null 2>&1 || :
+    gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
+    update-desktop-database -q %{_datadir}/applications >/dev/null 2>&1 || :
+fi
 
 %files
 %license LICENSE
@@ -360,6 +389,7 @@ cp -a usr %{buildroot}/usr
 %{_datadir}/icons/hicolor/*/apps/$APP_ID.png
 %{_datadir}/icons/hicolor/scalable/actions/*.svg
 %{_datadir}/icons/hicolor/scalable/apps/*.svg
+%{_datadir}/icons/hicolor/symbolic/apps/*.svg
 %{_datadir}/locale/*/LC_MESSAGES/meridian.mo
 EOF
 

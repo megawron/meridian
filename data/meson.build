@@ -57,3 +57,13 @@ foreach size : icon_sizes
     install_dir: datadir / 'icons' / 'hicolor' / size / 'apps',
   )
 endforeach
+
+install_data(
+  'icons' / 'hicolor' / 'scalable' / 'apps' / '@0@.svg'.format(application_id),
+  install_dir: datadir / 'icons' / 'hicolor' / 'scalable' / 'apps',
+)
+
+install_data(
+  'icons' / 'hicolor' / 'symbolic' / 'apps' / '@0@-symbolic.svg'.format(application_id),
+  install_dir: datadir / 'icons' / 'hicolor' / 'symbolic' / 'apps',
+)

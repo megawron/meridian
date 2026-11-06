@@ -85,6 +85,7 @@
         "install -Dm644 data/icons/hicolor/128x128/apps/com.martingawron.Meridian.png /app/share/app-info/icons/flatpak/128x128/com.martingawron.Meridian.png",
         "for svg in data/icons/hicolor/scalable/actions/*.svg; do [ -f \"$svg\" ] && install -Dm644 \"$svg\" \"/app/share/icons/hicolor/scalable/actions/$(basename \"$svg\")\"; done",
         "for svg in data/icons/hicolor/scalable/apps/*.svg; do [ -f \"$svg\" ] && install -Dm644 \"$svg\" \"/app/share/icons/hicolor/scalable/apps/$(basename \"$svg\")\"; done",
+        "for svg in data/icons/hicolor/symbolic/apps/*.svg; do [ -f \"$svg\" ] && install -Dm644 \"$svg\" \"/app/share/icons/hicolor/symbolic/apps/$(basename \"$svg\")\"; done",
         "for po in po/*.po; do [ -f \"$po\" ] || continue; lang=$(basename \"$po\" .po); install -d \"/app/share/locale/${lang}/LC_MESSAGES\"; msgfmt \"$po\" -o \"/app/share/locale/${lang}/LC_MESSAGES/meridian.mo\"; done"
       ],
       "sources": [

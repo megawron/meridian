@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <!-- Outer rim gradient -->
+    <linearGradient id="rimOuter" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#9b59c6"/>
+      <stop offset="50%" stop-color="#7c3fa6"/>
+      <stop offset="100%" stop-color="#58287c"/>
+    </linearGradient>
+    <!-- Middle band gradient -->
+    <linearGradient id="rimMid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#9553be"/>
+      <stop offset="55%" stop-color="#8b4eb2"/>
+      <stop offset="100%" stop-color="#763d9f"/>
+    </linearGradient>
+    <!-- Inner bevel gradient -->
+    <linearGradient id="rimInner" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5d2c82"/>
+      <stop offset="50%" stop-color="#6b3692"/>
+      <stop offset="100%" stop-color="#9e5ec8"/>
+    </linearGradient>
+    <!-- Envelope body gradient -->
+    <linearGradient id="envBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="88%" stop-color="#eaebee"/>
+      <stop offset="100%" stop-color="#c9ccd1"/>
+    </linearGradient>
+    <!-- Envelope bottom fold gradient -->
+    <linearGradient id="envBottom" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f2f3f5"/>
+      <stop offset="82%" stop-color="#fafbfc"/>
+      <stop offset="84%" stop-color="#cfd2d7"/>
+      <stop offset="100%" stop-color="#bec2c8"/>
+    </linearGradient>
+    <!-- Top flap gradient -->
+    <linearGradient id="envFlap" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f3f4f6"/>
+    </linearGradient>
+    <!-- Flap drop shadow -->
+    <filter id="flapShadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="3.5" stdDeviation="3.5" flood-color="#000000" flood-opacity="0.24"/>
+    </filter>
+    <!-- Envelope clip -->
+    <clipPath id="envClip">
+      <rect x="66" y="85" width="124" height="85" rx="10" ry="10"/>
+    </clipPath>
+  </defs>
+
+  <!-- 3D Beveled Meridian Ring (with transparent interior) -->
+  <path fill-rule="evenodd" fill="url(#rimOuter)"
+        d="M128,18 A110,110 0 1,0 128,238 A110,110 0 1,0 128,18 Z
+           M128,47 A81,81 0 1,1 128,209 A81,81 0 1,1 128,47 Z"/>
+  <path fill-rule="evenodd" fill="url(#rimMid)"
+        d="M128,23 A105,105 0 1,0 128,233 A105,105 0 1,0 128,23 Z
+           M128,40 A88,88 0 1,1 128,216 A88,88 0 1,1 128,40 Z"/>
+  <path fill-rule="evenodd" fill="url(#rimInner)"
+        d="M128,40 A88,88 0 1,0 128,216 A88,88 0 1,0 128,40 Z
+           M128,47 A81,81 0 1,1 128,209 A81,81 0 1,1 128,47 Z"/>
+
+  <!-- Mail Envelope -->
+  <g clip-path="url(#envClip)">
+    <!-- Base side panels -->
+    <rect x="66" y="85" width="124" height="85" rx="10" ry="10" fill="url(#envBody)"/>
+
+    <!-- Side fold crease shadows -->
+    <path d="M66,164 L118,118 L128,126 L72,170 Z" fill="#000000" fill-opacity="0.08"/>
+    <path d="M190,164 L138,118 L128,126 L184,170 Z" fill="#000000" fill-opacity="0.08"/>
+
+    <!-- Bottom fold triangle -->
+    <path d="M66,165 L121,116 Q128,110 135,116 L190,165 L190,170 L66,170 Z" fill="url(#envBottom)"/>
+
+    <!-- Top flap with shadow -->
+    <path d="M66,85 L190,85 L190,91 L136,137 Q128,144 120,137 L66,91 Z"
+          fill="url(#envFlap)" filter="url(#flapShadow)"/>
+  </g>
+
+  <!-- Subtle envelope border -->
+  <rect x="66.75" y="85.75" width="122.5" height="83.5" rx="9.5" ry="9.5"
+        fill="none" stroke="#9ca1a9" stroke-width="1.5"/>
+</svg>
