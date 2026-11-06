@@ -13,20 +13,20 @@ use crate::services::search_folder_service::{
 };
 
 const FIELD_LABELS: &[&str] = &[
-    "Betreff oder Adressen",
-    "Betreff",
-    "Absender",
-    "Empfänger",
-    "Nachricht",
-    "Nachrichtentext",
-    "Freier Ausdruck",
+    "Subject or Addresses",
+    "Subject",
+    "Sender",
+    "Recipients",
+    "Message",
+    "Body",
+    "Free-form Expression",
 ];
 
 const SCOPE_LABELS: &[&str] = &[
-    "Aktueller Ordner",
-    "Aktueller Ordner und Unterordner",
-    "Aktuelles Konto",
-    "Alle Konten",
+    "Current Folder",
+    "Current Folder and Subfolders",
+    "Current Account",
+    "All Accounts",
 ];
 
 fn field_key(field: SavedSearchFieldMode) -> &'static str {
@@ -122,18 +122,18 @@ fn target_description(
     folder_name: Option<&str>,
 ) -> String {
     match scope {
-        SavedSearchScope::AllAccounts => "Alle Konten".to_string(),
+        SavedSearchScope::AllAccounts => "All Accounts".to_string(),
         SavedSearchScope::CurrentAccount => source_uid
             .filter(|value| !value.trim().is_empty())
-            .map(|value| format!("Konto: {value}"))
-            .unwrap_or_else(|| "Kein Konto ausgewählt".to_string()),
+            .map(|value| format!("Account: {value}"))
+            .unwrap_or_else(|| "No account selected".to_string()),
         SavedSearchScope::CurrentFolder | SavedSearchScope::CurrentFolderAndSubfolders => {
             match (source_uid, folder_name, folder_id) {
                 (Some(source_uid), Some(folder_name), _) => {
-                    format!("Konto {source_uid} / Ordner {folder_name}")
+                    format!("Account {source_uid} / Folder {folder_name}")
                 }
-                (None, None, Some(folder_id)) => format!("Lokaler Ordner: {folder_id}"),
-                _ => "Kein Ordner ausgewählt".to_string(),
+                (None, None, Some(folder_id)) => format!("Local Folder: {folder_id}"),
+                _ => "No folder selected".to_string(),
             }
         }
     }
@@ -522,7 +522,7 @@ mod tests {
                 None,
                 None,
             ),
-            "Lokaler Ordner: custom:Projects"
+            "Local Folder: custom:Projects"
         );
         assert_eq!(
             target_description(
@@ -531,7 +531,7 @@ mod tests {
                 Some("account"),
                 Some("Inbox"),
             ),
-            "Konto account / Ordner Inbox"
+            "Account account / Folder Inbox"
         );
         assert_eq!(
             target_description(
@@ -540,7 +540,7 @@ mod tests {
                 Some("account"),
                 None,
             ),
-            "Konto: account"
+            "Account: account"
         );
     }
 

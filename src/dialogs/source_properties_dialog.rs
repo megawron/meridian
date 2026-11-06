@@ -89,7 +89,7 @@ impl SourcePropertiesDialog {
         let is_writable = *self.imp().is_writable.borrow();
         let is_default = *self.imp().is_default.borrow();
 
-        self.set_title(&format!("Eigenschaften von „{display_name}“"));
+        self.set_title(&format!("Properties of \"{display_name}\""));
         self.set_content_width(460);
         self.set_content_height(380);
 
@@ -113,7 +113,7 @@ impl SourcePropertiesDialog {
         let page = adw::PreferencesPage::new();
 
         // 1. General group
-        let general_group = adw::PreferencesGroup::builder().title("Allgemein").build();
+        let general_group = adw::PreferencesGroup::builder().title("General").build();
 
         let name_row = adw::EntryRow::builder()
             .title("Name")
@@ -122,12 +122,12 @@ impl SourcePropertiesDialog {
         general_group.add(&name_row);
 
         let type_subtitle = if is_writable {
-            format!("{source_kind} · Schreibbar (Lese-/Schreibzugriff)")
+            format!("{source_kind} · Writable (Read/Write access)")
         } else {
-            format!("{source_kind} · Schreibgeschützt (Nur Lesen)")
+            format!("{source_kind} · Read-only")
         };
         let type_row = adw::ActionRow::builder()
-            .title("Quellentyp & Schreibzugriff")
+            .title("Source Type & Write Access")
             .subtitle(&type_subtitle)
             .build();
         let type_icon = gtk::Image::builder()
@@ -141,11 +141,11 @@ impl SourcePropertiesDialog {
 
         // 2. Visuals and Behavior
         let visual_group = adw::PreferencesGroup::builder()
-            .title("Darstellung und Verhalten")
+            .title("Appearance and Behavior")
             .build();
 
         let color_row = adw::ActionRow::builder()
-            .title("Farbe")
+            .title("Color")
             .subtitle(&color)
             .build();
         let color_dot = gtk::Label::builder()
@@ -161,14 +161,14 @@ impl SourcePropertiesDialog {
 
         // Color dialog button for selecting a color
         let color_dialog = gtk::ColorDialog::builder()
-            .title("Quellenfarbe auswählen")
+            .title("Select Source Color")
             .build();
         let color_button = gtk::ColorDialogButton::new(Some(color_dialog));
         if let Ok(rgba) = gtk::gdk::RGBA::parse(&color) {
             color_button.set_rgba(&rgba);
         }
         color_button.set_valign(gtk::Align::Center);
-        color_button.set_tooltip_text(Some("Farbe anpassen"));
+        color_button.set_tooltip_text(Some("Customize color"));
 
         let color_dot_weak = color_dot.downgrade();
         let color_row_weak = color_row.downgrade();
@@ -195,7 +195,7 @@ impl SourcePropertiesDialog {
         visual_group.add(&color_row);
 
         let default_row = adw::SwitchRow::builder()
-            .title("Als Standardquelle verwenden")
+            .title("Use as default source")
             .active(is_default)
             .build();
         let default_icon = gtk::Image::builder()
@@ -209,7 +209,7 @@ impl SourcePropertiesDialog {
 
         // Save button in HeaderBar
         let save_btn = gtk::Button::builder()
-            .label("Speichern")
+            .label("Save")
             .css_classes(vec!["suggested-action"])
             .build();
         let dialog_for_save = self.downgrade();

@@ -51,7 +51,7 @@ glib::wrapper! {
 impl DraftsDialog {
     pub fn new() -> Self {
         glib::Object::builder()
-            .property("title", "Lokale Entwürfe")
+            .property("title", "Local Drafts")
             .property("content-width", 720)
             .property("content-height", 560)
             .build()
@@ -63,13 +63,13 @@ impl DraftsDialog {
 
         let refresh_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text("Entwürfe aktualisieren")
+            .tooltip_text("Refresh drafts")
             .css_classes(vec!["flat"])
             .build();
         header_bar.pack_start(&refresh_button);
 
         let new_button = gtk::Button::builder()
-            .label("Neue E-Mail")
+            .label("New Message")
             .icon_name("mail-message-new-symbolic")
             .css_classes(vec!["suggested-action"])
             .build();
@@ -136,17 +136,16 @@ impl DraftsDialog {
 
         if drafts.is_empty() {
             self.set_status(
-                "Keine lokalen Entwürfe vorhanden. Entwürfe werden automatisch gespeichert, \
-                 sobald der Composer Inhalt enthält.",
+                "No local drafts available. Drafts are saved automatically \
+                 once the composer contains content.",
             );
             return;
         }
 
         self.set_status(&format!(
-            "{} lokale{} Entwurf{} — synchronisierte Entwürfe werden auf Linux separat verwaltet.",
+            "{} local draft{} — synchronized drafts are managed separately on Linux.",
             drafts.len(),
-            if drafts.len() == 1 { "n" } else { "e" },
-            if drafts.len() == 1 { "" } else { "e" },
+            if drafts.len() == 1 { "" } else { "s" },
         ));
         for draft in drafts {
             self.append_draft_row(&list, draft);
@@ -155,7 +154,7 @@ impl DraftsDialog {
 
     fn append_draft_row(&self, list: &gtk::ListBox, draft: DraftMessage) {
         let title = if draft.subject.trim().is_empty() {
-            "(Ohne Betreff)".to_string()
+            "(No Subject)".to_string()
         } else {
             draft.subject.clone()
         };
@@ -168,13 +167,13 @@ impl DraftsDialog {
 
         let open_button = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
-            .tooltip_text("Entwurf öffnen")
+            .tooltip_text("Open draft")
             .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
             .build();
         let delete_button = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Entwurf löschen")
+            .tooltip_text("Delete draft")
             .css_classes(vec!["flat", "destructive-action"])
             .valign(gtk::Align::Center)
             .build();
@@ -225,14 +224,14 @@ impl DraftsDialog {
     fn delete_draft(&self, id: &str) {
         match DraftStoreService::default().delete(id) {
             Ok(true) => {
-                self.show_parent_toast("Entwurf gelöscht");
+                self.show_parent_toast("Draft deleted");
                 self.reload();
             }
             Ok(false) => {
                 self.reload();
             }
             Err(error) => {
-                self.show_parent_toast(&format!("Entwurf konnte nicht gelöscht werden: {error}"))
+                self.show_parent_toast(&format!("Could not delete draft: {error}"))
             }
         }
     }
@@ -261,30 +260,30 @@ impl Default for DraftsDialog {
 fn draft_summary(draft: &DraftMessage) -> String {
     let mut parts = Vec::new();
     if let Some(method) = draft.calendar_method.as_deref() {
-        parts.push(format!("iTIP-Antwort: {method}"));
+        parts.push(format!("iTIP response: {method}"));
     }
     if !draft.to.trim().is_empty() {
-        parts.push(format!("An: {}", draft.to.trim()));
+        parts.push(format!("To: {}", draft.to.trim()));
     }
     if !draft.cc.trim().is_empty() {
         parts.push(format!("Cc: {}", draft.cc.trim()));
     }
     if !draft.updated_at.trim().is_empty() {
-        parts.push(format!("geändert: {}", draft.updated_at.trim()));
+        parts.push(format!("modified: {}", draft.updated_at.trim()));
     }
     if !draft.attachments.is_empty() {
         parts.push(format!(
-            "{} Anhang{}",
+            "{} attachment{}",
             draft.attachments.len(),
             if draft.attachments.len() == 1 {
                 ""
             } else {
-                "änge"
+                "s"
             }
         ));
     }
     if parts.is_empty() {
-        "Leerer lokaler Entwurf".to_string()
+        "Empty local draft".to_string()
     } else {
         parts.join(" · ")
     }

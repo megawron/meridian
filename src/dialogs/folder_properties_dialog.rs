@@ -97,7 +97,7 @@ glib::wrapper! {
 impl FolderPropertiesDialog {
     pub fn new(snapshot: FolderPropertiesSnapshot) -> Self {
         glib::Object::builder()
-            .property("title", "Ordnereigenschaften")
+            .property("title", "Folder Properties")
             .property("content-width", 540)
             .property("content-height", 560)
             .property("folder-name", snapshot.folder_name)
@@ -112,12 +112,12 @@ impl FolderPropertiesDialog {
     fn build_ui(&self) {
         let toolbar = adw::ToolbarView::new();
         toolbar.set_tooltip_text(Some(
-            "Schreibgeschützte Momentaufnahme: Speicherquote und erweiterte Einstellungen des Mail-Anbieters werden vom Server verwaltet.",
+            "Read-only snapshot: storage quota and advanced mail provider settings are managed by the server.",
         ));
         let type_subtitle = if *self.imp().is_remote.borrow() {
-            "Synchronisierter Kontoordner"
+            "Synchronized account folder"
         } else {
-            "Lokaler app-eigener Ordner"
+            "Local app-owned folder"
         };
 
         let view_stack = adw::ViewStack::new();
@@ -236,7 +236,7 @@ impl FolderPropertiesDialog {
             .build();
 
         let row_offline = adw::SwitchRow::builder()
-            .title("Ordnerinhalt lokal für den Offline-Betrieb kopieren")
+            .title("Copy folder contents locally for offline operation")
             .subtitle(&gettext("Cache messages on this device for offline reading"))
             .active(is_remote)
             .build();
@@ -248,7 +248,7 @@ impl FolderPropertiesDialog {
         sync_group.add(&row_offline);
 
         let row_check = adw::SwitchRow::builder()
-            .title("Immer auf neue E-Mails in diesem Ordner prüfen")
+            .title("Always check for new mail in this folder")
             .subtitle(&gettext("Include this folder when synchronizing mailbox"))
             .active(true)
             .build();
@@ -260,7 +260,7 @@ impl FolderPropertiesDialog {
         sync_group.add(&row_check);
 
         let row_filter = adw::SwitchRow::builder()
-            .title("Nachrichtenfilter auf diesen Ordner anwenden")
+            .title("Apply message filters to this folder")
             .subtitle(&gettext("Process incoming filter rules automatically"))
             .active(false)
             .build();
@@ -326,9 +326,9 @@ impl FolderPropertiesDialog {
 
         page_general.add(&reading_group);
 
-        view_stack.add_titled_with_icon(&page_general, Some("general"), "Allgemein", "folder-symbolic");
+        view_stack.add_titled_with_icon(&page_general, Some("general"), "General", "folder-symbolic");
 
-        // ── Page 2: Erscheinungsbild (Appearance) ────────────────────────
+        // ── Page 2: Appearance ──────────────────────────────────────────
         let page_appearance = adw::PreferencesPage::new();
         let appearance_group = adw::PreferencesGroup::builder()
             .title(&gettext("Appearance"))
@@ -357,9 +357,9 @@ impl FolderPropertiesDialog {
         appearance_group.add(&row_icon);
 
         page_appearance.add(&appearance_group);
-        view_stack.add_titled_with_icon(&page_appearance, Some("appearance"), "Erscheinungsbild", "preferences-desktop-appearance-symbolic");
+        view_stack.add_titled_with_icon(&page_appearance, Some("appearance"), "Appearance", "preferences-desktop-appearance-symbolic");
 
-        // ── Page 3: Archivierung (Archive) ──────────────────────────────
+        // ── Page 3: Archiving ───────────────────────────────────────────
         let page_archive = adw::PreferencesPage::new();
         let archive_group = adw::PreferencesGroup::builder()
             .title(&gettext("Archiving"))
@@ -377,9 +377,9 @@ impl FolderPropertiesDialog {
         archive_group.add(&row_archive);
 
         page_archive.add(&archive_group);
-        view_stack.add_titled_with_icon(&page_archive, Some("archive"), "Archivierung", "package-x-generic-symbolic");
+        view_stack.add_titled_with_icon(&page_archive, Some("archive"), "Archiving", "package-x-generic-symbolic");
 
-        // ── Page 4: Beschriftungen (Labels) ─────────────────────────────
+        // ── Page 4: Labels ──────────────────────────────────────────────
         let page_labels = adw::PreferencesPage::new();
         let labels_group = adw::PreferencesGroup::builder()
             .title(&gettext("Labels"))
@@ -416,7 +416,7 @@ impl FolderPropertiesDialog {
         }
 
         page_labels.add(&labels_group);
-        view_stack.add_titled_with_icon(&page_labels, Some("labels"), "Beschriftungen", "tag-symbolic");
+        view_stack.add_titled_with_icon(&page_labels, Some("labels"), "Labels", "tag-symbolic");
 
         toolbar.set_content(Some(&view_stack));
         self.set_child(Some(&toolbar));

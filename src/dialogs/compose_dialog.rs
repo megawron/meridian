@@ -681,7 +681,7 @@ impl ComposeDialog {
         style: &str,
     ) -> Self {
         let dialog = Self::new();
-        dialog.set_title(&format!("Antworten: {subject}"));
+        dialog.set_title(&format!("Reply: {subject}"));
         let recipient = if reply_to.trim().is_empty() {
             sender.trim()
         } else {
@@ -786,7 +786,7 @@ impl ComposeDialog {
             raw_message,
         )?;
         let dialog = Self::new();
-        dialog.set_title(&format!("Weiterleiten: {subject}"));
+        dialog.set_title(&format!("Forward: {subject}"));
         if let Some(entry) = dialog.imp().entry_subject.borrow().as_ref() {
             entry.set_text(&forward_subject(subject));
         }
@@ -807,7 +807,7 @@ impl ComposeDialog {
         attachments: Vec<DraftAttachment>,
     ) -> Self {
         let dialog = Self::new();
-        dialog.set_title(&format!("Als neue Nachricht bearbeiten: {subject}"));
+        dialog.set_title(&format!("Edit as New Message: {subject}"));
         if let Some(entry) = dialog.imp().entry_to.borrow().as_ref() {
             entry.set_text(recipient_to);
         }
@@ -892,7 +892,7 @@ impl ComposeDialog {
         quote_style: &str,
     ) -> Self {
         let dialog = Self::new();
-        dialog.set_title(&format!("Weiterleiten: {subject}"));
+        dialog.set_title(&format!("Forward: {subject}"));
         if let Some(entry) = dialog.imp().entry_subject.borrow().as_ref() {
             entry.set_text(&forward_subject(subject));
         }
@@ -966,7 +966,7 @@ impl ComposeDialog {
         if !cc.trim().is_empty() {
             dialog.set_row_cc_visible(true);
         }
-        dialog.set_title(&format!("Allen antworten: {subject}"));
+        dialog.set_title(&format!("Reply to All: {subject}"));
         dialog.prepare_focus_for_reply();
         dialog.mark_saved();
         dialog
@@ -1070,9 +1070,9 @@ impl ComposeDialog {
             dialog.add_attachment(attachment);
         }
         let title = if draft.subject.is_empty() {
-            "Entwurf bearbeiten".to_string()
+            "Edit Draft".to_string()
         } else {
-            format!("Entwurf: {}", draft.subject)
+            format!("Draft: {}", draft.subject)
         };
         dialog.set_title(&title);
         dialog.imp().suppress_setting_persistence.set(false);
@@ -1120,7 +1120,7 @@ impl ComposeDialog {
 
         let btn_open_in_new_window = gtk::Button::builder()
             .icon_name("window-new-symbolic")
-            .tooltip_text("In neuem Fenster öffnen")
+            .tooltip_text("Open in new window")
             .css_classes(vec!["flat"])
             .visible(self.imp().is_modal.get())
             .build();
@@ -1206,26 +1206,26 @@ impl ComposeDialog {
             .unwrap_or(false);
         let btn_request_read_receipt = gtk::ToggleButton::builder()
             .icon_name("mail-send-receive-symbolic")
-            .tooltip_text("Lesebestätigung für diese Nachricht anfordern")
+            .tooltip_text("Request read receipt for this message")
             .active(request_read_receipt)
             .css_classes(vec!["flat"])
             .build();
 
         let btn_insert_template = gtk::Button::builder()
             .icon_name("document-open-symbolic")
-            .tooltip_text("Vorlage oder Textbaustein einfügen")
+            .tooltip_text("Insert template or snippet")
             .css_classes(vec!["flat"])
             .build();
 
         let btn_save_template = gtk::Button::builder()
             .icon_name("document-save-as-symbolic")
-            .tooltip_text("Aktuellen Inhalt als Vorlage speichern")
+            .tooltip_text("Save current content as template")
             .css_classes(vec!["flat"])
             .build();
 
         let btn_save_snippet = gtk::Button::builder()
             .icon_name("insert-text-symbolic")
-            .tooltip_text("Aktuellen Inhalt als Textbaustein speichern")
+            .tooltip_text("Save current content as snippet")
             .css_classes(vec!["flat"])
             .build();
 
@@ -1234,20 +1234,20 @@ impl ComposeDialog {
             .unwrap_or(false);
         let btn_sign = gtk::ToggleButton::builder()
             .icon_name("security-high-symbolic")
-            .tooltip_text("Nachricht signieren (OpenPGP oder S/MIME)")
+            .tooltip_text("Sign message (OpenPGP or S/MIME)")
             .active(sign_by_default)
             .css_classes(vec!["flat"])
             .build();
 
         let btn_encrypt = gtk::ToggleButton::builder()
             .icon_name("changes-prevent-symbolic")
-            .tooltip_text("Nachricht verschlüsseln (OpenPGP oder S/MIME)")
+            .tooltip_text("Encrypt message (OpenPGP or S/MIME)")
             .css_classes(vec!["flat"])
             .build();
 
         let btn_plain_text = gtk::ToggleButton::builder()
             .icon_name("text-x-generic-symbolic")
-            .tooltip_text("Nur-Text-Modus beim Verfassen")
+            .tooltip_text("Plain text mode when composing")
             .active(false)
             .css_classes(vec!["flat"])
             .visible(false)
@@ -1262,14 +1262,14 @@ impl ComposeDialog {
             .build();
         let header_btn_html = gtk::ToggleButton::builder()
             .label("HTML")
-            .tooltip_text("HTML-Format (Formatierter Text)")
+            .tooltip_text("HTML format (rich text)")
             .active(true)
             .css_classes(vec!["caption-heading"])
             .build();
         set_accessible_label(&header_btn_html, "HTML");
         let header_btn_txt = gtk::ToggleButton::builder()
             .label("TXT")
-            .tooltip_text("Nur-Text-Format (Plain Text)")
+            .tooltip_text("Plain text format")
             .group(&header_btn_html)
             .active(false)
             .css_classes(vec!["caption-heading"])
@@ -1394,7 +1394,7 @@ impl ComposeDialog {
             factory
         };
 
-        let source_model = gtk::StringList::new(&["Absender werden geladen…"]);
+        let source_model = gtk::StringList::new(&["Loading senders…"]);
         let combo_from = gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
         combo_from.set_hexpand(true);
         combo_from.add_css_class("composer-dropdown");
@@ -1787,8 +1787,8 @@ impl ComposeDialog {
                     add_badge(
                         &badges_box,
                         "security-high-symbolic",
-                        "Signiert",
-                        "Signieren deaktivieren",
+                        "Signed",
+                        "Disable signing",
                         &b_sign,
                     );
                     count += 1;
@@ -1797,8 +1797,8 @@ impl ComposeDialog {
                     add_badge(
                         &badges_box,
                         "changes-prevent-symbolic",
-                        "Verschlüsselt",
-                        "Verschlüsseln deaktivieren",
+                        "Encrypted",
+                        "Disable encryption",
                         &b_encrypt,
                     );
                     count += 1;
@@ -1807,8 +1807,8 @@ impl ComposeDialog {
                     add_badge(
                         &badges_box,
                         "mail-mark-important-symbolic",
-                        "Hohe Priorität",
-                        "Priorität normalisieren",
+                        "High Priority",
+                        "Reset priority",
                         &b_priority,
                     );
                     count += 1;
@@ -1817,8 +1817,8 @@ impl ComposeDialog {
                     add_badge(
                         &badges_box,
                         "mail-send-receive-symbolic",
-                        "Lesebestätigung",
-                        "Lesebestätigung entfernen",
+                        "Read Receipt",
+                        "Remove read receipt",
                         &b_receipt,
                     );
                     count += 1;
@@ -2894,7 +2894,7 @@ impl ComposeDialog {
             if templates.is_empty() && snippets.is_empty() {
                 list.append(
                     &gtk::Label::builder()
-                        .label("Noch keine Vorlagen oder Textbausteine gespeichert")
+                        .label("No templates or snippets saved yet")
                         .margin_top(12)
                         .margin_bottom(12)
                         .margin_start(12)
@@ -2907,7 +2907,7 @@ impl ComposeDialog {
                     let row = adw::ActionRow::builder()
                         .title(&template.name)
                         .subtitle(if template.subject.trim().is_empty() {
-                            "Ohne Betreff"
+                            "No subject"
                         } else {
                             template.subject.as_str()
                         })
@@ -2915,13 +2915,13 @@ impl ComposeDialog {
                         .build();
                     let apply_button = gtk::Button::builder()
                         .icon_name("insert-text-symbolic")
-                        .tooltip_text("Vorlage einfügen")
+                        .tooltip_text("Insert template")
                         .css_classes(vec!["flat"])
                         .valign(gtk::Align::Center)
                         .build();
                     let delete_button = gtk::Button::builder()
                         .icon_name("user-trash-symbolic")
-                        .tooltip_text("Vorlage löschen")
+                        .tooltip_text("Delete template")
                         .css_classes(vec!["flat", "error"])
                         .valign(gtk::Align::Center)
                         .build();
@@ -2955,9 +2955,9 @@ impl ComposeDialog {
                         let popover_for_action = popover_for_delete.clone();
                         crate::dialogs::run_destructive_action(
                             button,
-                            "Vorlage löschen?",
-                            "Die Vorlage wird dauerhaft aus dem app-eigenen Speicher entfernt.",
-                            "Löschen",
+                            "Delete template?",
+                            "The template will be permanently removed from application storage.",
+                            "Delete",
                             move || match TemplateStore::default().delete(&template_id_for_action) {
                                 Ok(true) => {
                                     row_for_action.set_visible(false);
@@ -2987,7 +2987,7 @@ impl ComposeDialog {
                 let row = adw::ActionRow::builder()
                     .title(&snippet.name)
                     .subtitle(if snippet.trigger.trim().is_empty() {
-                        "Textbaustein"
+                        "Snippet"
                     } else {
                         snippet.trigger.as_str()
                     })
@@ -2995,13 +2995,13 @@ impl ComposeDialog {
                     .build();
                 let apply_button = gtk::Button::builder()
                     .icon_name("insert-text-symbolic")
-                    .tooltip_text("Textbaustein an der Cursorposition einfügen")
+                    .tooltip_text("Insert snippet at cursor position")
                     .css_classes(vec!["flat"])
                     .valign(gtk::Align::Center)
                     .build();
                 let delete_button = gtk::Button::builder()
                     .icon_name("user-trash-symbolic")
-                    .tooltip_text("Textbaustein löschen")
+                    .tooltip_text("Delete snippet")
                     .css_classes(vec!["flat", "error"])
                     .valign(gtk::Align::Center)
                     .build();
@@ -3030,9 +3030,9 @@ impl ComposeDialog {
                     let popover_for_action = popover_for_delete.clone();
                     crate::dialogs::run_destructive_action(
                         button,
-                        "Textbaustein löschen?",
-                        "Der Textbaustein wird dauerhaft aus dem app-eigenen Speicher entfernt.",
-                        "Löschen",
+                        "Delete snippet?",
+                        "The snippet will be permanently removed from application storage.",
+                        "Delete",
                         move || match SnippetStore::default().delete(&snippet_id_for_action) {
                             Ok(true) => {
                                 row_for_action.set_visible(false);
@@ -3056,7 +3056,7 @@ impl ComposeDialog {
             popover.set_child(Some(&list));
             popover.popup();
             if let Some(dialog) = dialog_weak_for_templates.upgrade() {
-                dialog.show_toast("Vorlagen werden aus dem app-eigenen Speicher geladen");
+                dialog.show_toast("Loading templates from application storage");
             }
         });
 
@@ -3077,11 +3077,11 @@ impl ComposeDialog {
                 .width_request(280)
                 .build();
             let name_entry = gtk::Entry::builder()
-                .placeholder_text("Name der Vorlage")
+                .placeholder_text("Template name")
                 .activates_default(true)
                 .build();
             let save_button = gtk::Button::builder()
-                .label("Vorlage speichern")
+                .label("Save Template")
                 .css_classes(vec!["suggested-action"])
                 .build();
             container.append(&name_entry);
@@ -3096,7 +3096,7 @@ impl ComposeDialog {
                 let name = name_entry.text().trim().to_string();
                 if name.is_empty() {
                     if let Some(dialog) = dialog_weak.upgrade() {
-                        dialog.show_toast("Bitte einen Namen für die Vorlage eingeben");
+                        dialog.show_toast("Please enter a name for the template");
                     }
                     return;
                 }
@@ -3115,13 +3115,13 @@ impl ComposeDialog {
                             Ok(()) => {
                                 popover_for_result.popdown();
                                 if let Some(dialog) = dialog_weak_for_result.upgrade() {
-                                    dialog.show_toast("Vorlage gespeichert");
+                                    dialog.show_toast("Template saved");
                                 }
                             }
                             Err(error) => {
                                 if let Some(dialog) = dialog_weak_for_result.upgrade() {
                                     dialog.show_toast(&format!(
-                                        "Vorlage konnte nicht gespeichert werden: {error}"
+                                        "Could not save template: {error}"
                                     ));
                                 }
                             }
@@ -3130,7 +3130,7 @@ impl ComposeDialog {
                     Err(error) => {
                         if let Some(dialog) = dialog_weak_for_result.upgrade() {
                             dialog.show_toast(&format!(
-                                "Vorlageninhalt konnte nicht gelesen werden: {error}"
+                                "Could not read template content: {error}"
                             ));
                         }
                     }
@@ -3155,14 +3155,14 @@ impl ComposeDialog {
                 .width_request(300)
                 .build();
             let name_entry = gtk::Entry::builder()
-                .placeholder_text("Name des Textbausteins")
+                .placeholder_text("Snippet name")
                 .activates_default(true)
                 .build();
             let trigger_entry = gtk::Entry::builder()
-                .placeholder_text("Kürzel (optional, z. B. /gruss)")
+                .placeholder_text("Shortcut (optional, e.g. /regards)")
                 .build();
             let save_button = gtk::Button::builder()
-                .label("Textbaustein speichern")
+                .label("Save Snippet")
                 .css_classes(vec!["suggested-action"])
                 .build();
             container.append(&name_entry);
@@ -3177,7 +3177,7 @@ impl ComposeDialog {
                 let name = name_entry.text().trim().to_string();
                 if name.is_empty() {
                     if let Some(dialog) = dialog_weak.upgrade() {
-                        dialog.show_toast("Bitte einen Namen für den Textbaustein eingeben");
+                        dialog.show_toast("Please enter a name for the snippet");
                     }
                     return;
                 }
@@ -3189,7 +3189,7 @@ impl ComposeDialog {
                         let body_html = sanitize_html(&body_html);
                         if body_html.trim().is_empty() {
                             if let Some(dialog) = dialog_weak_for_result.upgrade() {
-                                dialog.show_toast("Der Textbaustein darf nicht leer sein");
+                                dialog.show_toast("The snippet must not be empty");
                             }
                             return;
                         }
@@ -3203,13 +3203,13 @@ impl ComposeDialog {
                             Ok(()) => {
                                 popover_for_result.popdown();
                                 if let Some(dialog) = dialog_weak_for_result.upgrade() {
-                                    dialog.show_toast("Textbaustein gespeichert");
+                                    dialog.show_toast("Snippet saved");
                                 }
                             }
                             Err(error) => {
                                 if let Some(dialog) = dialog_weak_for_result.upgrade() {
                                     dialog.show_toast(&format!(
-                                        "Textbaustein konnte nicht gespeichert werden: {error}"
+                                        "Could not save snippet: {error}"
                                     ));
                                 }
                             }
@@ -3218,7 +3218,7 @@ impl ComposeDialog {
                     Err(error) => {
                         if let Some(dialog) = dialog_weak_for_result.upgrade() {
                             dialog.show_toast(&format!(
-                                "Textbausteininhalt konnte nicht gelesen werden: {error}"
+                                "Could not read snippet content: {error}"
                             ));
                         }
                     }
@@ -3239,7 +3239,7 @@ impl ComposeDialog {
                 return;
             };
             if dialog.imp().autosave_in_progress.get() {
-                dialog.show_toast("Automatisches Speichern läuft noch; der Versand startet danach");
+                dialog.show_toast("Autosave is still in progress; sending will start afterwards");
                 return;
             }
             let html_editor_for_send = html_editor_for_send.clone();
@@ -3258,7 +3258,7 @@ impl ComposeDialog {
                 else {
                     return;
                 };
-                dialog.set_operation_status(operation_id, "Nachricht wird gelesen…", true);
+                dialog.set_operation_status(operation_id, "Reading message…", true);
 
                 let identity = dialog.selected_identity(combo_from_for_send.selected());
                 let reply_to = dialog.effective_reply_to(&identity.reply_to);
@@ -3296,14 +3296,14 @@ impl ComposeDialog {
                         Err(error) => {
                             dialog.finish_operation(operation_id);
                             dialog.show_toast(&format!(
-                                "Nachricht konnte nicht gelesen werden; Entwurf bleibt geöffnet: {error}"
+                                "Could not read message; draft remains open: {error}"
                             ));
                             return;
                         }
                     };
                     if cancel.is_cancel_requested() {
                         dialog.finish_operation(operation_id);
-                        dialog.show_toast("Versand abgebrochen; der Entwurf bleibt erhalten");
+                        dialog.show_toast("Sending cancelled; draft preserved");
                         return;
                     }
 
@@ -3355,7 +3355,7 @@ impl ComposeDialog {
                     };
                     dialog.set_operation_status(
                         operation_id,
-                        "Entwurf wird gesichert und Nachricht wird vorbereitet…",
+                        "Saving draft and preparing message…",
                         true,
                     );
 
@@ -3364,7 +3364,7 @@ impl ComposeDialog {
                     let store = DraftStoreService::default();
                     let Some(_send_claim) = store.try_claim_send(&draft.id) else {
                         let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(
-                            "Dieser Entwurf wird bereits in einem anderen Fenster gesendet"
+                            "This draft is already being sent in another window"
                                 .to_string(),
                         )));
                         return;
@@ -3373,14 +3373,14 @@ impl ComposeDialog {
                         Ok(saved) => saved,
                         Err(error) => {
                             let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(format!(
-                                "Entwurf konnte vor dem Versand nicht gesichert werden: {error}"
+                                "Could not save draft before sending: {error}"
                             ))));
                             return;
                         }
                     };
                     if !saved {
                         let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(format!(
-                            "Entwurf wurde zwischenzeitlich geändert; Versand abgebrochen, damit keine neuere Recovery-Version überschrieben wird"
+                            "Draft was modified in the meantime; sending aborted to avoid overwriting a newer recovery version"
                         ))));
                         return;
                     }
@@ -3431,7 +3431,7 @@ impl ComposeDialog {
                                 if dialog.is_current_operation(operation_id) {
                                     dialog.finish_operation(operation_id);
                                     dialog.show_toast(&format!(
-                                        "Versand abgebrochen; Entwurf bleibt erhalten: {error}"
+                                        "Sending cancelled; draft preserved: {error}"
                                     ));
                                 }
                                 return;
@@ -3455,7 +3455,7 @@ impl ComposeDialog {
                             SendWorkerEvent::Cancelled => {
                                 dialog.finish_operation(operation_id);
                                 dialog.show_toast(
-                                    "Versand abgebrochen; der Entwurf bleibt erhalten",
+                                    "Sending cancelled; draft preserved",
                                 );
                                 return;
                             }
@@ -3468,18 +3468,18 @@ impl ComposeDialog {
                                         }
                                         dialog.notify_mail_page_drafts_changed();
                                         let mut message = if completion.sent_message_saved {
-                                            "E-Mail gesendet; Kopie in Gesendet gespeichert"
+                                            "Email sent; copy saved in Sent"
                                         } else {
-                                            "E-Mail gesendet"
+                                            "Email sent"
                                         }
                                         .to_string();
                                         if let Some(error) = completion.cleanup_error {
                                             message.push_str(&format!(
-                                                "; Recovery-Entwurf blieb erhalten: {error}"
+                                                "; recovery draft preserved: {error}"
                                             ));
                                         } else if !completion.local_draft_deleted {
                                             message.push_str(
-                                                "; ein neuerer Recovery-Entwurf wurde erhalten",
+                                                "; a newer recovery draft was preserved",
                                             );
                                         }
                                         let recent_service = RecentRecipientsService::new();
@@ -3502,7 +3502,7 @@ impl ComposeDialog {
                                     }
                                     Err(error) => {
                                         dialog.show_toast(&format!(
-                                            "E-Mail konnte nicht gesendet werden; Entwurf bleibt erhalten: {error}"
+                                            "Could not send email; draft preserved: {error}"
                                         ));
                                     }
                                 }
@@ -3642,9 +3642,9 @@ impl ComposeDialog {
                 }
                 if names.is_empty() {
                     let message = if discovery.origin == EdsSourceOrigin::Empty {
-                        "Mailkonten sind nicht erreichbar"
+                        "Mail accounts are unreachable"
                     } else {
-                        "Kein aktives Mailkonto verfügbar"
+                        "No active mail account available"
                     };
                     source_model_for_load.splice(0, source_model_for_load.n_items(), &[message]);
                 }
@@ -3655,9 +3655,9 @@ impl ComposeDialog {
                 dialog.imp().suppress_dirty_tracking.set(prev_suppress);
             } else if names.is_empty() {
                 let message = if discovery.origin == EdsSourceOrigin::Empty {
-                    "Mailkonten sind nicht erreichbar"
+                    "Mail accounts are unreachable"
                 } else {
-                    "Kein aktives Mailkonto verfügbar"
+                    "No active mail account available"
                 };
                 source_model_for_load.splice(0, source_model_for_load.n_items(), &[message]);
             }
@@ -3686,7 +3686,7 @@ impl ComposeDialog {
                 if dialog.imp().autosave_in_progress.get() {
                     dialog.imp().close_after_save.set(false);
                     dialog.show_toast(
-                        "Automatisches Speichern läuft noch; bitte danach erneut speichern",
+                        "Autosave is still in progress; please save again afterwards",
                     );
                     return;
                 }
@@ -3696,7 +3696,7 @@ impl ComposeDialog {
                     dialog.imp().close_after_save.set(false);
                     return;
                 };
-                dialog.set_operation_status(operation_id, "Entwurf wird gelesen…", true);
+                dialog.set_operation_status(operation_id, "Reading draft…", true);
                 let to = entry_to.text().to_string();
                 let cc = entry_cc.text().to_string();
                 let bcc = entry_bcc.text().to_string();
@@ -3733,7 +3733,7 @@ impl ComposeDialog {
                             dialog.imp().close_after_save.set(false);
                             dialog.finish_operation(operation_id);
                             dialog.show_toast(&format!(
-                                "Entwurf konnte nicht gelesen werden; Inhalt bleibt geöffnet: {error}"
+                                "Could not read draft; content remains open: {error}"
                             ));
                             return;
                         }
@@ -3741,7 +3741,7 @@ impl ComposeDialog {
                     if cancel.is_cancel_requested() {
                         dialog.imp().close_after_save.set(false);
                         dialog.finish_operation(operation_id);
-                        dialog.show_toast("Entwurfsspeicherung abgebrochen; Inhalt bleibt geöffnet");
+                        dialog.show_toast("Draft save cancelled; content remains open");
                         return;
                     }
 
@@ -3783,7 +3783,7 @@ impl ComposeDialog {
                             dialog.set_can_close(true);
                             dialog.close();
                         } else {
-                            dialog.show_toast("Leere Nachricht wird nicht als Entwurf gespeichert");
+                            dialog.show_toast("Empty message is not saved as a draft");
                         }
                         return;
                     }
@@ -3813,7 +3813,7 @@ impl ComposeDialog {
                     };
                     dialog.set_operation_status(
                         operation_id,
-                        "Entwurf wird lokal gesichert…",
+                        "Saving draft locally…",
                         true,
                     );
 
@@ -3824,14 +3824,14 @@ impl ComposeDialog {
                             Ok(saved) => saved,
                             Err(error) => {
                                 let _ = sender.send_blocking(DraftWorkerEvent::Finished(Err(
-                                    format!("Lokaler Entwurf konnte nicht gespeichert werden: {error}"),
+                                    format!("Could not save local draft: {error}"),
                                 )));
                                 return;
                             }
                         };
                         if !saved {
                             let _ = sender.send_blocking(DraftWorkerEvent::Finished(Err(
-                                "Entwurf wurde zwischenzeitlich geändert; die neuere Recovery-Version bleibt erhalten".to_string(),
+                                "Draft was modified in the meantime; the newer recovery version is preserved".to_string(),
                             )));
                             return;
                         }
@@ -3851,7 +3851,7 @@ impl ComposeDialog {
                             Err(error) => {
                                 let _ = sender.send_blocking(DraftWorkerEvent::Finished(Err(
                                     format!(
-                                        "Lokaler Entwurf gespeichert; synchronisierte Version konnte nicht erstellt werden: {error}"
+                                        "Local draft saved; could not build synchronized version: {error}"
                                     ),
                                 )));
                                 return;
@@ -3869,7 +3869,7 @@ impl ComposeDialog {
                         .map(|()| true)
                         .map_err(|error| {
                             format!(
-                                "Lokaler Entwurf gespeichert; synchronisierte Speicherung fehlgeschlagen: {error}"
+                                "Local draft saved; synchronized save failed: {error}"
                             )
                         });
                         let _ = sender.send_blocking(DraftWorkerEvent::Finished(result));
@@ -3888,7 +3888,7 @@ impl ComposeDialog {
                                         dialog.imp().close_after_save.set(false);
                                         dialog.finish_operation(operation_id);
                                         dialog.show_toast(&format!(
-                                            "Entwurfsspeicherung abgebrochen; Inhalt bleibt geöffnet: {error}"
+                                            "Draft save cancelled; content remains open: {error}"
                                         ));
                                     }
                                     return;
@@ -3910,7 +3910,7 @@ impl ComposeDialog {
                                     dialog.imp().close_after_save.set(false);
                                     dialog.finish_operation(operation_id);
                                     dialog.show_toast(
-                                        "Entwurfsspeicherung abgebrochen; Inhalt bleibt geöffnet",
+                                        "Draft save cancelled; content remains open",
                                     );
                                     return;
                                 }
@@ -3921,36 +3921,36 @@ impl ComposeDialog {
                                     match result {
                                         Ok(true) => {
                                             if dialog.imp().close_after_save.replace(false) {
-                                                dialog.show_toast("Entwurf gespeichert");
+                                                dialog.show_toast("Draft saved");
                                                 dialog.imp().close_confirmed.set(true);
                                                 dialog.set_can_close(true);
                                                 dialog.close();
                                             } else {
                                                 dialog.show_toast(
-                                                    "Entwurf lokal und im synchronisierten Ordner gespeichert",
+                                                    "Draft saved locally and in synchronized folder",
                                                 );
                                             }
                                         }
                                         Ok(false) => {
                                             if dialog.imp().close_after_save.replace(false) {
-                                                dialog.show_toast("Entwurf gespeichert");
+                                                dialog.show_toast("Draft saved");
                                                 dialog.imp().close_confirmed.set(true);
                                                 dialog.set_can_close(true);
                                                 dialog.close();
                                             } else {
-                                                dialog.show_toast("Entwurf lokal gespeichert");
+                                                dialog.show_toast("Draft saved locally");
                                             }
                                         }
                                         Err(error) => {
                                             if dialog.imp().close_after_save.replace(false) {
                                                 tracing::warn!(%error, "Backend draft sync failed on close; local draft saved");
-                                                dialog.show_toast("Entwurf gespeichert");
+                                                dialog.show_toast("Draft saved");
                                                 dialog.imp().close_confirmed.set(true);
                                                 dialog.set_can_close(true);
                                                 dialog.close();
                                             } else {
                                                 dialog.show_toast(&format!(
-                                                    "{error}; Inhalt bleibt geöffnet"
+                                                    "{error}; content remains open"
                                                 ));
                                             }
                                         }
@@ -4533,7 +4533,7 @@ impl ComposeDialog {
     fn discard_and_close(&self) {
         if self.imp().operation.get() == ComposeOperation::Sending {
             self.show_toast(
-                "Nachricht wird bereits gesendet; Verwerfen ist nicht mehr möglich",
+                "Message is already being sent; discarding is no longer possible",
             );
             return;
         }
@@ -4555,7 +4555,7 @@ impl ComposeDialog {
         self.imp().close_confirmed.set(true);
         self.set_can_close(true);
         self.close();
-        self.show_toast("Entwurf verworfen");
+        self.show_toast("Draft discarded");
     }
 
     fn handle_close_request(&self) -> bool {
@@ -4564,7 +4564,7 @@ impl ComposeDialog {
         }
         if self.imp().print_state.get().is_running() {
             self.show_toast(
-                "Der Composer verarbeitet noch einen Druckvorgang; bitte warten oder abbrechen",
+                "The composer is still processing a print job; please wait or cancel",
             );
             return true;
         }
@@ -4587,13 +4587,13 @@ impl ComposeDialog {
                 if !draft_id.is_empty() && !self.imp().local_draft_persisted.get() {
                     let _ = DraftStoreService::default().delete(&draft_id);
                 } else if self.imp().local_draft_persisted.get() {
-                    self.show_toast("Entwurf gespeichert");
+                    self.show_toast("Draft saved");
                 }
                 false
             }
             CloseRequestDecision::BlockOperation => {
                 self.show_toast(
-                    "Der Composer verarbeitet noch einen Vorgang; bitte warten oder abbrechen",
+                    "The composer is still processing an operation; please wait or cancel",
                 );
                 true
             }
@@ -4628,7 +4628,7 @@ impl ComposeDialog {
             .borrow()
             .as_ref()
             .cloned()
-            .ok_or_else(|| "Kein Absender ausgewählt".to_string())?;
+            .ok_or_else(|| "No sender selected".to_string())?;
         let identity = self.selected_identity(combo_from.selected());
         let reply_to = self.effective_reply_to(&identity.reply_to);
         let (pgp_sign, pgp_encrypt) = self.pgp_flags_for_message();
@@ -4661,12 +4661,12 @@ impl ComposeDialog {
         if self.imp().operation.get() != ComposeOperation::Idle
             || self.imp().print_state.get().is_running()
         {
-            self.show_toast("Ein anderer Composer-Vorgang läuft bereits");
+            self.show_toast("Another composer operation is already running");
             return false;
         }
 
         let Some(editor) = self.imp().html_editor.borrow().as_ref().cloned() else {
-            self.show_toast("Drucken nicht möglich: Nachrichtentext ist nicht verfügbar");
+            self.show_toast("Cannot print: message body is unavailable");
             return false;
         };
 
@@ -4679,9 +4679,9 @@ impl ComposeDialog {
         self.set_print_state(
             MailPrintJobState::Preparing,
             if action.is_preview() {
-                "Druckvorschau wird vorbereitet…"
+                "Preparing print preview…"
             } else {
-                "Druck wird vorbereitet…"
+                "Preparing print job…"
             },
         );
 
@@ -4698,7 +4698,7 @@ impl ComposeDialog {
                 Err(error) => {
                     dialog.finish_print_error(
                         generation,
-                        format!("Nachrichtentext konnte nicht gelesen werden: {error}"),
+                        format!("Could not read message body: {error}"),
                     );
                     return;
                 }
@@ -4733,7 +4733,7 @@ impl ComposeDialog {
                 drop(receiver);
                 dialog.finish_print_error(
                     generation,
-                    format!("Druckvorbereitung konnte nicht gestartet werden: {error}"),
+                    format!("Could not start print preparation: {error}"),
                 );
                 return;
             }
@@ -4753,7 +4753,7 @@ impl ComposeDialog {
                     Ok(document) if action.is_preview() => {
                         dialog.set_print_state(
                             MailPrintJobState::Previewing,
-                            "Druckvorschau wird geöffnet…",
+                            "Opening print preview…",
                         );
                         if let Err(error) = dialog.present_print_preview(document) {
                             dialog.finish_print_error(generation, error);
@@ -4761,7 +4761,7 @@ impl ComposeDialog {
                             dialog.finish_print_state(
                                 generation,
                                 MailPrintJobState::Idle,
-                                "Druckvorschau geöffnet",
+                                "Print preview opened",
                             );
                         }
                     }
@@ -4770,7 +4770,7 @@ impl ComposeDialog {
                         dialog.finish_print_state(
                             generation,
                             MailPrintJobState::Cancelled,
-                            "Druckvorbereitung abgebrochen",
+                            "Print preparation cancelled",
                         );
                     }
                     Err(error) => dialog.finish_print_error(generation, error.to_string()),
@@ -4832,7 +4832,7 @@ impl ComposeDialog {
         if self.imp().print_generation.get() != generation {
             return;
         }
-        let message = format!("Drucken nicht möglich: {}", error.into());
+        let message = format!("Cannot print: {}", error.into());
         self.finish_print_state(generation, MailPrintJobState::Error, &message);
     }
 
@@ -4848,9 +4848,9 @@ impl ComposeDialog {
             .set(next_generation(self.imp().print_generation.get()));
         self.set_print_state(
             MailPrintJobState::Cancelled,
-            "Druckvorbereitung abgebrochen",
+            "Print preparation cancelled",
         );
-        self.show_toast("Druckvorbereitung abgebrochen");
+        self.show_toast("Print preparation cancelled");
         true
     }
 
@@ -4878,7 +4878,7 @@ impl ComposeDialog {
         let viewer = MailViewer::new();
         viewer.load_print_document(&document)?;
         let mut window_builder = gtk::Window::builder()
-            .title("Druckvorschau")
+            .title("Print Preview")
             .default_width(900)
             .default_height(700);
         if let Some(parent) = self.root().and_downcast::<gtk::Window>() {
@@ -4917,7 +4917,7 @@ impl ComposeDialog {
             return;
         }
         self.imp().print_cancellation.borrow_mut().take();
-        self.set_print_state(MailPrintJobState::Printing, "Druckdialog wird geöffnet…");
+        self.set_print_state(MailPrintJobState::Printing, "Opening print dialog…");
         let viewer = MailViewer::new();
         self.imp().print_viewer.replace(Some(viewer.clone()));
         let dialog = self.downgrade();
@@ -4932,19 +4932,19 @@ impl ComposeDialog {
                     Ok(crate::views::MailPrintDialogResult::Printed) => dialog.finish_print_state(
                         generation,
                         MailPrintJobState::Idle,
-                        "Druckauftrag wurde an das System übergeben",
+                        "Print job submitted to system",
                     ),
                     Ok(crate::views::MailPrintDialogResult::Cancelled) => dialog
                         .finish_print_state(
                             generation,
                             MailPrintJobState::Cancelled,
-                            "Druckdialog abgebrochen",
+                            "Print dialog cancelled",
                         ),
                     Err(error) => dialog.finish_print_error(generation, error),
                 }
             });
         } else {
-            self.finish_print_error(generation, "Kein übergeordnetes Fenster für Druckdialog".to_string());
+            self.finish_print_error(generation, "No parent window for print dialog".to_string());
         }
     }
 
@@ -5124,9 +5124,9 @@ impl ComposeDialog {
             };
             if prompt_only_bcc && only_bcc {
                 let alert = adw::AlertDialog::new(
-                    Some("Nur verdeckte Empfänger (Bcc)"),
+                    Some("Only Bcc Recipients"),
                     Some(
-                        "Die Nachricht enthält ausschließlich verdeckte Empfänger (Bcc). Trotzdem senden?",
+                        "This message contains only blind carbon copy (Bcc) recipients. Send anyway?",
                     ),
                 );
                 alert.add_responses(&[
@@ -5180,9 +5180,9 @@ impl ComposeDialog {
             return;
         }
         let file_dialog = gtk::FileDialog::builder()
-            .title("Als EML speichern")
-            .accept_label("Speichern")
-            .initial_name("Nachricht.eml")
+            .title("Save as EML")
+            .accept_label("Save")
+            .initial_name("Message.eml")
             .modal(true)
             .build();
         let parent_win = self.root().and_downcast::<gtk::Window>();
@@ -5199,7 +5199,7 @@ impl ComposeDialog {
             };
             if dialog.imp().autosave_in_progress.get() {
                 dialog.show_toast(
-                    "Automatisches Speichern läuft noch; EML-Export startet danach erneut",
+                    "Autosave is still in progress; EML export will restart afterwards",
                 );
                 return;
             }
@@ -5208,10 +5208,10 @@ impl ComposeDialog {
             else {
                 return;
             };
-            dialog.set_operation_status(operation_id, "Nachricht wird für EML vorbereitet…", true);
+            dialog.set_operation_status(operation_id, "Preparing message for EML…", true);
             let Some(editor) = dialog.imp().html_editor.borrow().as_ref().cloned() else {
                 dialog.finish_operation(operation_id);
-                dialog.show_toast("EML-Export konnte den Editor nicht lesen");
+                dialog.show_toast("EML export could not read the editor");
                 return;
             };
             let dialog_weak = dialog.downgrade();
@@ -5227,7 +5227,7 @@ impl ComposeDialog {
                     Err(error) => {
                         dialog.finish_operation(operation_id);
                         dialog.show_toast(&format!(
-                            "EML-Export konnte den Nachrichtentext nicht lesen: {error}"
+                            "EML export could not read message body: {error}"
                         ));
                         return;
                     }
@@ -5237,7 +5237,7 @@ impl ComposeDialog {
                     Ok(outgoing) => outgoing,
                     Err(error) => {
                         dialog.finish_operation(operation_id);
-                        dialog.show_toast(&format!("EML-Export nicht möglich: {error}"));
+                        dialog.show_toast(&format!("EML export not possible: {error}"));
                         return;
                     }
                 };
@@ -5285,7 +5285,7 @@ impl ComposeDialog {
                                 && dialog.is_current_operation(operation_id)
                             {
                                 dialog.finish_operation(operation_id);
-                                dialog.show_toast("EML-Export abgebrochen");
+                                dialog.show_toast("EML export cancelled");
                             }
                         }
                         Ok(EmlWorkerEvent::Finished(result)) => {
@@ -5295,11 +5295,11 @@ impl ComposeDialog {
                                 dialog.finish_operation(operation_id);
                                 match result {
                                     Ok(()) => {
-                                        dialog.show_toast("Nachricht als EML gespeichert");
+                                        dialog.show_toast("Message saved as EML");
                                     }
                                     Err(error) => {
                                         dialog.show_toast(&format!(
-                                            "EML-Export fehlgeschlagen; Nachricht bleibt geöffnet: {error}"
+                                            "EML export failed; message remains open: {error}"
                                         ));
                                     }
                                 }
@@ -5311,7 +5311,7 @@ impl ComposeDialog {
                             {
                                 dialog.finish_operation(operation_id);
                                 dialog.show_toast(&format!(
-                                    "EML-Export abgebrochen; Nachricht bleibt geöffnet: {error}"
+                                    "EML export cancelled; message remains open: {error}"
                                 ));
                             }
                         }
@@ -5533,7 +5533,7 @@ impl ComposeDialog {
                     if !dialog.imp().autosave_error_shown.get() {
                         dialog.imp().autosave_error_shown.set(true);
                         dialog.show_toast(&format!(
-                            "Automatisches Speichern konnte den Entwurf nicht lesen: {error}"
+                            "Autosave could not read draft: {error}"
                         ));
                     }
                     return;
@@ -5586,7 +5586,7 @@ impl ComposeDialog {
                 let result = match store.save_if_matches(expected_draft.as_ref(), draft.clone()) {
                     Ok(true) => Ok(draft),
                     Ok(false) => Err(
-                        "Entwurf wurde zwischenzeitlich geändert; die neuere Recovery-Version bleibt erhalten"
+                        "Draft was modified in the meantime; the newer recovery version is preserved"
                             .to_string(),
                     ),
                     Err(error) => Err(error.to_string()),
@@ -5619,7 +5619,7 @@ impl ComposeDialog {
                             if let Some(button) = dialog.imp().save_draft_button.borrow().as_ref() {
                                 button.emit_clicked();
                             } else if dialog.imp().close_after_save.replace(false) {
-                                dialog.show_toast("Entwurf gespeichert");
+                                dialog.show_toast("Draft saved");
                                 dialog.imp().close_confirmed.set(true);
                                 dialog.set_can_close(true);
                                 dialog.close();
@@ -5631,7 +5631,7 @@ impl ComposeDialog {
                             dialog.imp().autosave_error_shown.set(true);
                             tracing::warn!(%error, "Could not autosave local draft");
                             dialog.show_toast(&format!(
-                                "Automatisches Speichern fehlgeschlagen; der Entwurf bleibt geöffnet: {error}"
+                                "Autosave failed; draft remains open: {error}"
                             ));
                         }
                     }
@@ -5712,7 +5712,7 @@ impl ComposeDialog {
         self.imp().transport_started.set(true);
         self.set_operation_status(
             operation_id,
-            "Übertragung läuft; ein Abbruch ist jetzt nicht mehr möglich…",
+            "Transmission in progress; cancellation is no longer possible…",
             false,
         );
     }
@@ -5731,7 +5731,7 @@ impl ComposeDialog {
                 .is_some_and(|cancel| cancel.is_committed())
         {
             self.show_toast(
-                "Der Transport läuft bereits; ein Abbruch ist technisch nicht mehr möglich",
+                "Transport is already in progress; cancellation is no longer technically possible",
             );
             return;
         }
@@ -5744,7 +5744,7 @@ impl ComposeDialog {
             button.set_sensitive(false);
         }
         if let Some(label) = imp.operation_status.borrow().as_ref() {
-            label.set_text("Abbruch wird verarbeitet…");
+            label.set_text("Processing cancellation…");
         }
     }
 
@@ -7229,12 +7229,12 @@ fn compose_identities_for_profile(profile: AccountProfile) -> Vec<ComposeIdentit
                 let (label, from) =
                     if display_name.is_empty() || display_name.eq_ignore_ascii_case(&alias) {
                         (
-                            format!("{} · Alias von {}", alias, primary_address),
+                            format!("{} · Alias of {}", alias, primary_address),
                             alias.clone(),
                         )
                     } else {
                         (
-                            format!("{} <{}> · Alias von {}", display_name, alias, primary_address),
+                            format!("{} <{}> · Alias of {}", display_name, alias, primary_address),
                             format!("{} <{}>", display_name, alias),
                         )
                     };
@@ -7604,21 +7604,21 @@ fn reply_body_html_with_style(
     if style == "inline" {
         let mut headers = Vec::new();
         if !sender.trim().is_empty() {
-            headers.push(format!("Von: {}", html_escape(sender.trim())));
+            headers.push(format!("From: {}", html_escape(sender.trim())));
         }
         if !date.trim().is_empty() {
-            headers.push(format!("Datum: {}", html_escape(date.trim())));
+            headers.push(format!("Date: {}", html_escape(date.trim())));
         }
         if !original_to.trim().is_empty() {
-            headers.push(format!("An: {}", html_escape(original_to.trim())));
+            headers.push(format!("To: {}", html_escape(original_to.trim())));
         }
         if !original_cc.trim().is_empty() {
             headers.push(format!("Cc: {}", html_escape(original_cc.trim())));
         }
         let header_block = if headers.is_empty() {
-            "Ursprüngliche Nachricht:".to_string()
+            "Original Message:".to_string()
         } else {
-            format!("Ursprüngliche Nachricht:<br>{}", headers.join("<br>"))
+            format!("Original Message:<br>{}", headers.join("<br>"))
         };
         let quoted = prepare_quote_html(original_html);
         return if quoted.trim().is_empty() {
@@ -7682,22 +7682,22 @@ fn forward_body_html_with_style(
 
     let mut headers = Vec::new();
     if !sender.trim().is_empty() {
-        headers.push(format!("Von: {}", html_escape(sender.trim())));
+        headers.push(format!("From: {}", html_escape(sender.trim())));
     }
     if !date.trim().is_empty() {
-        headers.push(format!("Datum: {}", html_escape(date.trim())));
+        headers.push(format!("Date: {}", html_escape(date.trim())));
     }
     if !recipient_to.trim().is_empty() {
-        headers.push(format!("An: {}", html_escape(recipient_to.trim())));
+        headers.push(format!("To: {}", html_escape(recipient_to.trim())));
     }
     if !recipient_cc.trim().is_empty() {
         headers.push(format!("Cc: {}", html_escape(recipient_cc.trim())));
     }
 
     let header_block = if headers.is_empty() {
-        "Weitergeleitete Nachricht:".to_string()
+        "Forwarded Message:".to_string()
     } else {
-        format!("Weitergeleitete Nachricht:<br>{}", headers.join("<br>"))
+        format!("Forwarded Message:<br>{}", headers.join("<br>"))
     };
 
     if quote_style == "none" {
@@ -7772,7 +7772,7 @@ fn signature_delimiter_html() -> String {
 fn load_signature_choices() -> Vec<SignatureChoice> {
     let mut choices = vec![SignatureChoice {
         id: None,
-        name: "Keine".to_string(),
+        name: "None".to_string(),
         html: String::new(),
     }];
 
@@ -9833,8 +9833,8 @@ mod tests {
         assert!(inline.contains("<p>Hello<br/>World</p>") || inline.contains("<p>Hello<br>World</p>"));
         assert!(!inline.contains("&gt; Hello"));
         assert!(quoted.contains("&gt; Hello<br>&gt; World"));
-        assert!(inline.contains("Weitergeleitete Nachricht:"));
-        assert!(quoted.contains("Weitergeleitete Nachricht:"));
+        assert!(inline.contains("Forwarded Message:"));
+        assert!(quoted.contains("Forwarded Message:"));
     }
 
     #[test]
@@ -9864,8 +9864,8 @@ mod tests {
             "none",
         );
 
-        assert!(inline.contains("Ursprüngliche Nachricht:"));
-        assert!(inline.contains("Von: Ada &lt;ada@example.test&gt;"));
+        assert!(inline.contains("Original Message:"));
+        assert!(inline.contains("From: Ada &lt;ada@example.test&gt;"));
         assert!(inline.contains("<p>Hello<br/>World</p>") || inline.contains("<p>Hello<br>World</p>"));
         assert!(quoted.contains("Ada") && (quoted.contains("schrieb") || quoted.contains("wrote")));
         assert!(quoted.contains("&gt; Hello<br>&gt; World"));
@@ -9984,7 +9984,7 @@ mod tests {
         assert_eq!(identities.len(), 2);
         assert_eq!(identities[0].from, "Person <person@example.org>");
         assert_eq!(identities[1].from, "Person <alias@example.org>");
-        assert!(identities[1].label.contains("Alias von person@example.org"));
+        assert!(identities[1].label.contains("Alias of person@example.org"));
         assert!(compose_identity_matches_from(
             &identities[1],
             "alias@example.org"
@@ -10126,7 +10126,7 @@ mod tests {
     fn signature_choices_always_include_none_as_first_choice() {
         let choices = load_signature_choices();
         assert!(!choices.is_empty());
-        assert_eq!(choices[0].name, "Keine");
+        assert_eq!(choices[0].name, "None");
         assert_eq!(choices[0].id, None);
         assert!(choices[0].html.is_empty());
         assert!(

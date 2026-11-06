@@ -62,7 +62,7 @@ impl ImportDialog {
     }
 
     fn build_ui(&self) {
-        self.set_title("Daten importieren");
+        self.set_title("Import Data");
         self.set_content_width(520);
         self.set_content_height(420);
 
@@ -97,13 +97,13 @@ impl ImportDialog {
         let page = adw::PreferencesPage::new();
 
         let group = adw::PreferencesGroup::builder()
-            .title("Quelldatei und Ziel")
-            .description("Wählen Sie eine iCalendar- (.ics, .vcs), Kontakt- (.vcf, .csv, .ldif) oder Mail-Datei (.mbox / .eml) für den Import aus.")
+            .title("Source File and Target")
+            .description("Choose an iCalendar (.ics, .vcs), contact (.vcf, .csv, .ldif), or mail (.mbox / .eml) file to import.")
             .build();
 
         let file_row = adw::ActionRow::builder()
-            .title("Zu importierende Datei")
-            .subtitle("Keine Datei ausgewählt")
+            .title("File to Import")
+            .subtitle("No file selected")
             .build();
         let icon_file = gtk::Image::builder()
             .icon_name("document-open-symbolic")
@@ -112,7 +112,7 @@ impl ImportDialog {
         file_row.add_prefix(&icon_file);
 
         let choose_file_btn = gtk::Button::builder()
-            .label("Durchsuchen …")
+            .label("Browse…")
             .valign(gtk::Align::Center)
             .build();
 
@@ -126,13 +126,13 @@ impl ImportDialog {
             let file_row_inner = file_row_weak.clone();
 
             let file_dialog = gtk::FileDialog::builder()
-                .title("Importdatei auswählen")
+                .title("Select Import File")
                 .modal(true)
                 .build();
 
             let filter = gtk::FileFilter::new();
             filter.set_name(Some(
-                "Unterstützte Formate (*.ics, *.vcs, *.vcf, *.vcard, *.csv, *.ldif, *.ldi, *.mbox, *.eml)",
+                "Supported Formats (*.ics, *.vcs, *.vcf, *.vcard, *.csv, *.ldif, *.ldi, *.mbox, *.eml)",
             ));
             filter.add_pattern("*.ics");
             filter.add_pattern("*.vcs");
@@ -157,7 +157,7 @@ impl ImportDialog {
                                 let filename = path
                                     .file_name()
                                     .and_then(|n| n.to_str())
-                                    .unwrap_or("Ausgewählt");
+                                    .unwrap_or("Selected");
                                 row.set_subtitle(filename);
                             }
                             dialog.auto_select_target_for_path(&path);
@@ -170,8 +170,8 @@ impl ImportDialog {
         group.add(&file_row);
 
         let preview_row = adw::ActionRow::builder()
-            .title("Gefundene Einträge")
-            .subtitle("Noch keine Datei geladen")
+            .title("Detected Items")
+            .subtitle("No file loaded yet")
             .build();
         let icon_preview = gtk::Image::builder()
             .icon_name("view-list-symbolic")
@@ -182,13 +182,13 @@ impl ImportDialog {
         *self.imp().preview_row.borrow_mut() = Some(preview_row);
 
         let target_combo = adw::ComboRow::builder()
-            .title("Zielkomponente")
+            .title("Target Component")
             .model(&gtk::StringList::new(&[
-                "Kalender / Termine (.ics, .vcs)",
-                "Aufgaben / Tasks (.ics, .vcs)",
-                "Memos / Notizen (.ics, .vcs)",
-                "Kontakte / Adressbuch (.vcf, .csv, .ldif)",
-                "E-Mail / Posteingang (.mbox / .eml)",
+                "Calendar / Events (.ics, .vcs)",
+                "Tasks (.ics, .vcs)",
+                "Memos / Notes (.ics, .vcs)",
+                "Contacts / Address Book (.vcf, .csv, .ldif)",
+                "Mail / Inbox (.mbox / .eml)",
             ]))
             .build();
         let icon_target = gtk::Image::builder()
@@ -200,11 +200,11 @@ impl ImportDialog {
         *self.imp().target_combo.borrow_mut() = Some(target_combo);
 
         let policy_combo = adw::ComboRow::builder()
-            .title("Duplikat-Behandlung")
+            .title("Duplicate Handling")
             .model(&gtk::StringList::new(&[
-                "Beide behalten (neue Kennung vergeben)",
-                "Bestehende Einträge überschreiben",
-                "Bereits vorhandene Einträge überspringen",
+                "Keep both (assign new ID)",
+                "Overwrite existing items",
+                "Skip existing items",
             ]))
             .visible(false)
             .build();
@@ -260,7 +260,7 @@ impl ImportDialog {
                     );
                     preview_row.set_subtitle(&plan.summary_label());
                 } else {
-                    preview_row.set_subtitle("Datei konnte nicht gelesen werden");
+                    preview_row.set_subtitle("Could not read file");
                 }
             } else if is_contact {
                 let existing = ContactStoreService::new()
@@ -276,9 +276,9 @@ impl ImportDialog {
                 );
                 preview_row.set_subtitle(&plan.summary_label());
             } else if ext == "mbox" || ext == "eml" {
-                preview_row.set_subtitle("E-Mail-Nachrichtenarchiv bereit für Import");
+                preview_row.set_subtitle("Mail message archive ready for import");
             } else {
-                preview_row.set_subtitle("Format bereit für Import");
+                preview_row.set_subtitle("Format ready for import");
             }
         }
     }

@@ -27,7 +27,7 @@ impl ManageGroupsDialog {
         F: Fn(SourceSelector) + 'static,
     {
         let dialog = adw::Dialog::builder()
-            .title(format!("{domain_label}-Gruppen verwalten"))
+            .title(format!("Manage {domain_label} Groups"))
             .content_width(480)
             .content_height(520)
             .build();
@@ -79,8 +79,8 @@ impl ManageGroupsDialog {
 
         // 1. Groups preference group
         let groups_pref = adw::PreferencesGroup::builder()
-            .title("Quellengruppen")
-            .description("Legen Sie die Reihenfolge und Sichtbarkeit der Quellengruppen fest.")
+            .title("Source Groups")
+            .description("Set the order and visibility of source groups.")
             .build();
 
         let list_box = gtk::ListBox::builder()
@@ -94,12 +94,12 @@ impl ManageGroupsDialog {
 
         // 2. Add custom group preference group
         let add_pref = adw::PreferencesGroup::builder()
-            .title("Neue Gruppe")
-            .description("Fügen Sie eine neue benutzerdefinierte Quellengruppe hinzu.")
+            .title("New Group")
+            .description("Add a new custom source group.")
             .build();
 
         let add_row = adw::EntryRow::builder()
-            .title("Gruppenname")
+            .title("Group Name")
             .show_apply_button(true)
             .build();
         let add_icon = gtk::Image::builder()
@@ -110,7 +110,7 @@ impl ManageGroupsDialog {
 
         let add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Gruppe hinzufügen")
+            .tooltip_text("Add group")
             .css_classes(vec!["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
@@ -155,7 +155,7 @@ impl ManageGroupsDialog {
 
         // 3. Info notice
         let info_pref = adw::PreferencesGroup::builder()
-            .description("Hinweis: Das Ausblenden einer Gruppe blendet alle darin enthaltenen Quellen aus und hebt deren Auswahl in den Ansichten auf.")
+            .description("Note: Hiding a group hides all sources it contains and deselects them in the views.")
             .build();
         content_box.append(&info_pref);
 
@@ -197,8 +197,8 @@ fn rebuild_groups_list(
 
     if total == 0 {
         let empty_row = adw::ActionRow::builder()
-            .title("Keine Gruppen vorhanden")
-            .subtitle("Fügen Sie unten eine neue Gruppe hinzu.")
+            .title("No groups available")
+            .subtitle("Add a new group below.")
             .build();
         list_box.append(&empty_row);
         return;
@@ -215,7 +215,7 @@ fn rebuild_groups_list(
             format!("{} {domain_label}", group.source_count)
         };
         let subtitle = if group.is_custom {
-            format!("{count_text} • Benutzerdefiniert")
+            format!("{count_text} • Custom")
         } else {
             count_text
         };
@@ -241,7 +241,7 @@ fn rebuild_groups_list(
         let switch = gtk::Switch::builder()
             .active(!group.is_hidden)
             .valign(gtk::Align::Center)
-            .tooltip_text("Gruppe ein- oder ausblenden")
+            .tooltip_text("Show or hide group")
             .build();
 
         let ws_switch = Rc::clone(working_selector);
@@ -256,7 +256,7 @@ fn rebuild_groups_list(
         // Move Up button
         let up_btn = gtk::Button::builder()
             .icon_name("go-up-symbolic")
-            .tooltip_text("Gruppe nach oben verschieben")
+            .tooltip_text("Move group up")
             .sensitive(index > 0)
             .css_classes(vec!["flat", "circular"])
             .valign(gtk::Align::Center)
@@ -277,7 +277,7 @@ fn rebuild_groups_list(
         // Move Down button
         let down_btn = gtk::Button::builder()
             .icon_name("go-down-symbolic")
-            .tooltip_text("Gruppe nach unten verschieben")
+            .tooltip_text("Move group down")
             .sensitive(index + 1 < total)
             .css_classes(vec!["flat", "circular"])
             .valign(gtk::Align::Center)
@@ -299,7 +299,7 @@ fn rebuild_groups_list(
         if group.is_custom {
             let del_btn = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
-                .tooltip_text("Benutzerdefinierte Gruppe löschen")
+                .tooltip_text("Delete custom group")
                 .css_classes(vec!["flat", "circular", "destructive-action"])
                 .valign(gtk::Align::Center)
                 .build();

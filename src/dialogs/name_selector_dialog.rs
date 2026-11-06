@@ -168,7 +168,7 @@ impl NameSelectorDialog {
         F: FnOnce(String, String, String) + 'static,
     {
         let dialog: Self = glib::Object::builder()
-            .property("title", "Empfänger auswählen")
+            .property("title", "Select Recipients")
             .property("content-width", 780)
             .property("content-height", 540)
             .build();
@@ -244,12 +244,12 @@ impl NameSelectorDialog {
             .spacing(8)
             .build();
         let search_label = gtk::Label::builder()
-            .label("Suchen:")
+            .label("Search:")
             .css_classes(vec!["dim-label"])
             .build();
         let search_entry = gtk::SearchEntry::builder()
             .hexpand(true)
-            .placeholder_text("Kontakte nach Name oder E-Mail filtern…")
+            .placeholder_text("Filter contacts by name or email…")
             .build();
         search_box.append(&search_label);
         search_box.append(&search_entry);
@@ -273,7 +273,7 @@ impl NameSelectorDialog {
             .spacing(4)
             .build();
         let contacts_header = gtk::Label::builder()
-            .label("<b>Kontakte</b>")
+            .label("<b>Contacts</b>")
             .use_markup(true)
             .xalign(0.0)
             .margin_start(8)
@@ -305,16 +305,16 @@ impl NameSelectorDialog {
             .build();
 
         let btn_to = gtk::Button::builder()
-            .label("An ->")
-            .tooltip_text("Ausgewählten Kontakt zu 'An' hinzufügen")
+            .label("To ->")
+            .tooltip_text("Add selected contact to 'To'")
             .build();
         let btn_cc = gtk::Button::builder()
             .label("Cc ->")
-            .tooltip_text("Ausgewählten Kontakt zu 'Cc' hinzufügen")
+            .tooltip_text("Add selected contact to 'Cc'")
             .build();
         let btn_bcc = gtk::Button::builder()
             .label("Bcc ->")
-            .tooltip_text("Ausgewählten Kontakt zu 'Bcc' hinzufügen")
+            .tooltip_text("Add selected contact to 'Bcc'")
             .build();
 
         button_box.append(&btn_to);
@@ -330,7 +330,7 @@ impl NameSelectorDialog {
             .vexpand(true)
             .build();
 
-        let (to_container, list_to) = Self::create_destination_group("An:");
+        let (to_container, list_to) = Self::create_destination_group("To:");
         let (cc_container, list_cc) = Self::create_destination_group("Cc:");
         let (bcc_container, list_bcc) = Self::create_destination_group("Bcc:");
 
@@ -524,7 +524,7 @@ impl NameSelectorDialog {
                 } else if !contact.list_name.is_empty() {
                     &contact.list_name
                 } else {
-                    "(Ohne Name)"
+                    "(Unnamed)"
                 })
                 .xalign(0.0)
                 .build();
@@ -535,7 +535,7 @@ impl NameSelectorDialog {
             } else if let Some(first) = contact.emails.first() {
                 first.clone()
             } else if contact.is_list {
-                format!("{} Mitglieder", contact.list_members.len())
+                format!("{} members", contact.list_members.len())
             } else {
                 String::new()
             };
@@ -587,7 +587,7 @@ impl NameSelectorDialog {
             let remove_btn = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
                 .css_classes(vec!["flat", "circular"])
-                .tooltip_text("Empfänger entfernen")
+                .tooltip_text("Remove recipient")
                 .build();
 
             let dialog_weak = dialog.downgrade();

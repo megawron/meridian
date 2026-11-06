@@ -67,7 +67,7 @@ glib::wrapper! {
 impl GlobalSearchDialog {
     pub fn new() -> Self {
         glib::Object::builder()
-            .property("title", "Globale Suche")
+            .property("title", "Global Search")
             .property("content-width", 760)
             .property("content-height", 600)
             .build()
@@ -78,21 +78,21 @@ impl GlobalSearchDialog {
         let header_bar = adw::HeaderBar::new();
         let search_entry = gtk::SearchEntry::builder()
             .placeholder_text(
-                "Mail, Kalender, Aufgaben, Notizen oder Kontakte durchsuchen (on:2026-08-11, after:7d)…",
+                "Search mail, calendar, tasks, memos, or contacts (on:2026-08-11, after:7d)…",
             )
             .hexpand(true)
             .build();
         let domain_selector = gtk::DropDown::new(
             Some(gtk::StringList::new(&[
-                "Alle",
+                "All",
                 "Mail",
-                "Kalender / Aufgaben / Notizen",
-                "Kontakte",
+                "Calendar / Tasks / Memos",
+                "Contacts",
             ])),
             None::<&gtk::Expression>,
         );
         domain_selector.set_selected(0);
-        domain_selector.set_tooltip_text(Some("Suchbereich auswählen"));
+        domain_selector.set_tooltip_text(Some("Select search scope"));
         let header_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -155,8 +155,8 @@ impl GlobalSearchDialog {
         ));
         search_entry.grab_focus();
         self.set_status(
-            "Portable Suche über lokale Mail-, Kalender-, Aufgaben-, Notizen- und Kontaktdaten. \
-             Serverseitige Kontosuche wird auf Linux separat aktiviert.",
+            "Portable search across local mail, calendar, task, memo, and contact data. \
+             Server-side account search is enabled separately on Linux.",
         );
     }
 
@@ -179,13 +179,13 @@ impl GlobalSearchDialog {
         let query = query.trim();
         if query.is_empty() {
             self.set_status(
-                "Suchbegriff eingeben. Durchsucht werden die app-eigenen lokalen Datenbestände.",
+                "Enter a search term. Searches the app-owned local data stores.",
             );
             return;
         }
 
         let domain = *self.imp().domain.borrow();
-        self.set_status("Lokale Datenbestände werden durchsucht …");
+        self.set_status("Searching local data stores…");
         let query = query.to_string();
         let dialog = self.downgrade();
         let debounce = glib::timeout_add_local_once(Duration::from_millis(120), move || {
@@ -256,13 +256,14 @@ impl GlobalSearchDialog {
             return;
         };
         if results.is_empty() {
-            self.set_status(&format!("Keine lokalen Treffer für „{query}“."));
+            self.set_status(&format!("No local matches for \"{query}\"."));
             return;
         }
 
         self.set_status(&format!(
-            "{} lokale Treffer für „{query}“ — die Kontosuche bleibt auf Linux separat.",
-            results.len()
+            "{} local match{} for \"{query}\" — account search remains separate on Linux.",
+            results.len(),
+            if results.len() == 1 { "" } else { "es" }
         ));
         for result in results {
             list.append(&self.result_row(&result));
@@ -271,15 +272,15 @@ impl GlobalSearchDialog {
 
     fn result_row(&self, result: &SearchResultItem) -> adw::ActionRow {
         let title = if result.title.trim().is_empty() {
-            "(Ohne Titel)"
+            "(Untitled)"
         } else {
             result.title.trim()
         };
         let mut subtitle = match result.domain {
             SearchDomain::Mail => "Mail".to_string(),
-            SearchDomain::Contacts => "Kontakt".to_string(),
-            SearchDomain::Calendar => "Kalender / Aufgabe / Notiz".to_string(),
-            SearchDomain::All => "Lokaler Treffer".to_string(),
+            SearchDomain::Contacts => "Contact".to_string(),
+            SearchDomain::Calendar => "Calendar / Task / Memo".to_string(),
+            SearchDomain::All => "Local Match".to_string(),
         };
         if !result.date.trim().is_empty() {
             subtitle.push_str(" · ");
@@ -292,7 +293,7 @@ impl GlobalSearchDialog {
         }
         let target = search_result_activation_target(result);
         if target.is_none() {
-            subtitle.push_str(" · Nicht verfügbar");
+            subtitle.push_str(" · Unavailable");
         }
         let row = adw::ActionRow::builder()
             .title(title)
@@ -441,17 +442,17 @@ mod tests {
         let dialog = GlobalSearchDialog::new();
         let unavailable = SearchResultItem {
             domain: SearchDomain::All,
-            title: "Unverfügbarer Treffer".to_string(),
-            snippet: "Keine Zielidentität".to_string(),
+            title: "Unavailable match".to_string(),
+            snippet: "No target identity".to_string(),
             date: String::new(),
             target: None,
         };
 
         let row = dialog.result_row(&unavailable);
-        assert_eq!(row.title().as_str(), "Unverfügbarer Treffer");
+        assert_eq!(row.title().as_str(), "Unavailable match");
         assert!(
             row.subtitle()
-                .is_some_and(|subtitle| subtitle.contains("Nicht verfügbar"))
+                .is_some_and(|subtitle| subtitle.contains("Unavailable"))
         );
         assert!(!row.is_activatable());
         assert!(!has_instance_signal_handler(&row, "activated"));

@@ -27,26 +27,26 @@ impl CalendarPurgeOutcome {
 
     pub(crate) fn message(&self) -> String {
         let mut parts = vec![match self.confirmed.removed_count {
-            0 => "Keine alten lokalen Termine gelöscht".to_string(),
-            1 => "Ein alter lokaler Termin wurde gelöscht".to_string(),
-            count => format!("{count} alte lokale Termine wurden gelöscht"),
+            0 => "No old local events deleted".to_string(),
+            1 => "1 old local event deleted".to_string(),
+            count => format!("{count} old local events deleted"),
         }];
         if self.confirmed.skipped_recurring_count > 0 {
             parts.push(format!(
-                "{} Serien/Instanzen oder mehrdeutige UIDs wurden sicherheitshalber beibehalten",
+                "{} recurring series/instances or ambiguous UIDs were kept for safety",
                 self.confirmed.skipped_recurring_count
             ));
         }
         if self.confirmed.skipped_invalid_count > 0 {
             parts.push(format!(
-                "{} Termine ohne sicher auswertbares Ende wurden beibehalten",
+                "{} events without a safely evaluable end time were kept",
                 self.confirmed.skipped_invalid_count
             ));
         }
         if self.cancelled {
-            parts.push("Bereinigung wurde abgebrochen".to_string());
+            parts.push("Purge cancelled".to_string());
         } else if let Some(error) = self.error.as_deref() {
-            parts.push(format!("Fehler: {error}"));
+            parts.push(format!("Error: {error}"));
         }
         parts.join(". ")
     }
@@ -109,7 +109,7 @@ impl CalendarPurgeDialog {
     }
 
     fn build_ui(&self) {
-        self.set_title("Vergangene Termine löschen");
+        self.set_title("Purge Past Events");
         self.set_content_width(480);
         self.set_content_height(340);
 
@@ -138,8 +138,8 @@ impl CalendarPurgeDialog {
         self.imp().cancel_button.replace(Some(cancel));
 
         let days_row = adw::SpinRow::with_range(0.0, 1000.0, 1.0);
-        days_row.set_title("Termine löschen, die älter sind als");
-        days_row.set_subtitle("Tage");
+        days_row.set_title("Delete events older than");
+        days_row.set_subtitle("Days");
         days_row.set_value(60.0);
         let days_icon = gtk::Image::builder()
             .icon_name("preferences-system-time-symbolic")
@@ -159,7 +159,7 @@ impl CalendarPurgeDialog {
             move |_| {
                 let Some(cutoff) = purge_cutoff(Local::now().timestamp(), days_row.value() as i32)
                 else {
-                    dialog.set_status("Der gewählte Zeitraum ist ungültig", true);
+                    dialog.set_status("The selected time range is invalid", true);
                     return;
                 };
                 dialog.execute_purge(cutoff);
@@ -171,8 +171,8 @@ impl CalendarPurgeDialog {
 
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::builder()
-            .title("Vergangene Termine bereinigen")
-            .description("Diese Aktion löscht endgültig alte Einzeltermine aus dem app-eigenen lokalen Kalender. Synchronisierte Kalender und Terminserien werden in diesem portablen Pfad nicht verändert.")
+            .title("Purge Past Events")
+            .description("This action permanently deletes old single events from the app-owned local calendar. Synchronized calendars and recurring event series are not modified in this portable path.")
             .build();
         group.add(&days_row);
 
@@ -195,7 +195,7 @@ impl CalendarPurgeDialog {
             if let Some(cancellation) = dialog.imp().cancellation.borrow().as_ref() {
                 cancellation.store(true, Ordering::Relaxed);
             }
-            dialog.set_status("Bereinigung wird abgebrochen …", false);
+            dialog.set_status("Canceling purge…", false);
         });
 
         toolbar.set_content(Some(&page));
@@ -214,7 +214,7 @@ impl CalendarPurgeDialog {
             button.set_sensitive(true);
             button.set_label(&gettext("Cancel"));
         }
-        self.set_status("Lokale Termine werden geprüft …", false);
+        self.set_status("Checking local events…", false);
 
         let cancellation = Arc::new(AtomicBool::new(false));
         self.imp()
@@ -256,7 +256,7 @@ impl CalendarPurgeDialog {
             }
             if let Some(button) = dialog.imp().cancel_button.borrow().as_ref() {
                 button.set_sensitive(true);
-                button.set_label("Schließen");
+                button.set_label("Close");
             }
             let message = outcome.message();
             dialog.set_status(&message, outcome.error.is_some());
@@ -321,11 +321,11 @@ mod tests {
             cancelled: false,
         };
         let message = outcome.message();
-        assert!(message.contains("Ein alter lokaler Termin wurde gelöscht"));
+        assert!(message.contains("1 old local event deleted"));
         assert!(message.contains(
-            "2 Serien/Instanzen oder mehrdeutige UIDs wurden sicherheitshalber beibehalten"
+            "2 recurring series/instances or ambiguous UIDs were kept for safety"
         ));
-        assert!(message.contains("1 Termine ohne sicher auswertbares Ende"));
+        assert!(message.contains("1 events without a safely evaluable end time"));
         assert!(outcome.changed());
     }
 }

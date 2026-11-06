@@ -15,7 +15,7 @@ use crate::services::contact_search_service::{
     ContactSearchOperator, ContactSearchQuery, operators_for_field, parse_query_text,
 };
 
-const FIELD_LABELS: [&str; 5] = ["Name", "E-Mail", "Telefon", "Kategorie", "Alle Felder"];
+const FIELD_LABELS: [&str; 5] = ["Name", "Email", "Phone", "Category", "All Fields"];
 
 #[derive(Clone)]
 pub struct ClauseRow {
@@ -92,7 +92,7 @@ impl ContactSearchDialog {
         F: Fn(ContactSearchQuery) + 'static,
     {
         let dialog: Self = glib::Object::builder()
-            .property("title", "Erweiterte Kontaktsuche")
+            .property("title", "Advanced Contact Search")
             .property("content-width", 760)
             .property("content-height", 580)
             .build();
@@ -107,7 +107,7 @@ impl ContactSearchDialog {
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(
             &gtk::Label::builder()
-                .label("Erweiterte Kontaktsuche")
+                .label("Advanced Contact Search")
                 .css_classes(vec!["title-4"])
                 .build(),
         ));
@@ -123,7 +123,7 @@ impl ContactSearchDialog {
             .build();
 
         let intro = gtk::Label::builder()
-            .label("Die Bedingungen werden als portable Kontaktsuche ausgewertet. Quelle und Seitenfilter bleiben äußere Filter.")
+            .label("Conditions are evaluated as a portable contact search. Source and sidebar filters remain outer filters.")
             .wrap(true)
             .halign(gtk::Align::Start)
             .css_classes(vec!["dim-label"])
@@ -138,10 +138,10 @@ impl ContactSearchDialog {
             None::<&gtk::Expression>,
         );
         group.set_selected(0);
-        group.set_tooltip_text(Some("Bedingungen mit UND oder ODER verbinden"));
+        group.set_tooltip_text(Some("Combine conditions with AND or OR"));
         let group_row = adw::ActionRow::builder()
-            .title("Bedingungen verbinden")
-            .subtitle("Alle oder mindestens eine Bedingung")
+            .title("Combine conditions")
+            .subtitle("Match all or at least one condition")
             .build();
         group_row.add_suffix(&group);
         content.append(&group_row);
@@ -157,7 +157,7 @@ impl ContactSearchDialog {
         content.append(&rows_box);
 
         let add_clause = gtk::Button::builder()
-            .label("Bedingung hinzufügen")
+            .label("Add Condition")
             .icon_name("list-add-symbolic")
             .halign(gtk::Align::Start)
             .css_classes(vec!["flat"])
@@ -182,27 +182,27 @@ impl ContactSearchDialog {
             .hexpand(true)
             .build();
         let raw_row = adw::ActionRow::builder()
-            .title("Portable Suchsyntax")
-            .subtitle("Nur die typisierte Syntax wird akzeptiert; GTK3-Ausdrücke werden sichtbar abgelehnt.")
+            .title("Portable Search Syntax")
+            .subtitle("Only typed syntax is accepted; GTK3 expressions are visibly rejected.")
             .build();
         raw_row.add_suffix(&raw_query);
         content.append(&raw_row);
         self.imp().raw_query.replace(Some(raw_query));
 
         let category = gtk::Entry::builder()
-            .placeholder_text("Keine äußere Kategorie")
+            .placeholder_text("No outer category")
             .hexpand(true)
             .build();
         let category_row = adw::ActionRow::builder()
-            .title("Äußerer Kategoriefilter")
-            .subtitle("Exakte Kategorie zusätzlich zu den Bedingungen")
+            .title("Outer Category Filter")
+            .subtitle("Exact category in addition to conditions")
             .build();
         category_row.add_suffix(&category);
         content.append(&category_row);
         self.imp().category.replace(Some(category));
 
         let unmatched_category = gtk::CheckButton::builder()
-            .label("Nur Kontakte ohne Kategorie")
+            .label("Only contacts without category")
             .halign(gtk::Align::Start)
             .build();
         content.append(&unmatched_category);
@@ -211,7 +211,7 @@ impl ContactSearchDialog {
             .replace(Some(unmatched_category));
 
         let duplicate_only = gtk::CheckButton::builder()
-            .label("Nur Dubletten")
+            .label("Duplicates only")
             .halign(gtk::Align::Start)
             .build();
         content.append(&duplicate_only);
@@ -434,7 +434,7 @@ fn append_clause_row(
     let value_entry = gtk::Entry::builder().text(value).hexpand(true).build();
     let remove = gtk::Button::builder()
         .icon_name("list-remove-symbolic")
-        .tooltip_text("Bedingung entfernen")
+        .tooltip_text("Remove condition")
         .css_classes(vec!["flat"])
         .build();
     let root = gtk::Box::builder()

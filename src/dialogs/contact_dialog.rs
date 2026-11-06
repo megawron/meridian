@@ -104,7 +104,7 @@ glib::wrapper! {
 impl ContactDialog {
     pub fn new() -> Self {
         glib::Object::builder()
-            .property("title", "Neuer Kontakt")
+            .property("title", "New Contact")
             .property("content-width", 560)
             .property("content-height", 560)
             .build()
@@ -112,7 +112,7 @@ impl ContactDialog {
 
     pub(crate) fn new_for_list() -> Self {
         glib::Object::builder()
-            .property("title", "Neue Kontaktliste")
+            .property("title", "New Contact List")
             .property("content-width", 620)
             .property("content-height", 620)
             .property("list-mode", true)
@@ -121,7 +121,7 @@ impl ContactDialog {
 
     pub(crate) fn new_for_edit(record: &EBookContactRecord) -> Self {
         glib::Object::builder()
-            .property("title", "Kontakt bearbeiten")
+            .property("title", "Edit Contact")
             .property("content-width", 560)
             .property("content-height", 600)
             .property("edit-vcard", &record.vcard)
@@ -134,7 +134,7 @@ impl ContactDialog {
     pub(crate) fn new_for_email(name: &str, email: &str) -> Self {
         let seed = VCardContact::new(name.trim(), email.trim(), "", "").to_vcard_string();
         glib::Object::builder()
-            .property("title", "Absender zum Adressbuch hinzufügen")
+            .property("title", "Add Sender to Address Book")
             .property("content-width", 560)
             .property("content-height", 560)
             .property("edit-vcard", seed)
@@ -156,7 +156,7 @@ impl ContactDialog {
         header_bar.set_show_start_title_buttons(false);
         header_bar.set_show_end_title_buttons(false);
         let btn_cancel = gtk::Button::builder()
-            .label("Abbrechen")
+            .label("Cancel")
             .build();
         let dialog_weak_for_cancel = self.downgrade();
         btn_cancel.connect_clicked(move |_| {
@@ -167,7 +167,7 @@ impl ContactDialog {
         header_bar.pack_start(&btn_cancel);
 
         let btn_save = gtk::Button::builder()
-            .label("Speichern")
+            .label("Save")
             .css_classes(vec!["suggested-action"])
             .build();
         header_bar.pack_end(&btn_save);
@@ -197,7 +197,7 @@ impl ContactDialog {
 
         let avatar = adw::Avatar::builder()
             .size(72)
-            .text("Neuer Kontakt")
+            .text("New Contact")
             .show_initials(true)
             .build();
         name_box.append(&avatar);
@@ -206,35 +206,35 @@ impl ContactDialog {
         // Group 1: General Info (Clean & Focused like GNOME Contacts)
         let group_general = adw::PreferencesGroup::new();
 
-        let row_name = adw::EntryRow::builder().title("Vollständiger Name").build();
+        let row_name = adw::EntryRow::builder().title("Full Name").build();
         let name_details_toggle = gtk::ToggleButton::builder()
             .icon_name("pan-down-symbolic")
-            .tooltip_text("Strukturierte Namensfelder ein-/ausblenden")
+            .tooltip_text("Show/hide structured name fields")
             .css_classes(vec!["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         row_name.add_suffix(&name_details_toggle);
         group_general.add(&row_name);
 
-        let row_given_name = adw::EntryRow::builder().title("Vorname").build();
+        let row_given_name = adw::EntryRow::builder().title("First Name").build();
         row_given_name.set_visible(false);
         group_general.add(&row_given_name);
 
-        let row_family_name = adw::EntryRow::builder().title("Nachname").build();
+        let row_family_name = adw::EntryRow::builder().title("Last Name").build();
         row_family_name.set_visible(false);
         group_general.add(&row_family_name);
 
         let row_additional_name = adw::EntryRow::builder()
-            .title("Weitere Vornamen")
+            .title("Middle Name")
             .build();
         row_additional_name.set_visible(false);
         group_general.add(&row_additional_name);
 
-        let row_name_prefix = adw::EntryRow::builder().title("Namenspräfix").build();
+        let row_name_prefix = adw::EntryRow::builder().title("Name Prefix").build();
         row_name_prefix.set_visible(false);
         group_general.add(&row_name_prefix);
 
-        let row_name_suffix = adw::EntryRow::builder().title("Namenssuffix").build();
+        let row_name_suffix = adw::EntryRow::builder().title("Name Suffix").build();
         row_name_suffix.set_visible(false);
         group_general.add(&row_name_suffix);
 
@@ -265,54 +265,54 @@ impl ContactDialog {
                 let text = entry.text();
                 let trimmed = text.trim();
                 avatar.set_text(Some(if trimmed.is_empty() {
-                    "Neuer Kontakt"
+                    "New Contact"
                 } else {
                     trimmed
                 }));
             });
         }
 
-        let source_model = gtk::StringList::new(&["Adressbücher werden geladen…"]);
+        let source_model = gtk::StringList::new(&["Loading address books…"]);
         let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_row = adw::ComboRow::builder()
-            .title("Adressbuch")
+            .title("Address Book")
             .model(&source_model)
             .build();
         source_row.set_sensitive(edit_uid.is_none());
         group_general.add(&source_row);
 
         let row_org = adw::EntryRow::builder()
-            .title("Firma / Organisation")
+            .title("Company / Organization")
             .build();
         group_general.add(&row_org);
 
-        let row_title = adw::EntryRow::builder().title("Position / Titel").build();
+        let row_title = adw::EntryRow::builder().title("Job Title").build();
         group_general.add(&row_title);
 
         content_box.append(&group_general);
 
         // Group 2: Contact Methods (Progressive Email & Phone rows)
         let group_contact = adw::PreferencesGroup::builder()
-            .title("Kontaktdaten")
+            .title("Contact Information")
             .build();
 
-        let row_email1 = adw::EntryRow::builder().title("E-Mail (Privat)").build();
+        let row_email1 = adw::EntryRow::builder().title("Email (Personal)").build();
         row_email1.set_input_purpose(gtk::InputPurpose::Email);
         let btn_add_email = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Weitere E-Mail-Adresse hinzufügen")
+            .tooltip_text("Add another email address")
             .css_classes(vec!["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         row_email1.add_suffix(&btn_add_email);
         group_contact.add(&row_email1);
 
-        let row_email2 = adw::EntryRow::builder().title("E-Mail (Arbeit)").build();
+        let row_email2 = adw::EntryRow::builder().title("Email (Work)").build();
         row_email2.set_input_purpose(gtk::InputPurpose::Email);
         row_email2.set_visible(false);
         group_contact.add(&row_email2);
 
-        let row_email3 = adw::EntryRow::builder().title("E-Mail (Weitere)").build();
+        let row_email3 = adw::EntryRow::builder().title("Email (Other)").build();
         row_email3.set_input_purpose(gtk::InputPurpose::Email);
         row_email3.set_visible(false);
         group_contact.add(&row_email3);
@@ -335,23 +335,23 @@ impl ContactDialog {
             });
         }
 
-        let row_phone = adw::EntryRow::builder().title("Telefon (Mobil)").build();
+        let row_phone = adw::EntryRow::builder().title("Phone (Mobile)").build();
         row_phone.set_input_purpose(gtk::InputPurpose::Phone);
         let btn_add_phone = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Weitere Telefonnummer hinzufügen")
+            .tooltip_text("Add another phone number")
             .css_classes(vec!["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         row_phone.add_suffix(&btn_add_phone);
         group_contact.add(&row_phone);
 
-        let row_phone_work = adw::EntryRow::builder().title("Telefon (Arbeit)").build();
+        let row_phone_work = adw::EntryRow::builder().title("Phone (Work)").build();
         row_phone_work.set_input_purpose(gtk::InputPurpose::Phone);
         row_phone_work.set_visible(false);
         group_contact.add(&row_phone_work);
 
-        let row_phone_home = adw::EntryRow::builder().title("Telefon (Privat)").build();
+        let row_phone_home = adw::EntryRow::builder().title("Phone (Home)").build();
         row_phone_home.set_input_purpose(gtk::InputPurpose::Phone);
         row_phone_home.set_visible(false);
         group_contact.add(&row_phone_home);
@@ -379,7 +379,7 @@ impl ContactDialog {
         }
 
         let row_sip = adw::EntryRow::builder()
-            .title("SIP- / VoIP-Adresse")
+            .title("SIP / VoIP Address")
             .build();
         group_contact.add(&row_sip);
 
@@ -387,13 +387,13 @@ impl ContactDialog {
 
         // Group 3: Primary Extras (Address, Note, Website, Birthday)
         let group_extra = adw::PreferencesGroup::builder()
-            .title("Weitere Angaben")
+            .title("Additional Information")
             .build();
 
-        let row_address = adw::EntryRow::builder().title("Postadresse").build();
+        let row_address = adw::EntryRow::builder().title("Home Address").build();
         let btn_add_address = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Weitere Adresse hinzufügen")
+            .tooltip_text("Add another address")
             .css_classes(vec!["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
@@ -401,13 +401,13 @@ impl ContactDialog {
         group_extra.add(&row_address);
 
         let row_address_work = adw::EntryRow::builder()
-            .title("Geschäftsadresse")
+            .title("Work Address")
             .build();
         row_address_work.set_visible(false);
         group_extra.add(&row_address_work);
 
         let row_address_other = adw::EntryRow::builder()
-            .title("Weitere Adresse")
+            .title("Other Address")
             .build();
         row_address_other.set_visible(false);
         group_extra.add(&row_address_other);
@@ -434,37 +434,37 @@ impl ContactDialog {
             });
         }
 
-        let row_url = adw::EntryRow::builder().title("Webseite").build();
+        let row_url = adw::EntryRow::builder().title("Website").build();
         row_url.set_input_purpose(gtk::InputPurpose::Url);
         group_extra.add(&row_url);
 
         let row_birthday = adw::EntryRow::builder()
-            .title("Geburtstag (YYYY-MM-DD)")
+            .title("Birthday (YYYY-MM-DD)")
             .build();
         attach_entry_row_date_picker(&row_birthday);
         group_extra.add(&row_birthday);
 
-        let row_note = adw::EntryRow::builder().title("Notiz").build();
+        let row_note = adw::EntryRow::builder().title("Note").build();
         group_extra.add(&row_note);
 
         // Progressive Enhancement: Expandable row for secondary & advanced fields
         let expander_more = adw::ExpanderRow::builder()
-            .title("Mehr Details")
-            .subtitle("Spitzname, Jahrestag, Kategorien, Messenger und erweiterte Felder")
+            .title("More Details")
+            .subtitle("Nickname, anniversary, categories, messenger, and advanced fields")
             .show_enable_switch(false)
             .build();
 
-        let row_nickname = adw::EntryRow::builder().title("Spitzname").build();
+        let row_nickname = adw::EntryRow::builder().title("Nickname").build();
         expander_more.add_row(&row_nickname);
 
         let row_anniversary = adw::EntryRow::builder()
-            .title("Jahrestag (YYYY-MM-DD)")
+            .title("Anniversary (YYYY-MM-DD)")
             .build();
         attach_entry_row_date_picker(&row_anniversary);
         expander_more.add_row(&row_anniversary);
 
         let row_categories = adw::EntryRow::builder()
-            .title("Kategorien (durch Komma getrennt)")
+            .title("Categories (comma-separated)")
             .build();
         expander_more.add_row(&row_categories);
 
@@ -473,73 +473,73 @@ impl ContactDialog {
             .build();
         expander_more.add_row(&row_impp);
 
-        let row_role = adw::EntryRow::builder().title("Rolle").build();
+        let row_role = adw::EntryRow::builder().title("Role").build();
         expander_more.add_row(&row_role);
 
-        let row_evolution_manager = adw::EntryRow::builder().title("Vorgesetzter").build();
+        let row_evolution_manager = adw::EntryRow::builder().title("Manager").build();
         expander_more.add_row(&row_evolution_manager);
 
-        let row_evolution_assistant = adw::EntryRow::builder().title("Assistenz").build();
+        let row_evolution_assistant = adw::EntryRow::builder().title("Assistant").build();
         expander_more.add_row(&row_evolution_assistant);
 
-        let row_evolution_spouse = adw::EntryRow::builder().title("Partner/in").build();
+        let row_evolution_spouse = adw::EntryRow::builder().title("Spouse / Partner").build();
         expander_more.add_row(&row_evolution_spouse);
 
         let row_related = adw::EntryRow::builder()
-            .title("Verwandte Kontakte (Komma getrennt)")
+            .title("Related Contacts (comma-separated)")
             .build();
         expander_more.add_row(&row_related);
 
-        let row_gender = adw::EntryRow::builder().title("Geschlecht").build();
+        let row_gender = adw::EntryRow::builder().title("Gender").build();
         expander_more.add_row(&row_gender);
 
-        let row_timezone = adw::EntryRow::builder().title("Zeitzone").build();
+        let row_timezone = adw::EntryRow::builder().title("Time Zone").build();
         expander_more.add_row(&row_timezone);
 
         let row_geo = adw::EntryRow::builder()
-            .title("Geoposition (Breite;Länge)")
+            .title("Geo Position (lat;lon)")
             .build();
         expander_more.add_row(&row_geo);
 
         let row_photo = adw::EntryRow::builder()
-            .title("Foto (URI oder Base64)")
+            .title("Photo (URI or Base64)")
             .build();
         row_photo.set_input_purpose(gtk::InputPurpose::Url);
         expander_more.add_row(&row_photo);
 
-        let row_evolution_blog_url = adw::EntryRow::builder().title("Blog-URL").build();
+        let row_evolution_blog_url = adw::EntryRow::builder().title("Blog URL").build();
         row_evolution_blog_url.set_input_purpose(gtk::InputPurpose::Url);
         expander_more.add_row(&row_evolution_blog_url);
 
-        let row_evolution_video_url = adw::EntryRow::builder().title("Video-URL").build();
+        let row_evolution_video_url = adw::EntryRow::builder().title("Video URL").build();
         row_evolution_video_url.set_input_purpose(gtk::InputPurpose::Url);
         expander_more.add_row(&row_evolution_video_url);
 
         let row_evolution_file_as = adw::EntryRow::builder()
-            .title("Sortier-/Anzeigename")
+            .title("File As / Sort Name")
             .build();
         expander_more.add_row(&row_evolution_file_as);
 
         let row_evolution_wants_html = adw::SwitchRow::builder()
-            .title("HTML-Mail bevorzugen")
-            .subtitle("Nachrichten an diesen Kontakt bevorzugt als HTML senden")
+            .title("Prefer HTML Mail")
+            .subtitle("Prefer sending messages to this contact as HTML")
             .build();
         expander_more.add_row(&row_evolution_wants_html);
 
         let row_certs = adw::EntryRow::builder()
-            .title("S/MIME-Zertifikat")
+            .title("S/MIME Certificate")
             .build();
         expander_more.add_row(&row_certs);
 
         group_extra.add(&expander_more);
 
         let row_evolution_list = adw::SwitchRow::builder()
-            .title("Mailingliste")
-            .subtitle("Kontakt als Liste behandeln")
+            .title("Mailing List")
+            .subtitle("Treat contact as a list")
             .build();
-        let row_evolution_list_name = adw::EntryRow::builder().title("Listenname").build();
+        let row_evolution_list_name = adw::EntryRow::builder().title("List Name").build();
         let row_evolution_list_show_addresses = adw::SwitchRow::builder()
-            .title("Listenadressen anzeigen")
+            .title("Show list addresses")
             .build();
         // List editing has a dedicated member-aware UI. Keep these widgets
         // only as compatibility storage for the existing individual vCard
@@ -987,19 +987,19 @@ impl ContactDialog {
             if let Some(uid) = edit_source_uid_for_load.as_deref().filter(|uid| {
                 !uid.trim().is_empty() && !uids.iter().any(|candidate| candidate == *uid)
             }) {
-                names.push(format!("Nicht verfügbare Quelle · {uid}"));
+                names.push(format!("Unavailable Source · {uid}"));
                 uids.push(uid.to_string());
             }
             if local_addressbook_available {
-                names.push("Lokales Adressbuch".to_string());
+                names.push("Local Address Book".to_string());
                 uids.push("local-addressbook".to_string());
             }
             if names.is_empty() {
                 names.push(
                     discovery
                         .error
-                        .map(|error| format!("Adressbücher sind nicht erreichbar: {error}"))
-                        .unwrap_or_else(|| "Kein aktives Adressbuch verfügbar".to_string()),
+                        .map(|error| format!("Address books are unreachable: {error}"))
+                        .unwrap_or_else(|| "No active address book available".to_string()),
                 );
             }
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -1034,7 +1034,7 @@ impl ContactDialog {
             };
             let selected = source_row.selected() as usize;
             let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
-                dialog.show_toast("Kein aktives Adressbuch ist ausgewählt");
+                dialog.show_toast("No active address book selected");
                 return;
             };
             let extended_fields = ContactVCardFields {
@@ -1136,9 +1136,9 @@ impl ContactDialog {
                 match result {
                     Ok(result) => {
                         let message = if was_edit {
-                            format!("Kontakt aktualisiert ({})", result.uid)
+                            format!("Contact updated ({})", result.uid)
                         } else {
-                            format!("Kontakt gespeichert ({})", result.uid)
+                            format!("Contact saved ({})", result.uid)
                         };
                         if let Some(dialog) = dialog_weak_for_result.upgrade() {
                             dialog.show_toast(&message);
@@ -1148,7 +1148,7 @@ impl ContactDialog {
                     Err(error) => {
                         if let Some(dialog) = dialog_weak_for_result.upgrade() {
                             dialog.show_toast(&format!(
-                                "Kontakt konnte nicht gespeichert werden: {error}"
+                                "Could not save contact: {error}"
                             ));
                         }
                     }
@@ -1191,7 +1191,7 @@ impl ContactDialog {
         header_bar.set_show_start_title_buttons(false);
         header_bar.set_show_end_title_buttons(false);
         let cancel_button = gtk::Button::builder()
-            .label("Abbrechen")
+            .label("Cancel")
             .build();
         let dialog_weak_for_cancel = self.downgrade();
         cancel_button.connect_clicked(move |_| {
@@ -1201,7 +1201,7 @@ impl ContactDialog {
         });
         header_bar.pack_start(&cancel_button);
         let save_button = gtk::Button::builder()
-            .label("Speichern")
+            .label("Save")
             .css_classes(vec!["suggested-action"])
             .build();
         header_bar.pack_end(&save_button);
@@ -1216,55 +1216,55 @@ impl ContactDialog {
             .margin_bottom(20)
             .build();
         let list_group = adw::PreferencesGroup::builder()
-            .title("Kontaktliste")
-            .description("Verteilerlisten können lokale Kontakte und externe Adressen enthalten.")
+            .title("Contact List")
+            .description("Distribution lists can contain local contacts and external addresses.")
             .build();
-        let name_row = adw::EntryRow::builder().title("Listenname").build();
+        let name_row = adw::EntryRow::builder().title("List Name").build();
         name_row.set_text(&initial_name);
         list_group.add(&name_row);
 
-        let source_model = gtk::StringList::new(&["Adressbücher werden geladen…"]);
+        let source_model = gtk::StringList::new(&["Loading address books…"]);
         let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_row = adw::ComboRow::builder()
-            .title("Adressbuch")
+            .title("Address Book")
             .model(&source_model)
             .build();
         source_row.set_sensitive(edit_uid.is_none());
         list_group.add(&source_row);
 
         let show_addresses = adw::SwitchRow::builder()
-            .title("Mitgliederadressen anzeigen")
-            .subtitle("Wenn deaktiviert, werden Empfängeradressen in der Liste privat gehalten.")
+            .title("Show member addresses")
+            .subtitle("When disabled, recipient addresses in the list are kept private.")
             .active(initial_show_addresses)
             .build();
         list_group.add(&show_addresses);
         content_box.append(&list_group);
 
         let member_group = adw::PreferencesGroup::builder()
-            .title("Mitglieder")
-            .description("Ungültige oder nicht mehr auflösbare Mitglieder bleiben sichtbar und müssen vor dem Speichern entfernt oder ersetzt werden.")
+            .title("Members")
+            .description("Invalid or unresolvable members remain visible and must be removed or replaced before saving.")
             .build();
         let external_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .build();
         let external_entry = gtk::Entry::builder()
-            .placeholder_text("Name <adresse@example.org> oder adresse@example.org")
+            .placeholder_text("Name <address@example.org> or address@example.org")
             .hexpand(true)
             .build();
         let add_external = gtk::Button::builder()
-            .label("Externe Adresse hinzufügen")
+            .label("Add External Address")
             .build();
         external_box.append(&external_entry);
         external_box.append(&add_external);
         member_group.add(&external_box);
 
-        let local_model = gtk::StringList::new(&["Adressbuchkontakte werden geladen…"]);
+        let local_model = gtk::StringList::new(&["Loading address book contacts…"]);
         let local_dropdown =
             gtk::DropDown::new(Some(local_model.clone()), None::<&gtk::Expression>);
         local_dropdown.set_hexpand(true);
         let add_local = gtk::Button::builder()
-            .label("Lokalen Kontakt hinzufügen")
+            .label("Add Local Contact")
             .build();
         let local_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -1275,12 +1275,12 @@ impl ContactDialog {
         local_box.append(&add_local);
         member_group.add(&local_box);
 
-        let nested_model = gtk::StringList::new(&["Kontaktlisten werden geladen…"]);
+        let nested_model = gtk::StringList::new(&["Loading contact lists…"]);
         let nested_dropdown =
             gtk::DropDown::new(Some(nested_model.clone()), None::<&gtk::Expression>);
         nested_dropdown.set_hexpand(true);
         let add_nested = gtk::Button::builder()
-            .label("Kontaktliste hinzufügen")
+            .label("Add Contact List")
             .build();
         let nested_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -1314,14 +1314,14 @@ impl ContactDialog {
                 parse_list_recipient_input(&external_entry_for_external.text())
             else {
                 if let Some(dialog) = dialog_weak_for_external.upgrade() {
-                    dialog.show_toast("Bitte eine gültige externe E-Mail-Adresse eingeben");
+                    dialog.show_toast("Please enter a valid external email address");
                 }
                 return;
             };
             let member = VCardListMember::external_address(&email, &display_name);
             if !member.is_valid() {
                 if let Some(dialog) = dialog_weak_for_external.upgrade() {
-                    dialog.show_toast("Die externe Adresse ist ungültig");
+                    dialog.show_toast("The external address is invalid");
                 }
                 return;
             }
@@ -1331,7 +1331,7 @@ impl ContactDialog {
                 .any(|existing| existing.email.eq_ignore_ascii_case(&member.email))
             {
                 if let Some(dialog) = dialog_weak_for_external.upgrade() {
-                    dialog.show_toast("Diese Adresse ist bereits Mitglied der Liste");
+                    dialog.show_toast("This address is already a member of the list");
                 }
                 return;
             }
@@ -1358,13 +1358,13 @@ impl ContactDialog {
                 .cloned()
             else {
                 if let Some(dialog) = dialog_weak_for_local.upgrade() {
-                    dialog.show_toast("Es ist kein lokaler Kontakt ausgewählt");
+                    dialog.show_toast("No local contact is selected");
                 }
                 return;
             };
             let Some((email_num, email)) = first_contact_email_with_index(&record.contact) else {
                 if let Some(dialog) = dialog_weak_for_local.upgrade() {
-                    dialog.show_toast("Der lokale Kontakt hat keine E-Mail-Adresse");
+                    dialog.show_toast("The local contact has no email address");
                 }
                 return;
             };
@@ -1382,7 +1382,7 @@ impl ContactDialog {
                     && existing.email_num == member.email_num
             }) {
                 if let Some(dialog) = dialog_weak_for_local.upgrade() {
-                    dialog.show_toast("Dieser Kontakt ist bereits Mitglied der Liste");
+                    dialog.show_toast("This contact is already a member of the list");
                 }
                 return;
             }
@@ -1407,13 +1407,13 @@ impl ContactDialog {
                 .cloned()
             else {
                 if let Some(dialog) = dialog_weak_for_nested.upgrade() {
-                    dialog.show_toast("Es ist keine verschachtelbare Kontaktliste ausgewählt");
+                    dialog.show_toast("No nestable contact list is selected");
                 }
                 return;
             };
             if edit_uid_for_nested.as_deref() == Some(record.uid.as_str()) {
                 if let Some(dialog) = dialog_weak_for_nested.upgrade() {
-                    dialog.show_toast("Eine Kontaktliste kann sich nicht selbst enthalten");
+                    dialog.show_toast("A contact list cannot contain itself");
                 }
                 return;
             }
@@ -1426,7 +1426,7 @@ impl ContactDialog {
                     )
             }) {
                 if let Some(dialog) = dialog_weak_for_nested.upgrade() {
-                    dialog.show_toast("Diese Kontaktliste ist bereits Mitglied der Liste");
+                    dialog.show_toast("This contact list is already a member of the list");
                 }
                 return;
             }
@@ -1470,11 +1470,11 @@ impl ContactDialog {
             if let Some(uid) = preferred.filter(|uid| {
                 !uid.trim().is_empty() && !uids.iter().any(|candidate| candidate == *uid)
             }) {
-                names.push(format!("Nicht verfügbare Quelle · {uid}"));
+                names.push(format!("Unavailable Source · {uid}"));
                 uids.push(uid.to_string());
             }
             if local_available {
-                names.push("Lokales Adressbuch".to_string());
+                names.push("Local Address Book".to_string());
                 uids.push("local-addressbook".to_string());
             }
             let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
@@ -1555,7 +1555,7 @@ impl ContactDialog {
             };
             let name = name_row.text().trim().to_string();
             if name.is_empty() {
-                dialog.show_toast("Eine Kontaktliste benötigt einen Namen");
+                dialog.show_toast("A contact list requires a name");
                 return;
             }
             if let Some((index, error)) = members_for_save
@@ -1564,7 +1564,7 @@ impl ContactDialog {
                 .enumerate()
                 .find_map(|(index, member)| member.validation_error().map(|error| (index, error)))
             {
-                dialog.show_toast(&format!("Mitglied {} ist {error}", index + 1));
+                dialog.show_toast(&format!("Member {} is {error}", index + 1));
                 return;
             }
             if let Some(current_uid) = edit_uid_for_save.as_deref() {
@@ -1582,13 +1582,13 @@ impl ContactDialog {
                         )
                 });
                 if has_cycle {
-                    dialog.show_toast("Verschachtelte Kontaktlisten dürfen keinen Zyklus bilden");
+                    dialog.show_toast("Nested contact lists must not form a cycle");
                     return;
                 }
             }
             let selected = source_row.selected() as usize;
             let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
-                dialog.show_toast("Kein aktives Adressbuch ist ausgewählt");
+                dialog.show_toast("No active address book selected");
                 return;
             };
             let mut contact = original_contact_for_save.clone().unwrap_or_else(|| {
@@ -1671,9 +1671,9 @@ impl ContactDialog {
                 match result {
                     Ok(result) => {
                         let message = if was_edit {
-                            format!("Kontaktliste aktualisiert ({})", result.uid)
+                            format!("Contact list updated ({})", result.uid)
                         } else {
-                            format!("Kontaktliste gespeichert ({})", result.uid)
+                            format!("Contact list saved ({})", result.uid)
                         };
                         if let Some(dialog) = dialog_weak_for_result.upgrade() {
                             dialog.show_toast(&message);
@@ -1683,7 +1683,7 @@ impl ContactDialog {
                     Err(error) => {
                         if let Some(dialog) = dialog_weak_for_result.upgrade() {
                             dialog.show_toast(&format!(
-                                "Kontaktliste konnte nicht gespeichert werden: {error}"
+                                "Could not save contact list: {error}"
                             ));
                         }
                     }
@@ -1714,7 +1714,7 @@ impl ContactDialog {
         self.connect_close_attempt(move |_| {
             if let Some(dialog) = dialog_weak.upgrade() {
                 if dialog.imp().save_in_progress.get() {
-                    dialog.show_toast("Speichern läuft noch – bitte kurz warten");
+                    dialog.show_toast("Save in progress – please wait a moment");
                 }
             }
         });
@@ -1733,7 +1733,7 @@ fn attach_entry_row_date_picker(entry_row: &adw::EntryRow) {
         .build();
     let cal = gtk::Calendar::new();
     let clear_btn = gtk::Button::builder()
-        .label("Datum löschen")
+        .label("Clear Date")
         .css_classes(vec!["flat"])
         .build();
     pop_box.append(&cal);
@@ -1742,7 +1742,7 @@ fn attach_entry_row_date_picker(entry_row: &adw::EntryRow) {
 
     let btn = gtk::MenuButton::builder()
         .icon_name("x-office-calendar-symbolic")
-        .tooltip_text("Datum im Kalender auswählen")
+        .tooltip_text("Select date in calendar")
         .css_classes(vec!["flat", "circular"])
         .valign(gtk::Align::Center)
         .popover(&popover)
@@ -1843,17 +1843,17 @@ fn refresh_list_member_rows(
     }
     for (index, member) in members.borrow().iter().cloned().enumerate() {
         let subtitle = match member.kind {
-            VCardListMemberKind::ExternalAddress => "Externe Adresse".to_string(),
+            VCardListMemberKind::ExternalAddress => "External Address".to_string(),
             VCardListMemberKind::LocalContact => {
                 if member.source_uid.trim().is_empty() {
-                    "Lokaler Kontakt".to_string()
+                    "Local Contact".to_string()
                 } else {
-                    format!("Lokaler Kontakt · {}", member.source_uid)
+                    format!("Local Contact · {}", member.source_uid)
                 }
             }
-            VCardListMemberKind::NestedList => "Verschachtelte Kontaktliste".to_string(),
-            VCardListMemberKind::StandardMember => "vCard-4-Mitglied".to_string(),
-            VCardListMemberKind::Invalid => "Ungültiges Listenmitglied".to_string(),
+            VCardListMemberKind::NestedList => "Nested Contact List".to_string(),
+            VCardListMemberKind::StandardMember => "vCard 4 Member".to_string(),
+            VCardListMemberKind::Invalid => "Invalid List Member".to_string(),
         };
         let subtitle = member
             .validation_error()
@@ -1868,20 +1868,20 @@ fn refresh_list_member_rows(
         }
         let remove_button = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Mitglied entfernen")
+            .tooltip_text("Remove member")
             .css_classes(vec!["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         let move_up = gtk::Button::builder()
             .icon_name("go-up-symbolic")
-            .tooltip_text("Mitglied nach oben verschieben")
+            .tooltip_text("Move member up")
             .css_classes(vec!["flat", "circular"])
             .sensitive(index > 0)
             .valign(gtk::Align::Center)
             .build();
         let move_down = gtk::Button::builder()
             .icon_name("go-down-symbolic")
-            .tooltip_text("Mitglied nach unten verschieben")
+            .tooltip_text("Move member down")
             .css_classes(vec!["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
@@ -2004,9 +2004,9 @@ fn contact_source_label(display_name: &str, source_uid: &str) -> String {
     if !display_name.trim().is_empty() {
         display_name.trim().to_string()
     } else if source_uid == "local-addressbook" {
-        "Lokales Adressbuch".to_string()
+        "Local Address Book".to_string()
     } else {
-        "Adressbuch".to_string()
+        "Address Book".to_string()
     }
 }
 
@@ -2127,15 +2127,15 @@ fn build_vcard_with_fields(
 ) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("Ein Kontakt benötigt einen Namen".to_string());
+        return Err("A contact requires a name".to_string());
     }
     for (label, value) in [
-        ("private E-Mail-Adresse", email),
-        ("geschäftliche E-Mail-Adresse", email_work),
-        ("weitere E-Mail-Adresse", email_other),
+        ("personal email address", email),
+        ("work email address", email_work),
+        ("additional email address", email_other),
     ] {
         if !value.trim().is_empty() && !is_valid_contact_email(value) {
-            return Err(format!("Die {label} ist ungültig"));
+            return Err(format!("The {label} is invalid"));
         }
     }
     let uid = uid
@@ -2556,7 +2556,7 @@ mod tests {
         let result = build_vcard(
             "  ", "", "", "", "", "", "", "", "", "", "", "", "", "", "", None,
         );
-        assert_eq!(result, Err("Ein Kontakt benötigt einen Namen".to_string()));
+        assert_eq!(result, Err("A contact requires a name".to_string()));
     }
 
     #[test]
@@ -2684,7 +2684,7 @@ mod tests {
             None,
         )
         .expect_err("malformed email should be rejected");
-        assert!(error.contains("E-Mail-Adresse"));
+        assert!(error.contains("email address"));
     }
 
     #[test]
@@ -2758,7 +2758,7 @@ mod tests {
         let Some(settings) = AppSettings::try_new() else {
             let dialog = ContactDialog::new();
             let widget = dialog.upcast_ref::<gtk::Widget>();
-            let row_phone = find_entry_by_title(widget, "Telefon (Mobil)").expect("phone row exists");
+            let row_phone = find_entry_by_title(widget, "Phone (Mobile)").expect("phone row exists");
             assert!(row_phone.is_visible());
             return;
         };
@@ -2781,16 +2781,16 @@ mod tests {
         while context.iteration(false) {}
         let widget = dialog.upcast_ref::<gtk::Widget>();
 
-        let row_phone = find_entry_by_title(widget, "Telefon (Mobil)").expect("phone row exists");
+        let row_phone = find_entry_by_title(widget, "Phone (Mobile)").expect("phone row exists");
         assert!(!row_phone.is_visible(), "Empty phone row must be hidden when show-phone is false");
 
-        let row_sip = find_entry_by_title(widget, "SIP- / VoIP-Adresse").expect("sip row exists");
+        let row_sip = find_entry_by_title(widget, "SIP / VoIP Address").expect("sip row exists");
         assert!(!row_sip.is_visible(), "Empty SIP row must be hidden when show-sip is false");
 
-        let row_note = find_entry_by_title(widget, "Notiz").expect("note row exists");
+        let row_note = find_entry_by_title(widget, "Note").expect("note row exists");
         assert!(!row_note.is_visible(), "Empty note row must be hidden when show-notes is false");
 
-        let row_certs = find_entry_by_title(widget, "S/MIME-Zertifikat").expect("certs row exists");
+        let row_certs = find_entry_by_title(widget, "S/MIME Certificate").expect("certs row exists");
         assert!(!row_certs.is_visible(), "Empty certs row must be hidden when show-certs is false");
 
         // 2. Dynamic update: re-enabling via GSettings updates row visibility
@@ -2815,7 +2815,7 @@ mod tests {
         contact.impps = vec!["sip:ada@sip.example.test".to_string()];
         let record = EBookContactRecord {
             source_uid: "local-addressbook".to_string(),
-            source_display_name: "Lokal".to_string(),
+            source_display_name: "Local".to_string(),
             uid: "ada-1".to_string(),
             vcard: contact.to_vcard_string(),
             contact,
@@ -2825,9 +2825,9 @@ mod tests {
         while context.iteration(false) {}
         let edit_widget = edit_dialog.upcast_ref::<gtk::Widget>();
 
-        let edit_phone = find_entry_by_title(edit_widget, "Telefon (Mobil)").expect("edit phone row");
-        let edit_note = find_entry_by_title(edit_widget, "Notiz").expect("edit note row");
-        let edit_sip = find_entry_by_title(edit_widget, "SIP- / VoIP-Adresse").expect("edit sip row");
+        let edit_phone = find_entry_by_title(edit_widget, "Phone (Mobile)").expect("edit phone row");
+        let edit_note = find_entry_by_title(edit_widget, "Note").expect("edit note row");
+        let edit_sip = find_entry_by_title(edit_widget, "SIP / VoIP Address").expect("edit sip row");
 
         assert!(edit_phone.is_visible(), "Populated phone row must remain visible to prevent data loss");
         assert!(edit_note.is_visible(), "Populated note row must remain visible to prevent data loss");
@@ -2877,21 +2877,21 @@ mod tests {
         while context.iteration(false) {}
         let empty_widget = empty_dialog.upcast_ref::<gtk::Widget>();
 
-        let row_phone = find_entry_by_title(empty_widget, "Telefon (Mobil)").expect("row_phone");
-        let row_phone_work = find_entry_by_title(empty_widget, "Telefon (Arbeit)").expect("row_phone_work");
-        let row_phone_home = find_entry_by_title(empty_widget, "Telefon (Privat)").expect("row_phone_home");
-        let row_sip = find_entry_by_title(empty_widget, "SIP- / VoIP-Adresse").expect("row_sip");
+        let row_phone = find_entry_by_title(empty_widget, "Phone (Mobile)").expect("row_phone");
+        let row_phone_work = find_entry_by_title(empty_widget, "Phone (Work)").expect("row_phone_work");
+        let row_phone_home = find_entry_by_title(empty_widget, "Phone (Home)").expect("row_phone_home");
+        let row_sip = find_entry_by_title(empty_widget, "SIP / VoIP Address").expect("row_sip");
         let row_impp = find_entry_by_title(empty_widget, "Instant Messaging (IMPP)").expect("row_impp");
-        let row_address = find_entry_by_title(empty_widget, "Postadresse").expect("row_address");
-        let row_address_work = find_entry_by_title(empty_widget, "Geschäftsadresse").expect("row_address_work");
-        let row_address_other = find_entry_by_title(empty_widget, "Weitere Adresse").expect("row_address_other");
-        let row_url = find_entry_by_title(empty_widget, "Webseite").expect("row_url");
-        let row_org = find_entry_by_title(empty_widget, "Firma / Organisation").expect("row_org");
-        let row_birthday = find_entry_by_title(empty_widget, "Geburtstag (YYYY-MM-DD)").expect("row_birthday");
-        let row_anniversary = find_entry_by_title(empty_widget, "Jahrestag (YYYY-MM-DD)").expect("row_anniversary");
-        let row_nickname = find_entry_by_title(empty_widget, "Spitzname").expect("row_nickname");
-        let row_note = find_entry_by_title(empty_widget, "Notiz").expect("row_note");
-        let row_certs = find_entry_by_title(empty_widget, "S/MIME-Zertifikat").expect("row_certs");
+        let row_address = find_entry_by_title(empty_widget, "Home Address").expect("row_address");
+        let row_address_work = find_entry_by_title(empty_widget, "Work Address").expect("row_address_work");
+        let row_address_other = find_entry_by_title(empty_widget, "Other Address").expect("row_address_other");
+        let row_url = find_entry_by_title(empty_widget, "Website").expect("row_url");
+        let row_org = find_entry_by_title(empty_widget, "Company / Organization").expect("row_org");
+        let row_birthday = find_entry_by_title(empty_widget, "Birthday (YYYY-MM-DD)").expect("row_birthday");
+        let row_anniversary = find_entry_by_title(empty_widget, "Anniversary (YYYY-MM-DD)").expect("row_anniversary");
+        let row_nickname = find_entry_by_title(empty_widget, "Nickname").expect("row_nickname");
+        let row_note = find_entry_by_title(empty_widget, "Note").expect("row_note");
+        let row_certs = find_entry_by_title(empty_widget, "S/MIME Certificate").expect("row_certs");
 
         assert!(!row_phone.is_visible(), "Empty phone row must be hidden");
         assert!(!row_phone_work.is_visible(), "Empty work phone row must be hidden");
@@ -2909,8 +2909,8 @@ mod tests {
         assert!(!row_note.is_visible(), "Empty note row must be hidden");
         assert!(!row_certs.is_visible(), "Empty certs row must be hidden");
 
-        let row_name = find_entry_by_title(empty_widget, "Vollständiger Name").expect("row_name");
-        let row_email1 = find_entry_by_title(empty_widget, "E-Mail (Privat)").expect("row_email1");
+        let row_name = find_entry_by_title(empty_widget, "Full Name").expect("row_name");
+        let row_email1 = find_entry_by_title(empty_widget, "Email (Personal)").expect("row_email1");
         assert!(row_name.is_visible(), "Name row must always be visible");
         assert!(row_email1.is_visible(), "Email row must always be visible");
 
@@ -2993,7 +2993,7 @@ mod tests {
 
         let full_record = EBookContactRecord {
             source_uid: "local-addressbook".to_string(),
-            source_display_name: "Lokal".to_string(),
+            source_display_name: "Local".to_string(),
             uid: "grace-hopper-1".to_string(),
             vcard: populated.to_vcard_string(),
             contact: populated,
@@ -3003,19 +3003,19 @@ mod tests {
         while context.iteration(false) {}
         let edit_widget = edit_dialog.upcast_ref::<gtk::Widget>();
 
-        let e_phone = find_entry_by_title(edit_widget, "Telefon (Mobil)").expect("e_phone");
-        let e_sip = find_entry_by_title(edit_widget, "SIP- / VoIP-Adresse").expect("e_sip");
+        let e_phone = find_entry_by_title(edit_widget, "Phone (Mobile)").expect("e_phone");
+        let e_sip = find_entry_by_title(edit_widget, "SIP / VoIP Address").expect("e_sip");
         let e_impp = find_entry_by_title(edit_widget, "Instant Messaging (IMPP)").expect("e_impp");
-        let e_address = find_entry_by_title(edit_widget, "Postadresse").expect("e_address");
-        let e_address_work = find_entry_by_title(edit_widget, "Geschäftsadresse").expect("e_address_work");
-        let e_address_other = find_entry_by_title(edit_widget, "Weitere Adresse").expect("e_address_other");
-        let e_url = find_entry_by_title(edit_widget, "Webseite").expect("e_url");
-        let e_org = find_entry_by_title(edit_widget, "Firma / Organisation").expect("e_org");
-        let e_birthday = find_entry_by_title(edit_widget, "Geburtstag (YYYY-MM-DD)").expect("e_birthday");
-        let e_anniversary = find_entry_by_title(edit_widget, "Jahrestag (YYYY-MM-DD)").expect("e_anniversary");
-        let e_nickname = find_entry_by_title(edit_widget, "Spitzname").expect("e_nickname");
-        let e_note = find_entry_by_title(edit_widget, "Notiz").expect("e_note");
-        let e_certs = find_entry_by_title(edit_widget, "S/MIME-Zertifikat").expect("e_certs");
+        let e_address = find_entry_by_title(edit_widget, "Home Address").expect("e_address");
+        let e_address_work = find_entry_by_title(edit_widget, "Work Address").expect("e_address_work");
+        let e_address_other = find_entry_by_title(edit_widget, "Other Address").expect("e_address_other");
+        let e_url = find_entry_by_title(edit_widget, "Website").expect("e_url");
+        let e_org = find_entry_by_title(edit_widget, "Company / Organization").expect("e_org");
+        let e_birthday = find_entry_by_title(edit_widget, "Birthday (YYYY-MM-DD)").expect("e_birthday");
+        let e_anniversary = find_entry_by_title(edit_widget, "Anniversary (YYYY-MM-DD)").expect("e_anniversary");
+        let e_nickname = find_entry_by_title(edit_widget, "Nickname").expect("e_nickname");
+        let e_note = find_entry_by_title(edit_widget, "Note").expect("e_note");
+        let e_certs = find_entry_by_title(edit_widget, "S/MIME Certificate").expect("e_certs");
 
         assert!(e_phone.is_visible(), "Populated phone MUST remain visible despite toggle=false");
         assert!(e_sip.is_visible(), "Populated SIP MUST remain visible despite toggle=false");
@@ -3037,8 +3037,8 @@ mod tests {
         while context.iteration(false) {}
         let live_widget = live_dialog.upcast_ref::<gtk::Widget>();
 
-        let live_sip = find_entry_by_title(live_widget, "SIP- / VoIP-Adresse").expect("live_sip");
-        let live_notes = find_entry_by_title(live_widget, "Notiz").expect("live_notes");
+        let live_sip = find_entry_by_title(live_widget, "SIP / VoIP Address").expect("live_sip");
+        let live_notes = find_entry_by_title(live_widget, "Note").expect("live_notes");
         let live_impp = find_entry_by_title(live_widget, "Instant Messaging (IMPP)").expect("live_impp");
 
         live_sip.set_text("sip:incoming@test.local");
