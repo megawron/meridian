@@ -117,6 +117,9 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
 
+      - name: Trust workspace for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Import Flatpak signing key
         run: |
           if [ -n "$FLATPAK_GPG_PRIVATE_KEY" ]; then
