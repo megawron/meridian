@@ -480,7 +480,8 @@ EOF
     git -C "$pages_work" add -A
     git -C "$pages_work" commit -m "chore: publish Flatpak repository ($TAG)" >/dev/null
     local remote_url
-    remote_url="$(git -C "$ROOT" remote get-url origin)"
+    # CI passes an authenticated URL; locally the origin remote is used.
+    remote_url="${GH_PAGES_REMOTE:-$(git -C "$ROOT" remote get-url origin)}"
     git -C "$pages_work" push --force "$remote_url" gh-pages:gh-pages
     rm -rf "$pages_work"
     echo "==> Published Flatpak repository to gh-pages!"
@@ -513,7 +514,8 @@ case "$WHAT" in
     flatpak) build_flatpak_bundle ;;
     rpm) build_rpm ;;
     deb) build_deb ;;
+    tarball) build_tarball ;;
     flatpak-stage) stage_flatpak ;;
     deb-and-flatpak-stage) build_deb; stage_flatpak ;;
-    *) echo "Usage: $0 {local|upload|publish-repo|flatpak|rpm|deb} [tag]" >&2; exit 1 ;;
+    *) echo "Usage: $0 {local|upload|publish-repo|flatpak|rpm|deb|tarball} [tag]" >&2; exit 1 ;;
 esac

@@ -1,22 +1,39 @@
-name: Release Packages (Manual)
+name: Release
+
+# Builds all release packages and publishes them:
+#   - Fedora job:  RPM, Linux tarball, signed Flatpak bundle + repository
+#   - Debian job:  DEB (built on Debian Trixie for broad glibc compatibility)
+#   - Publish job: uploads everything to the GitHub release (created if
+#                  missing) and deploys the Flatpak repository to gh-pages.
+#
+# Trigger from any machine:
+#   gh workflow run flatpak-release.yml -f tag=v0.1.0-beta.1
+# or via "Actions → Release → Run workflow" on GitHub.
 
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: 'Tag, branch, or SHA to build'
+      tag:
+        description: 'Release tag (e.g. v0.1.0-beta.1). Must already exist.'
+        required: true
+      notes:
+        description: 'Release notes (only used when the release is created)'
         required: false
-        default: 'main'
+        default: 'First public beta release.'
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
-  rpm:
-    name: Fedora x86_64 RPM
+  fedora:
+    name: Fedora (RPM, tarball, Flatpak)
     runs-on: ubuntu-24.04
     container:
-      image: registry.fedoraproject.org/fedora:41
+      image: registry.fedoraproject.org/fedora:44
       env:
         PATH: /root/.cargo/bin:/github/home/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
@@ -25,30 +42,50 @@ jobs:
           dnf install -y --setopt=install_weak_deps=False \
             git tar gzip curl gcc gcc-c++ pkgconf-pkg-config \
             evolution-data-server-devel gtk4-devel libadwaita-devel \
-            webkitgtk6.0-devel sqlite-devel gettext rpm-build file
+            webkitgtk6.0-devel sqlite-devel gettext rpm-build file \
+            flatpak gnupg2 python3 glib2
           curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
 
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ inputs.tag }}
 
-      - name: Build RPM package
+      - name: Import Flatpak signing key
+        env:
+          FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -n "$FLATPAK_GPG_PRIVATE_KEY" ]; then
+            printf '%s\n' "$FLATPAK_GPG_PRIVATE_KEY" | gpg --batch --import
+          else
+            echo "::warning::FLATPAK_GPG_PRIVATE_KEY not set, Flatpak repo will be unsigned"
+          fi
+
+      - name: Build release binary
+        run: cargo build --release --locked --bin meridian
+
+      - name: Build packages
         shell: bash
         run: |
           chmod +x scripts/build-packages.sh
-          ./scripts/build-packages.sh rpm "${{ github.ref_name }}"
-          ls -lh packaging/out/*.rpm
+          ./scripts/build-packages.sh flatpak "${{ inputs.tag }}"
+          ./scripts/build-packages.sh rpm "${{ inputs.tag }}"
+          ./scripts/build-packages.sh tarball "${{ inputs.tag }}"
+          tar -C packaging/out -czf packaging/out/flatpak-repo.tar.gz flatpak-repo
+          ls -lh packaging/out
 
-      - name: Upload RPM artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: meridian-rpm-x86_64
-          path: packaging/out/meridian-*.rpm
+          name: fedora-packages
+          path: |
+            packaging/out/*.rpm
+            packaging/out/*.tar.gz
+            packaging/out/*.flatpak
           if-no-files-found: error
 
   deb:
-    name: Debian / Ubuntu amd64 DEB
+    name: Debian / Ubuntu (DEB)
     runs-on: ubuntu-24.04
     container:
       image: docker.io/library/debian:trixie
@@ -60,7 +97,7 @@ jobs:
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             ca-certificates curl git tar gzip build-essential pkg-config dpkg-dev gettext file \
-            libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
+            libglib2.0-bin libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
             libcamel1.2-dev libedataserver1.2-dev libecal2.0-dev \
             libebook1.2-dev libebook-contacts1.2-dev libsqlite3-dev
           curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
@@ -68,25 +105,65 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ inputs.tag }}
 
-      - name: Build DEB package and Flatpak stage
+      - name: Build DEB package
         shell: bash
         run: |
           chmod +x scripts/build-packages.sh
-          ./scripts/build-packages.sh deb-and-flatpak-stage "${{ github.ref_name }}"
-          ls -lh packaging/out/*.deb packaging/out/flatpak-app.tar.gz
+          cargo build --release --locked --bin meridian
+          ./scripts/build-packages.sh deb "${{ inputs.tag }}"
+          ls -lh packaging/out/*.deb
 
-      - name: Upload DEB artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: meridian-deb-amd64
-          path: packaging/out/meridian_*.deb
+          name: deb-package
+          path: packaging/out/*.deb
           if-no-files-found: error
 
-      - name: Upload Flatpak stage
-        uses: actions/upload-artifact@v4
+  publish:
+    name: Publish release
+    needs: [fedora, deb]
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          name: meridian-flatpak-stage
-          path: packaging/out/flatpak-app.tar.gz
-          if-no-files-found: error
+          ref: ${{ inputs.tag }}
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Prepare release files
+        run: |
+          mkdir -p packaging/out
+          tar -C packaging/out -xzf dist/flatpak-repo.tar.gz
+          rm dist/flatpak-repo.tar.gz
+          ( cd dist && sha256sum * > SHA256SUMS.txt )
+          ls -lh dist
+
+      - name: Create or update GitHub release
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            prerelease=""
+            case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+            gh release create "$TAG" $prerelease \
+              --title "Meridian ${TAG#v}" \
+              --notes "${{ inputs.notes }}"
+          fi
+          gh release upload "$TAG" dist/* --clobber
+
+      - name: Publish Flatpak repository to gh-pages
+        env:
+          GH_PAGES_REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ./scripts/build-packages.sh publish-repo "$TAG"
