@@ -247,19 +247,26 @@ pub(crate) fn account_sources_match(source_a: &str, source_b: &str) -> bool {
     fn strip_acc(s: &str) -> &str {
         s.strip_prefix("account:").unwrap_or(s)
     }
-    if strip_acc(canon_a).eq_ignore_ascii_case(strip_acc(canon_b)) {
+    let stripped_a = strip_acc(canon_a);
+    let stripped_b = strip_acc(canon_b);
+    if stripped_a.eq_ignore_ascii_case(stripped_b) {
         return true;
+    }
+    // Fast path: if neither identifier contains '@' (e.g. two distinct 40-char hex EDS UIDs),
+    // they cannot match via an AccountProfile email alias.
+    if !stripped_a.contains('@') && !stripped_b.contains('@') {
+        return false;
     }
     let profiles = crate::services::account_config_service::AccountConfigStore::default().load_cached();
     for profile in profiles.iter() {
         let matches_a = profile.id.eq_ignore_ascii_case(a)
             || profile.id.eq_ignore_ascii_case(canon_a)
-            || strip_acc(&profile.id).eq_ignore_ascii_case(strip_acc(canon_a))
+            || strip_acc(&profile.id).eq_ignore_ascii_case(stripped_a)
             || profile.email.eq_ignore_ascii_case(a)
             || profile.email.eq_ignore_ascii_case(canon_a);
         let matches_b = profile.id.eq_ignore_ascii_case(b)
             || profile.id.eq_ignore_ascii_case(canon_b)
-            || strip_acc(&profile.id).eq_ignore_ascii_case(strip_acc(canon_b))
+            || strip_acc(&profile.id).eq_ignore_ascii_case(stripped_b)
             || profile.email.eq_ignore_ascii_case(b)
             || profile.email.eq_ignore_ascii_case(canon_b);
         if matches_a && matches_b {
@@ -13571,6 +13578,9 @@ impl MailPage {
         let mut total = 0u32;
         let camel_folders = self.imp().mail_folder_summaries.borrow();
         for folder in camel_folders.iter() {
+            if !self.is_mail_account_active(&folder.source_uid) {
+                continue;
+            }
             let is_inbox = crate::services::mail_notification_service::MailNotificationService::is_inbox_folder(&folder.folder_name)
                 || crate::services::mail_notification_service::MailNotificationService::is_inbox_folder(&folder.display_name);
             if is_inbox {
@@ -17303,10 +17313,19 @@ impl MailPage {
             .build();
 
         let page_for_source = self.downgrade();
+        let source_view_for_select = source_view.downgrade();
         source_selection.connect_selected_item_notify(move |selection| {
+            if !source_view_for_select
+                .upgrade()
+                .is_some_and(|view| view.is_visible())
+            {
+                return;
+            }
             if page_for_source
                 .upgrade()
-                .is_some_and(|page| page.imp().saved_search_applying.get())
+                .is_some_and(|page| {
+                    page.imp().saved_search_applying.get() || page.imp().updating_folder_rows.get()
+                })
             {
                 return;
             }
@@ -17637,7 +17656,11 @@ impl MailPage {
                 };
                 let is_account_root = tree_row.depth() == 0;
                 if is_account_root && tree_row.is_expandable() {
-                    tree_row.set_expanded(!tree_row.is_expanded());
+                    if !tree_row.is_expanded() {
+                        tree_row.set_expanded(true);
+                    } else if n_press == 2 {
+                        tree_row.set_expanded(false);
+                    }
                 } else if n_press == 2 && tree_row.is_expandable() {
                     tree_row.set_expanded(!tree_row.is_expanded());
                 }
@@ -17919,7 +17942,7 @@ impl MailPage {
             row.set_margin_start(0);
             let is_account_root = tree_row.depth() == 0;
 
-            list_item.set_selectable(folder.selectable() && !is_account_root);
+            list_item.set_selectable(folder.selectable());
 
             if is_account_root {
                 expander.add_css_class("account-root-expander");
@@ -18299,6 +18322,9 @@ impl MailPage {
                                 }
                             }
                         }
+                        let prev = page.imp().updating_folder_rows.replace(true);
+                        selection_clone.set_selected(gtk::INVALID_LIST_POSITION);
+                        page.imp().updating_folder_rows.set(prev);
                     });
                 }
                 return;
@@ -19353,7 +19379,7 @@ impl MailPage {
                     && !f.display_name.starts_with('.')
                     && f.folder_name != "[Gmail]"
                     && !f.folder_name.eq_ignore_ascii_case("[Google Mail]")
-                    && eds_service::is_source_enabled_for_service(canonical_src, EdsSourceKind::Mail)
+                    && self.is_mail_account_active(canonical_src)
             })
             .collect();
         let all_roots_enabled = (0..root_store.n_items()).all(|i| {
@@ -19365,14 +19391,18 @@ impl MailPage {
                     eds_service::is_source_enabled_for_service(&uid, EdsSourceKind::Mail)
                 })
         });
-        let has_all_folders = !valid_folders.is_empty()
-            && all_roots_enabled
-            && valid_folders.iter().all(|f| {
-                let canonical_src = Self::canonical_account_uid(&f.source_uid);
-                let key = Self::dynamic_folder_key(canonical_src, &f.folder_name);
-                index.borrow().contains_key(&key)
-            });
-        if !force && root_store.n_items() > 0 && has_children && has_all_folders {
+        let has_all_folders = if valid_folders.is_empty() {
+            all_roots_enabled && !has_children
+        } else {
+            has_children
+                && all_roots_enabled
+                && valid_folders.iter().all(|f| {
+                    let canonical_src = Self::canonical_account_uid(&f.source_uid);
+                    let key = Self::dynamic_folder_key(canonical_src, &f.folder_name);
+                    index.borrow().contains_key(&key)
+                })
+        };
+        if !force && root_store.n_items() > 0 && has_all_folders {
             self.update_camel_folder_counts(folder_list, folders, None);
             self.imp().updating_folder_rows.set(was_updating);
             return;
@@ -19534,7 +19564,9 @@ impl MailPage {
                     )
                 });
             let counts = source_counts.entry(canonical_src.to_string()).or_default();
-            if !Self::is_trash_folder(&folder.folder_id, &folder.folder_name) {
+            if !Self::is_trash_folder(&folder.folder_id, &folder.folder_name)
+                && !self.is_mail_account_paused(canonical_src)
+            {
                 counts.0 = counts.0.saturating_add(folder.unread_count);
             }
         }
@@ -19774,6 +19806,9 @@ impl MailPage {
         // gets its full folder hierarchy and expander arrow.
         for (source_uid, root_obj) in &source_roots {
             let canon = Self::canonical_account_uid(source_uid);
+            if self.is_mail_account_paused(canon) {
+                continue;
+            }
             let has_nodes = nodes.iter().any(|n| {
                 let n_canon = Self::canonical_account_uid(&n.source_uid);
                 n_canon == canon
@@ -19818,7 +19853,9 @@ impl MailPage {
                         parent_name,
                     });
                     let counts = source_counts.entry(canon.to_string()).or_default();
-                    if !Self::is_trash_folder(&folder.folder_id, &folder.folder_name) {
+                    if !Self::is_trash_folder(&folder.folder_id, &folder.folder_name)
+                        && !self.is_mail_account_paused(canon)
+                    {
                         counts.0 = counts.0.saturating_add(folder.unread_count);
                     }
                     counts.1 = counts.1.saturating_add(folder.total_count);
@@ -20007,6 +20044,7 @@ impl MailPage {
                 });
             }
         }
+        self.update_camel_folder_counts(folder_list, folders, None);
         self.imp().updating_folder_rows.set(was_updating);
         tracing::info!(
             elapsed_ms = started.elapsed().as_millis() as u64,
@@ -20430,19 +20468,44 @@ impl MailPage {
         }
     }
 
-    fn unread_message_count(&self) -> u32 {
+    fn active_stored_and_unread_message_counts(&self) -> (usize, u32) {
         let Some(store) = self.imp().message_store.borrow().as_ref().cloned() else {
-            return 0;
+            return (0, 0);
         };
-        let mut count = 0u32;
+        let selection = self.active_folder_selection();
+        let mut active_by_source = HashMap::<String, bool>::new();
+        let mut stored = 0usize;
+        let mut unread = 0u32;
         for i in 0..store.n_items() {
             if let Some(msg) = store.item(i).and_downcast::<MailMessageObject>() {
+                if let Some(loc) = msg.backend_location() {
+                    if !loc.source_uid.is_empty() {
+                        let is_active = *active_by_source
+                            .entry(loc.source_uid.clone())
+                            .or_insert_with(|| self.is_mail_account_active(&loc.source_uid));
+                        if !is_active {
+                            continue;
+                        }
+                    }
+                }
+                if !selection.matches(&msg) {
+                    continue;
+                }
+                stored += 1;
                 if msg.is_unread() {
-                    count += 1;
+                    unread += 1;
                 }
             }
         }
-        count
+        (stored, unread)
+    }
+
+    fn active_stored_message_count(&self) -> usize {
+        self.active_stored_and_unread_message_counts().0
+    }
+
+    fn unread_message_count(&self) -> u32 {
+        self.active_stored_and_unread_message_counts().1
     }
 
     pub(crate) fn clean_folder_display_title(raw_title: &str) -> String {
@@ -20472,15 +20535,8 @@ impl MailPage {
             icon_img.set_icon_name(Some(icon));
         }
 
-        let total = total_override.unwrap_or_else(|| {
-            self.imp()
-                .message_store
-                .borrow()
-                .as_ref()
-                .map(gtk::prelude::ListModelExt::n_items)
-                .unwrap_or(0) as usize
-        });
-        let unread = self.unread_message_count();
+        let (active_stored, unread) = self.active_stored_and_unread_message_counts();
+        let total = total_override.unwrap_or(active_stored);
 
         if let Some(total_lbl) = self.imp().drawer_header_total.borrow().as_ref() {
             if unread > 0 {
@@ -20535,13 +20591,7 @@ impl MailPage {
             display_title.clone()
         };
 
-        let stored_messages = self
-            .imp()
-            .message_store
-            .borrow()
-            .as_ref()
-            .map(gtk::prelude::ListModelExt::n_items)
-            .unwrap_or(0) as usize;
+        let (stored_messages, unread) = self.active_stored_and_unread_message_counts();
         let visible_messages = self
             .imp()
             .message_selection
@@ -20549,7 +20599,6 @@ impl MailPage {
             .as_ref()
             .map(|sel| sel.n_items() as usize)
             .unwrap_or(stored_messages);
-        let unread = self.unread_message_count();
 
         if stored_messages == 0 {
             return format!("{folder_context}  ·  {}", gettext("No emails"));
@@ -20656,6 +20705,8 @@ impl MailPage {
             None
         };
 
+        let was_updating = self.imp().updating_folder_rows.replace(true);
+
         if target_unified_id.is_none() && !local_section_visible {
             if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
                 if let Some(row) = dynamic_selection.selected_item().and_downcast::<gtk::TreeListRow>() {
@@ -20673,6 +20724,16 @@ impl MailPage {
                                     && selection.source_uid == current.source_uid
                                     && selection.folder_name == current.folder_name);
                             if already_selected {
+                                if let Some(unified_list) = self.imp().unified_folder_list.borrow().as_ref() {
+                                    unified_list.unselect_all();
+                                }
+                                if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
+                                    folder_list.unselect_all();
+                                }
+                                if let Some(search_list) = self.imp().search_list.borrow().as_ref() {
+                                    search_list.unselect_all();
+                                }
+                                self.imp().updating_folder_rows.set(was_updating);
                                 self.update_drawer_header_with_selection(selection, None);
                                 return;
                             }
@@ -20684,7 +20745,6 @@ impl MailPage {
 
         if let Some(unified_list) = self.imp().unified_folder_list.borrow().as_ref() {
             if let Some(ref target_id) = target_unified_id {
-                self.imp().updating_folder_rows.set(true);
                 let mut matching_row = None;
                 for index in 0..unified_list.observe_children().n_items() {
                     let Some(row) = unified_list
@@ -20713,7 +20773,7 @@ impl MailPage {
                     if let Some(search_list) = self.imp().search_list.borrow().as_ref() {
                         search_list.unselect_all();
                     }
-                    self.imp().updating_folder_rows.set(false);
+                    self.imp().updating_folder_rows.set(was_updating);
                     self.update_drawer_header_with_selection(selection, None);
                     return;
                 }
@@ -20723,10 +20783,9 @@ impl MailPage {
         }
 
         let Some(folder_list) = self.imp().folder_list.borrow().as_ref().cloned() else {
+            self.imp().updating_folder_rows.set(was_updating);
             return;
         };
-
-        self.imp().updating_folder_rows.set(true);
         let mut matching_row = None;
         if local_section_visible {
             for index in 0..folder_list.observe_children().n_items() {
@@ -20749,6 +20808,7 @@ impl MailPage {
             folder_list.unselect_all();
         }
 
+        let mut any_newly_expanded = false;
         if let Some(dynamic_selection) = self
             .imp()
             .dynamic_folder_selection
@@ -20804,6 +20864,7 @@ impl MailPage {
                             if is_match {
                                 if !row.is_expanded() {
                                     row.set_expanded(true);
+                                    any_newly_expanded = true;
                                     if row.depth() == 0 {
                                         self.imp()
                                             .dynamic_folder_expanded
@@ -20903,46 +20964,50 @@ impl MailPage {
 
         // Guarantee there is always a visible selected folder in the sidebar
         if !self.has_sidebar_folder_selected() {
-            if unified_is_visible {
+            if unified_is_visible && target_unified_id.is_some() {
                 if let Some(unified_list) = self.imp().unified_folder_list.borrow().as_ref() {
                     if let Some(row) = unified_list.row_at_index(0).and_downcast::<gtk::ListBoxRow>() {
                         unified_list.select_row(Some(&row));
                     }
                 }
-            } else if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
-                for index in 0..dynamic_selection.n_items() {
-                    let Some(row) = dynamic_selection.item(index).and_downcast::<gtk::TreeListRow>() else {
-                        continue;
-                    };
-                    let Some(folder) = row.item().and_downcast::<FolderObject>() else {
-                        continue;
-                    };
-                    if folder.selectable() {
-                        dynamic_selection.set_selected(index);
-                        break;
+            } else if !unified_is_visible {
+                if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
+                    for index in 0..dynamic_selection.n_items() {
+                        let Some(row) = dynamic_selection.item(index).and_downcast::<gtk::TreeListRow>() else {
+                            continue;
+                        };
+                        let Some(folder) = row.item().and_downcast::<FolderObject>() else {
+                            continue;
+                        };
+                        if folder.selectable() && row.depth() > 0 {
+                            dynamic_selection.set_selected(index);
+                            break;
+                        }
                     }
-                }
-            } else if local_section_visible {
-                if let Some(row) = folder_list.row_at_index(1).and_downcast::<gtk::ListBoxRow>() {
-                    folder_list.select_row(Some(&row));
+                } else if local_section_visible {
+                    if let Some(row) = folder_list.row_at_index(1).and_downcast::<gtk::ListBoxRow>() {
+                        folder_list.select_row(Some(&row));
+                    }
                 }
             }
         }
 
-        self.imp().updating_folder_rows.set(false);
+        self.imp().updating_folder_rows.set(was_updating);
         self.update_drawer_header_with_selection(selection, None);
 
-        // Defer one check to next idle cycle to handle asynchronous TreeListModel row expansion
-        let page_weak = self.downgrade();
-        let sel_clone = selection.clone();
-        glib::idle_add_local_once(move || {
-            let Some(page) = page_weak.upgrade() else {
-                return;
-            };
-            if !page.has_sidebar_folder_selected() {
-                page.select_folder_row(&sel_clone);
-            }
-        });
+        // Defer one check to next idle cycle only when a parent row was just expanded
+        if any_newly_expanded {
+            let page_weak = self.downgrade();
+            let sel_clone = selection.clone();
+            glib::idle_add_local_once(move || {
+                let Some(page) = page_weak.upgrade() else {
+                    return;
+                };
+                if !page.has_sidebar_folder_selected() {
+                    page.select_folder_row(&sel_clone);
+                }
+            });
+        }
     }
 
     fn build_unified_mail_toolbar(&self) -> gtk::Box {
@@ -26226,7 +26291,7 @@ impl MailPage {
             if let Some(page) = page_weak_for_custom_filter.upgrade() {
                 if msg
                     .backend_location()
-                    .is_some_and(|loc| !loc.source_uid.is_empty() && page.is_mail_account_paused(&loc.source_uid))
+                    .is_some_and(|loc| !loc.source_uid.is_empty() && !page.is_mail_account_active(&loc.source_uid))
                 {
                     return false;
                 }
@@ -26286,7 +26351,7 @@ impl MailPage {
             if let Some(page) = page_weak_for_thread_filter.upgrade() {
                 if root
                     .backend_location()
-                    .is_some_and(|loc| !loc.source_uid.is_empty() && page.is_mail_account_paused(&loc.source_uid))
+                    .is_some_and(|loc| !loc.source_uid.is_empty() && !page.is_mail_account_active(&loc.source_uid))
                 {
                     return false;
                 }
@@ -32662,10 +32727,10 @@ impl MailPage {
             .build();
 
         let attachment_bar = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .halign(gtk::Align::Start)
-            .hexpand(false)
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
             .margin_start(8)
             .margin_end(8)
             .margin_top(2)
@@ -32674,12 +32739,13 @@ impl MailPage {
             .build();
 
         let attachment_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
-            .vscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_width(false)
             .propagate_natural_height(true)
             .min_content_width(0)
-            .min_content_height(48)
+            .min_content_height(0)
+            .max_content_height(168)
             .child(&attachment_bar)
             .build();
 
@@ -32701,6 +32767,7 @@ impl MailPage {
             .margin_end(8)
             .css_classes(vec!["attachment-list-header"])
             .height_request(26)
+            .visible(false)
             .build();
 
         let icon_spacer = gtk::Box::builder().width_request(22).build();
@@ -32722,7 +32789,7 @@ impl MailPage {
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
             .xalign(0.0)
-            .css_classes(vec!["attachment-col-header-label", "attachment-col-type"])
+            .css_classes(vec!["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_type);
 
@@ -34317,9 +34384,38 @@ impl MailPage {
                 attachment_bar.append(&btn_save_all);
             }
 
+            let cards_flowbox = if !user_attachments.is_empty() {
+                let fb = gtk::FlowBox::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .selection_mode(gtk::SelectionMode::None)
+                    .homogeneous(false)
+                    .row_spacing(6)
+                    .column_spacing(8)
+                    .min_children_per_line(1)
+                    .max_children_per_line(6)
+                    .valign(gtk::Align::Start)
+                    .halign(gtk::Align::Fill)
+                    .hexpand(true)
+                    .css_classes(vec!["attachment-flowbox"])
+                    .build();
+                attachment_bar.append(&fb);
+                Some(fb)
+            } else {
+                None
+            };
+
             for attachment in &user_attachments {
                 let card = Self::create_attachment_drawer_card(attachment, parent_window.as_ref());
-                attachment_bar.append(&card);
+                if let Some(ref fb) = cards_flowbox {
+                    let fb_child = gtk::FlowBoxChild::builder()
+                        .css_classes(vec!["attachment-flow-child"])
+                        .focusable(false)
+                        .child(&card)
+                        .build();
+                    fb.append(&fb_child);
+                } else {
+                    attachment_bar.append(&card);
+                }
 
                 // Add to listbox if section_widgets available
                 if let Some(ref widgets) = section_widgets {
@@ -34636,11 +34732,11 @@ impl MailPage {
         let card = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(10)
-            .halign(gtk::Align::Start)
-            .hexpand(false)
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
             .css_classes(vec!["attachment-drawer-card"])
-            .margin_top(4)
-            .margin_bottom(4)
+            .margin_top(0)
+            .margin_bottom(0)
             .focusable(true)
             .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
             .build();
@@ -34657,7 +34753,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Vertical)
             .spacing(2)
             .valign(gtk::Align::Center)
-            .hexpand(false)
+            .hexpand(true)
             .build();
 
         let lbl_name = gtk::Label::builder()
@@ -36372,13 +36468,6 @@ pub(crate) fn draw_agenda_sidebar_canvas_ext(
         cr.set_font_options(&font_opts);
     }
 
-    if is_dark {
-        cr.set_source_rgb(0.14, 0.14, 0.14);
-    } else {
-        cr.set_source_rgb(1.0, 1.0, 1.0);
-    }
-    let _ = cr.paint();
-
     for (idx, item) in items.iter().enumerate() {
         let is_hovered = hovered_idx == Some(idx);
         let is_selected = selected_idx == Some(idx);
@@ -36946,7 +37035,7 @@ impl MailPage {
             let mode_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(0)
-                .css_classes(vec!["linked"])
+                .css_classes(vec!["linked", "sidebar-layout-mode-toggler"])
                 .valign(gtk::Align::Center)
                 .build();
 
@@ -37793,10 +37882,12 @@ impl MailPage {
                 let (ref bx1, _, exp1) = ordered_containers[1];
                 let (ref bx2, _, exp2) = ordered_containers[2];
                 let header_h = crate::views::calendar_page::SIDEBAR_COLLAPSED_HEADER_H;
-                let approx_inner_h = if exp0 {
-                    (outer_h * 55 / 100).max(240)
-                } else {
+                let approx_inner_h = if !exp0 {
                     (outer_h - header_h).max(240)
+                } else if exp1 && !exp2 {
+                    (outer_h * 75 / 100).max(320)
+                } else {
+                    (outer_h * 55 / 100).max(240)
                 };
                 let d1 = compute_compact_box_height(bx1.upcast_ref(), approx_inner_h);
                 let d2 = compute_compact_box_height(bx2.upcast_ref(), approx_inner_h);
@@ -37804,16 +37895,7 @@ impl MailPage {
                 let outer_manual_bh =
                     match (exp1, exp2, self.imp().mail_sidebar_manual_bottom_h.get()) {
                         (true, true, Some(mbh)) => Some(mbh),
-                        (true, false, Some(mbh)) => {
-                            let m_h = self
-                                .imp()
-                                .mail_sidebar_manual_inner_bottom_h
-                                .get()
-                                .or(d2)
-                                .unwrap_or(104);
-                            let min_h = d1.unwrap_or(96) + header_h + 2;
-                            Some((mbh - m_h + header_h + 2).max(min_h))
-                        }
+                        (true, false, Some(mbh)) => Some(mbh),
                         (false, true, _) => self
                             .imp()
                             .mail_sidebar_manual_inner_bottom_h
@@ -37831,7 +37913,14 @@ impl MailPage {
                         };
                         Some((h1 + h2 + 6).min(cap))
                     }
-                    (true, false, Some(h1), _) => Some(h1 + header_h + 2),
+                    (true, false, Some(h1), _) => {
+                        let cap = if outer_h > 360 {
+                            (outer_h * 52 / 100).max(210)
+                        } else {
+                            260
+                        };
+                        Some((h1 + header_h + 2).min(cap))
+                    }
                     (false, true, _, Some(h2)) => Some(h2 + header_h + 2),
                     (false, false, _, _) => Some(header_h * 2 + 2),
                     _ => None,
@@ -37855,7 +37944,7 @@ impl MailPage {
                 } else {
                     None
                 };
-                let inner_pos = apply_two_pane_accordion(
+                let _inner_pos = apply_two_pane_accordion(
                     &todo_inner_vpaned,
                     expected_inner_h,
                     bx1.upcast_ref(),
@@ -37867,18 +37956,43 @@ impl MailPage {
                     d1,
                     d2,
                 );
-                if raw_outer_h > 220 && (todo_inner_vpaned.height() - expected_inner_h).abs() > 8 {
+                if raw_outer_h > 220 {
                     let page_weak = self.downgrade();
-                    let inner_weak = todo_inner_vpaned.downgrade();
-                    glib::idle_add_local_once(move || {
-                        if let (Some(page), Some(inner)) = (page_weak.upgrade(), inner_weak.upgrade()) {
+                    let ticks_left = Rc::new(Cell::new(2u8));
+                    todo_inner_vpaned.add_tick_callback(move |inner, _| {
+                        let rem = ticks_left.get();
+                        if rem == 0 {
+                            return glib::ControlFlow::Break;
+                        }
+                        ticks_left.set(rem - 1);
+                        if let Some(page) = page_weak.upgrade() {
                             if !page.imp().mail_sidebar_vpane_dragging.get()
                                 && !page.imp().mail_sidebar_inner_vpane_dragging.get()
                             {
-                                page.imp().syncing_mail_sidebar_vpane.set(true);
-                                inner.set_position(inner_pos);
-                                page.imp().syncing_mail_sidebar_vpane.set(false);
+                                let real_h = inner.height();
+                                if real_h > 68 {
+                                    let (pos, resize_start, resize_end) =
+                                        crate::views::calendar_page::compute_two_pane_accordion_layout(
+                                            real_h,
+                                            exp1,
+                                            exp2,
+                                            inner_saved,
+                                            inner_manual_bh,
+                                            d1,
+                                            d2,
+                                        );
+                                    page.imp().syncing_mail_sidebar_vpane.set(true);
+                                    inner.set_resize_start_child(resize_start);
+                                    inner.set_resize_end_child(resize_end);
+                                    inner.set_position(pos);
+                                    page.imp().syncing_mail_sidebar_vpane.set(false);
+                                }
                             }
+                        }
+                        if rem <= 1 {
+                            glib::ControlFlow::Break
+                        } else {
+                            glib::ControlFlow::Continue
                         }
                     });
                 }
@@ -38026,18 +38140,14 @@ impl MailPage {
         todo_inner_vpaned.add_controller(inner_click);
 
         let page_weak_vpane = self.downgrade();
-        let last_outer_vpane_h = Rc::new(Cell::new(0i32));
         todo_vpaned.connect_position_notify(move |paned| {
             let Some(page) = page_weak_vpane.upgrade() else { return };
             let h = paned.height();
-            let prev_h = last_outer_vpane_h.replace(h);
             if page.imp().syncing_mail_sidebar_vpane.get() {
                 return;
             }
             if let (Some(start), Some(end)) = (paned.start_child(), paned.end_child()) {
-                let height_stable = prev_h > 220 && (h - prev_h).abs() <= 2;
-                let user_drag = page.imp().mail_sidebar_vpane_dragging.get()
-                    || (paned.is_mapped() && height_stable);
+                let user_drag = page.imp().mail_sidebar_vpane_dragging.get();
                 if !user_drag || !start.vexpands() || !end.vexpands() {
                     return;
                 }
@@ -38056,18 +38166,14 @@ impl MailPage {
         });
 
         let page_weak_inner_vpane = self.downgrade();
-        let last_inner_vpane_h = Rc::new(Cell::new(0i32));
         todo_inner_vpaned.connect_position_notify(move |paned| {
             let Some(page) = page_weak_inner_vpane.upgrade() else { return };
             let h = paned.height();
-            let prev_h = last_inner_vpane_h.replace(h);
             if page.imp().syncing_mail_sidebar_vpane.get() {
                 return;
             }
             if let (Some(start), Some(end)) = (paned.start_child(), paned.end_child()) {
-                let height_stable = prev_h > 180 && (h - prev_h).abs() <= 2;
-                let user_drag = page.imp().mail_sidebar_inner_vpane_dragging.get()
-                    || (paned.is_mapped() && height_stable);
+                let user_drag = page.imp().mail_sidebar_inner_vpane_dragging.get();
                 if !user_drag || !start.vexpands() || !end.vexpands() {
                     return;
                 }
@@ -43050,16 +43156,21 @@ impl MailPage {
         }
     }
 
+    pub(crate) fn is_mail_account_active(&self, source_uid: &str) -> bool {
+        let canon = Self::canonical_account_uid(source_uid);
+        if canon.is_empty() || canon == "local" {
+            return true;
+        }
+        !self.is_mail_account_paused(canon)
+            && eds_service::is_source_enabled_for_service(canon, EdsSourceKind::Mail)
+    }
+
     pub(crate) fn is_mail_account_paused(&self, source_uid: &str) -> bool {
         let canon = Self::canonical_account_uid(source_uid);
         if canon.is_empty() {
             return false;
         }
-        let key = format!("account-paused:{canon}");
         let expanded = self.imp().dynamic_folder_expanded.borrow();
-        if expanded.contains(&key) {
-            return true;
-        }
         expanded.iter().any(|entry| {
             entry
                 .strip_prefix("account-paused:")
@@ -43127,6 +43238,9 @@ impl MailPage {
         if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
             filter.changed(gtk::FilterChange::Different);
         }
+        self.refresh_unread_counters();
+        self.update_drawer_header();
+        self.publish_statusbar_summary();
         self.update_mail_table_canvas_layout();
 
         let label_name = if display_name.trim().is_empty() {
@@ -43390,6 +43504,9 @@ impl MailPage {
                             let folders = page.imp().mail_folder_summaries.borrow().clone();
                             page.rebuild_camel_folder_rows_with_force(folder_list, &folders, true);
                         }
+                        page.refresh_unread_counters();
+                        page.update_drawer_header();
+                        page.publish_statusbar_summary();
                     }
                 }
             });
@@ -43731,7 +43848,9 @@ impl MailPage {
                     let known_empty_folder = !folder_to_load.is_empty()
                         && sqlite_msgs.is_empty()
                         && sqlite_folders.iter().any(|f| {
-                            folder_names_match(&f.folder_name, folder_to_load) && f.total_count == 0
+                            account_sources_match(&f.source_uid, hint)
+                                && folder_names_match(&f.folder_name, folder_to_load)
+                                && f.total_count == 0
                         });
                     let should_apply_sync = if !folder_to_load.is_empty() {
                         !sqlite_msgs.is_empty() || known_empty_folder
@@ -45156,15 +45275,17 @@ impl MailPage {
                 let canon_src = Self::canonical_account_uid(&f.source_uid).to_string();
                 folder_map.insert((canon_src, f.folder_name.clone()), f.clone());
             }
-            if let Some(target_source) = pending.request.source_uid.as_deref() {
-                let target_canon = Self::canonical_account_uid(target_source);
-                folder_map.retain(|(src, _), _| src != target_canon);
-            } else {
-                folder_map.clear();
-            }
-            for f in &pending.camel_folders {
-                let canon_src = Self::canonical_account_uid(&f.source_uid).to_string();
-                folder_map.insert((canon_src, f.folder_name.clone()), f.clone());
+            if !pending.camel_folders.is_empty() {
+                let updated_sources: HashSet<String> = pending
+                    .camel_folders
+                    .iter()
+                    .map(|f| Self::canonical_account_uid(&f.source_uid).to_string())
+                    .collect();
+                folder_map.retain(|(src, _), _| !updated_sources.contains(src));
+                for f in &pending.camel_folders {
+                    let canon_src = Self::canonical_account_uid(&f.source_uid).to_string();
+                    folder_map.insert((canon_src, f.folder_name.clone()), f.clone());
+                }
             }
             let mut merged_folders: Vec<camel_mail_service::CamelFolderSummary> = folder_map.into_values().collect();
             merged_folders.sort_by(|a, b| {
@@ -45460,6 +45581,13 @@ impl MailPage {
         }
 
         let is_local = pending.result_kind == "local";
+        let has_dynamic_accounts = !self.imp().mail_folder_summaries.borrow().is_empty()
+            || self
+                .imp()
+                .dynamic_folder_store
+                .borrow()
+                .as_ref()
+                .is_some_and(|s| s.n_items() > 0);
         let mut visible_local_folders = pending.local_folders.clone();
         visible_local_folders.extend(
             pending
@@ -45469,7 +45597,7 @@ impl MailPage {
                 .cloned(),
         );
         if let Some(section) = self.imp().local_folder_section.borrow().as_ref() {
-            section.set_visible(is_local);
+            section.set_visible(is_local && !has_dynamic_accounts);
         }
 
         if is_local {
@@ -45925,8 +46053,15 @@ impl MailPage {
             .map(|selection| selection.borrow().clone());
         if completion.replace {
             if completion.is_local {
+                let has_dynamic_accounts = !self.imp().mail_folder_summaries.borrow().is_empty()
+                    || self
+                        .imp()
+                        .dynamic_folder_store
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|s| s.n_items() > 0);
                 let selected_folder = selected_folder
-                    .filter(|selection| !selection.is_remote())
+                    .filter(|selection| !selection.is_remote() || has_dynamic_accounts)
                     .unwrap_or_else(FolderSelection::configured_initial);
                 if let Some(selection) = self.imp().folder_selection.borrow().as_ref() {
                     selection.replace(selected_folder.clone());
@@ -45942,9 +46077,24 @@ impl MailPage {
                 if selected_folder.is_remote() {
                     let folder_valid = if let Some(src) = selected_folder.source_uid.as_deref() {
                         let canon = Self::canonical_account_uid(src);
-                        self.imp().mail_folder_summaries.borrow().iter().any(|f| {
-                            Self::canonical_account_uid(&f.source_uid) == canon
-                        })
+                        eds_service::is_source_enabled_for_service(canon, EdsSourceKind::Mail)
+                            || self.imp().mail_folder_summaries.borrow().iter().any(|f| {
+                                account_sources_match(&f.source_uid, src)
+                            })
+                            || self
+                                .imp()
+                                .dynamic_folder_store
+                                .borrow()
+                                .as_ref()
+                                .is_some_and(|store| {
+                                    (0..store.n_items()).any(|i| {
+                                        store
+                                            .item(i)
+                                            .and_downcast::<FolderObject>()
+                                            .and_then(|r| r.source_uid())
+                                            .is_some_and(|u| account_sources_match(&u, src))
+                                    })
+                                })
                     } else {
                         true
                     };
@@ -46297,13 +46447,14 @@ impl MailPage {
                 folders
                     .iter()
                     .filter(|folder| {
-                        data.folder_id == "all"
-                            || folder.folder_id
-                                == if data.folder_id == "spam" {
-                                    "junk"
-                                } else {
-                                    data.folder_id.as_str()
-                                }
+                        self.is_mail_account_active(&folder.source_uid)
+                            && (data.folder_id == "all"
+                                || folder.folder_id
+                                    == if data.folder_id == "spam" {
+                                        "junk"
+                                    } else {
+                                        data.folder_id.as_str()
+                                    })
                     })
                     .fold(local, |(unread, total), folder| {
                         (
@@ -46341,7 +46492,10 @@ impl MailPage {
                 .unwrap_or(0);
             let camel_inbox_unread = folders
                 .iter()
-                .filter(|f| f.folder_id.eq_ignore_ascii_case("inbox"))
+                .filter(|f| {
+                    self.is_mail_account_active(&f.source_uid)
+                        && f.folder_id.eq_ignore_ascii_case("inbox")
+                })
                 .fold(0_u32, |acc, f| acc.saturating_add(f.unread_count));
             let unified_inbox_unread = local_inbox_unread.saturating_add(camel_inbox_unread);
 
@@ -46360,7 +46514,10 @@ impl MailPage {
                 .iter()
                 .filter(|f| {
                     let id = f.folder_id.to_ascii_lowercase();
-                    !Self::is_trash_folder(&f.folder_id, &f.folder_name) && id != "junk" && id != "spam"
+                    self.is_mail_account_active(&f.source_uid)
+                        && !Self::is_trash_folder(&f.folder_id, &f.folder_name)
+                        && id != "junk"
+                        && id != "spam"
                 })
                 .fold(0_u32, |acc, f| acc.saturating_add(f.unread_count));
             let unified_total_unread = local_total_unread.saturating_add(camel_total_unread);
@@ -46371,7 +46528,10 @@ impl MailPage {
                 .unwrap_or(0);
             let camel_sent_unread = folders
                 .iter()
-                .filter(|f| f.folder_id.eq_ignore_ascii_case("sent"))
+                .filter(|f| {
+                    self.is_mail_account_active(&f.source_uid)
+                        && f.folder_id.eq_ignore_ascii_case("sent")
+                })
                 .fold(0_u32, |acc, f| acc.saturating_add(f.unread_count));
             let unified_sent_unread = local_sent_unread.saturating_add(camel_sent_unread);
 
@@ -46432,7 +46592,10 @@ impl MailPage {
                     object.set_counts(folder.unread_count, folder.total_count);
                 }
                 let canon_src = Self::canonical_account_uid(&folder.source_uid).to_string();
-                let counts = source_counts.entry(canon_src).or_default();
+                let counts = source_counts.entry(canon_src.clone()).or_default();
+                if !self.is_mail_account_active(&canon_src) {
+                    continue;
+                }
                 if !Self::is_trash_folder(&folder.folder_id, &folder.folder_name) {
                     counts.0 = counts.0.saturating_add(folder.unread_count);
                 }
@@ -55308,16 +55471,14 @@ mod tests {
         assert!(has_descendant_with_class(&list_row, "attachment-list-download-btn"), "list row must have a 1-click download button");
 
         // Check drawer card exists in attachment_bar
-        let mut has_drawer_card = false;
-        let mut curr_bar_child = attachment_bar.first_child();
-        while let Some(w) = curr_bar_child {
-            if w.has_css_class("attachment-drawer-card") {
-                has_drawer_card = true;
-                assert!(has_descendant_with_class(&w, "attachment-card-download-btn"), "drawer card must have a 1-click download button");
-            }
-            curr_bar_child = w.next_sibling();
-        }
-        assert!(has_drawer_card, "attachment_bar must contain cards with .attachment-drawer-card");
+        assert!(
+            has_descendant_with_class(&attachment_bar, "attachment-drawer-card"),
+            "attachment_bar must contain cards with .attachment-drawer-card"
+        );
+        assert!(
+            has_descendant_with_class(&attachment_bar, "attachment-card-download-btn"),
+            "drawer card must have a 1-click download button"
+        );
 
         // Toggling to expanded
         widgets.btn_collapse.emit_clicked();

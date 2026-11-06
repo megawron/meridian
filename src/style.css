@@ -2460,6 +2460,7 @@ picture.attachment-card-thumbnail {
   font-size: 0.78rem;
   font-weight: 600;
   color: alpha(currentColor, 0.75);
+  opacity: 1;
 }
 
 .attachment-col-type {
@@ -4265,10 +4266,14 @@ button.month-bar-chip.span-end {
 
 .calendar-agenda-canvas,
 .calendar-year-canvas,
-.taskpad-canvas,
 .tasks-table-canvas,
 .memos-table-canvas {
   background: @view_bg_color;
+}
+
+.taskpad-canvas {
+  background: transparent;
+  background-color: transparent;
 }
 
 .year-planner-day-popover > contents {
@@ -4411,6 +4416,7 @@ button.month-bar-chip.span-end {
   background-color: @view_bg_color;
   border-top: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-bg-color, @sidebar_bg_color));
   padding: 0 8px;
+  margin: 0;
   min-height: 22px;
 }
 
@@ -4421,12 +4427,22 @@ button.month-bar-chip.span-end {
   margin: 0;
 }
 
-.statusbar-message {
+.statusbar image,
+.debug-console-header image {
+  -gtk-icon-size: 14px;
+}
+
+.statusbar-message,
+.statusbar label {
   color: alpha(@window_fg_color, 0.88);
+  caret-color: transparent;
+  -gtk-secondary-caret-color: transparent;
 }
 
 .statusbar-date {
   color: alpha(@window_fg_color, 0.72);
+  caret-color: transparent;
+  -gtk-secondary-caret-color: transparent;
 }
 
 .debug-console-panel {
@@ -4446,8 +4462,8 @@ button.month-bar-chip.span-end {
   border: none;
   border-bottom: 1px solid color-mix(in srgb, var(--sidebar-fg-color, @sidebar_fg_color) 8%, var(--sidebar-bg-color, @sidebar_bg_color));
   box-shadow: none;
-  min-height: 24px;
-  padding: 1px 8px;
+  min-height: 22px;
+  padding: 0 8px;
   margin: 0;
 }
 
@@ -4458,11 +4474,42 @@ button.month-bar-chip.span-end {
   margin: 0;
 }
 
-.debug-console-header searchentry {
-  min-height: 20px;
+.debug-console-header button.debug-filter-chip {
+  min-height: 18px;
   padding: 0 6px;
-  margin-top: 0;
-  margin-bottom: 0;
+  margin: 1px 0;
+  border-radius: 4px;
+  font-size: 0.74rem;
+  font-weight: 500;
+  opacity: 0.62;
+}
+
+.debug-console-header button.debug-filter-chip:checked {
+  opacity: 1.0;
+  background-color: alpha(@accent_bg_color, 0.18);
+  color: @accent_color;
+}
+
+.debug-console-header entry,
+.debug-console-header searchentry {
+  min-height: 18px;
+  padding: 0 6px;
+  margin-top: 1px;
+  margin-bottom: 1px;
+  border-radius: 5px;
+  font-size: 0.78rem;
+}
+
+.debug-console-header entry > text,
+.debug-console-header searchentry > text {
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.debug-console-header entry > image,
+.debug-console-header searchentry > image {
+  -gtk-icon-size: 12px;
 }
 
 .debug-console-header separator {
@@ -5141,7 +5188,8 @@ paned.year-view-paned > separator {
 }
 
 .agenda-sidebar-canvas {
-  background-color: @view_bg_color;
+  background: transparent;
+  background-color: transparent;
 }
 
 .agenda-sidebar-canvas:focus-visible {
@@ -5250,11 +5298,17 @@ paned.year-view-paned > separator {
 
 /* ── Mobile-Adaptive ViewSwitcherBar ────────────────────────────────────────── */
 viewswitcherbar {
-  border-top: 1px solid alpha(@borders, 0.5);
-  background-color: @window_bg_color;
+  border: none;
+  background-color: transparent;
   padding: 0;
   margin: 0;
   min-width: 0;
+  min-height: 0;
+}
+
+viewswitcherbar actionbar > revealer > box {
+  border-top: 1px solid alpha(@borders, 0.5);
+  background-color: @window_bg_color;
 }
 
 viewswitcherbar viewswitcher {
@@ -5345,6 +5399,16 @@ toolbarview.undershoot-bottom > .bottom-bar {
   background-image: none;
   box-shadow: none;
   border-top: none;
+  padding: 0;
+  margin: 0;
+}
+
+toolbarview > .top-bar .collapse-spacing,
+toolbarview > .bottom-bar .collapse-spacing {
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 .window-header-box {
@@ -6701,11 +6765,14 @@ headerbar.memos-detached-headerbar,
 }
 
 headerbar.memos-detached-headerbar .title,
-headerbar.memos-detached-headerbar button,
-.memos-sidebar-section .memos-section-header .heading,
-.memos-sidebar-section .memos-section-header .sidebar-drawer-total,
-.memos-sidebar-section .memos-section-header button {
+headerbar.memos-detached-headerbar button {
   color: color-mix(in srgb, @warning_bg_color 55%, @window_fg_color);
+}
+
+.sidebar-layout-mode-toggler button {
+  min-height: 26px;
+  padding: 3px 10px;
+  font-size: 0.82rem;
 }
 
 .dark .memopad-canvas,
@@ -6743,10 +6810,7 @@ headerbar.memos-detached-headerbar button,
 }
 
 .dark headerbar.memos-detached-headerbar .title,
-.dark headerbar.memos-detached-headerbar button,
-.dark .memos-sidebar-section .memos-section-header .heading,
-.dark .memos-sidebar-section .memos-section-header .sidebar-drawer-total,
-.dark .memos-sidebar-section .memos-section-header button {
+.dark headerbar.memos-detached-headerbar button {
   color: #e5c07b;
 }
 
@@ -7268,39 +7332,4 @@ row.compact-grouped-combo popover listview > row {
   padding-bottom: 2px;
   min-height: 22px;
 }
-
-/* ── Preferences Signatures Selector & Editor (Libadwaita + Outlook style) ── */
-.signature-list-card {
-  border-radius: 12px;
-}
-
-.signature-list-card list.signature-selector-list {
-  background: transparent;
-  box-shadow: none;
-  border-radius: 0;
-}
-
-list.signature-selector-list > row.selected-signature-row {
-  background-color: alpha(@accent_bg_color, 0.12);
-  box-shadow: inset 3px 0 0 0 @accent_color;
-}
-
-list.signature-selector-list > row.selected-signature-row:hover {
-  background-color: alpha(@accent_bg_color, 0.17);
-}
-
-list.signature-selector-list > row.selected-signature-row label.title {
-  font-weight: 600;
-  color: @accent_color;
-}
-
-.signature-default-pill {
-  background-color: alpha(currentColor, 0.08);
-  padding: 2px 8px;
-  border-radius: 999px;
-  margin-right: 4px;
-}
-
-
-
 

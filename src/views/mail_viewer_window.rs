@@ -721,21 +721,23 @@ impl MailViewerWindow {
 
         // Attachment bar (icons view)
         let attachment_bar = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .halign(gtk::Align::Start)
-            .hexpand(false)
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
             .margin_start(12)
             .margin_end(12)
             .margin_top(4)
             .margin_bottom(6)
             .build();
         let attachment_scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
-            .vscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_width(false)
             .propagate_natural_height(true)
             .min_content_width(0)
+            .min_content_height(0)
+            .max_content_height(168)
             .child(&attachment_bar)
             .visible(true)
             .build();
@@ -759,6 +761,7 @@ impl MailViewerWindow {
             .margin_end(8)
             .css_classes(vec!["attachment-list-header"])
             .height_request(26)
+            .visible(false)
             .build();
 
         let icon_spacer = gtk::Box::builder().width_request(22).build();
@@ -776,7 +779,7 @@ impl MailViewerWindow {
             .label(&gettext("Type"))
             .width_request(140)
             .xalign(0.0)
-            .css_classes(vec!["attachment-col-header-label", "attachment-col-type"])
+            .css_classes(vec!["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_type);
 
@@ -1562,9 +1565,38 @@ impl MailViewerWindow {
             }
         }
 
+        let cards_flowbox = if !attachments.is_empty() {
+            let fb = gtk::FlowBox::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .selection_mode(gtk::SelectionMode::None)
+                .homogeneous(false)
+                .row_spacing(6)
+                .column_spacing(8)
+                .min_children_per_line(1)
+                .max_children_per_line(6)
+                .valign(gtk::Align::Start)
+                .halign(gtk::Align::Fill)
+                .hexpand(true)
+                .css_classes(vec!["attachment-flowbox"])
+                .build();
+            bar.append(&fb);
+            Some(fb)
+        } else {
+            None
+        };
+
         for att in &attachments {
             let card = self.create_attachment_drawer_card(att);
-            bar.append(&card);
+            if let Some(ref fb) = cards_flowbox {
+                let fb_child = gtk::FlowBoxChild::builder()
+                    .css_classes(vec!["attachment-flow-child"])
+                    .focusable(false)
+                    .child(&card)
+                    .build();
+                fb.append(&fb_child);
+            } else {
+                bar.append(&card);
+            }
 
             // Also add list view row if listbox exists
             if let Some(listbox) = self.imp().attachment_listbox.borrow().as_ref() {
@@ -1877,11 +1909,11 @@ impl MailViewerWindow {
         let card = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(10)
-            .halign(gtk::Align::Start)
-            .hexpand(false)
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
             .css_classes(vec!["attachment-drawer-card"])
-            .margin_top(4)
-            .margin_bottom(4)
+            .margin_top(0)
+            .margin_bottom(0)
             .focusable(true)
             .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
             .build();
@@ -1898,7 +1930,7 @@ impl MailViewerWindow {
             .orientation(gtk::Orientation::Vertical)
             .spacing(2)
             .valign(gtk::Align::Center)
-            .hexpand(false)
+            .hexpand(true)
             .build();
 
         let lbl_name = gtk::Label::builder()
@@ -2981,16 +3013,14 @@ mod tests {
 
         // Attachment bar should contain drawer cards with download button
         let bar = window.imp().attachment_bar.borrow().clone().expect("attachment_bar");
-        let mut has_drawer_card = false;
-        let mut curr_bar_child = bar.first_child();
-        while let Some(w) = curr_bar_child {
-            if w.has_css_class("attachment-drawer-card") {
-                has_drawer_card = true;
-                assert!(has_descendant_with_class(&w, "attachment-card-download-btn"), "drawer card must have a 1-click download button");
-            }
-            curr_bar_child = w.next_sibling();
-        }
-        assert!(has_drawer_card, "attachment_bar must contain cards with .attachment-drawer-card");
+        assert!(
+            has_descendant_with_class(&bar, "attachment-drawer-card"),
+            "attachment_bar must contain cards with .attachment-drawer-card"
+        );
+        assert!(
+            has_descendant_with_class(&bar, "attachment-card-download-btn"),
+            "drawer card must have a 1-click download button"
+        );
 
         // Expanding revealer via btn_collapse
         btn_collapse.emit_clicked();
