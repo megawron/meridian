@@ -111,10 +111,7 @@ build_flatpak_bundle() {
     homepage_url="${FLATPAK_HOMEPAGE_URL:-https://github.com/megawron/meridian}"
     gpg_key="${FLATPAK_GPG_KEY:-5F5B2DAC0DFADFBA2627BB3E2654C3727A504079}"
 
-    case "$TAG" in
-        *-beta*) bundle="Meridian-Beta-${arch}.flatpak" ;;
-        *)       bundle="Meridian-${arch}.flatpak" ;;
-    esac
+    bundle="meridian-${RAW_VERSION}-${arch}.flatpak"
 
     echo "==> Packaging Flatpak repository & bundle: $bundle (branch: $branch)"
     work="$(mktemp -d)"
@@ -214,9 +211,12 @@ EOF
         "${gpg_args[@]}" \
         "$repo_dir" >/dev/null
 
+    local bundle_gpg_args=()
     if gpg --list-secret-keys "$gpg_key" >/dev/null 2>&1; then
-        gpg_b64="$(gpg --export "$gpg_key" | base64 -w0)"
-        cat > "$OUT/$APP_ID.flatpakref" <<EOF
+        gpg --export "$gpg_key" > "$work/repo.gpg"
+        bundle_gpg_args=(--gpg-keys="$work/repo.gpg")
+        gpg_b64="$(base64 -w0 < "$work/repo.gpg")"
+        cat > "$repo_dir/$APP_ID.flatpakref" <<EOF
 [Flatpak Ref]
 Title=Meridian
 Name=$APP_ID
@@ -227,7 +227,6 @@ RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
 IsRuntime=false
 GPGKey=$gpg_b64
 EOF
-        cp "$OUT/$APP_ID.flatpakref" "$repo_dir/$APP_ID.flatpakref"
 
         cat > "$repo_dir/meridian.flatpakrepo" <<EOF
 [Flatpak Repo]
@@ -242,10 +241,12 @@ EOF
     fi
 
     flatpak build-bundle "$repo_dir" "$OUT/$bundle" "$APP_ID" "$branch" \
-        --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
+        --repo-url="$repo_url" \
+        --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+        "${bundle_gpg_args[@]}"
     rm -rf "$work"
     echo "==> Flatpak bundle ready: $OUT/$bundle"
-    echo "==> Flatpakref ready:     $OUT/$APP_ID.flatpakref"
+    echo "==> Flatpakref ready:     $repo_dir/$APP_ID.flatpakref"
     echo "==> Flatpak repo ready:   $repo_dir"
 }
 
@@ -391,6 +392,13 @@ fi
 %{_datadir}/icons/hicolor/scalable/apps/*.svg
 %{_datadir}/icons/hicolor/symbolic/apps/*.svg
 %{_datadir}/locale/*/LC_MESSAGES/meridian.mo
+
+%changelog
+* Fri Nov 06 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
+- Initial public beta release of Meridian
+- Unified mail workspace with threaded conversations, fast full-text search, OpenPGP and S/MIME support, and sandboxed HTML preview
+- Multi-view calendar supporting Day, Work Week, Week, Month, Agenda, and Year views
+- Integrated Contacts, Tasks, and Memos with Evolution Data Server (EDS) and GNOME Online Accounts integration
 EOF
 
     rpmbuild -bb --define "_topdir $work/rpmbuild" "$work/rpmbuild/SPECS/meridian.spec"
@@ -440,7 +448,7 @@ publish_gh_pages() {
     mkdir -p "$pages_work/flatpak"
     cp -a "$repo_dir/." "$pages_work/flatpak/"
     rm -f "$pages_work/flatpak/.lock"
-    cp "$OUT/$APP_ID.flatpakref" "$pages_work/$APP_ID.flatpakref"
+    [ -f "$repo_dir/$APP_ID.flatpakref" ] && cp "$repo_dir/$APP_ID.flatpakref" "$pages_work/$APP_ID.flatpakref"
 
     cat > "$pages_work/index.html" <<EOF
 <!DOCTYPE html>
