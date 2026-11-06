@@ -10,6 +10,17 @@
 #include <glib.h>
 #include <string.h>
 
+/* e_vcard_to_string() lost its EVCardFormat argument in newer EDS releases. */
+static inline gchar *
+meridian_vcard_to_string (EVCard *vcard)
+{
+#if EDS_CHECK_VERSION (3, 58, 0)
+    return e_vcard_to_string (vcard);
+#else
+    return e_vcard_to_string (vcard, EVC_FORMAT_VCARD_30);
+#endif
+}
+
 typedef struct {
     MeridianEdsEBookContact *contacts;
     size_t count;
@@ -48,7 +59,7 @@ append_contact (EBookLoadContext *context,
     if (!contact)
         return FALSE;
 
-    vcard = e_vcard_to_string (E_VCARD (contact));
+    vcard = meridian_vcard_to_string (E_VCARD (contact));
     if (!vcard || !*vcard) {
         g_free (vcard);
         return FALSE;
@@ -123,7 +134,7 @@ load_source_worker (gpointer data)
     for (link = contacts; link != NULL; link = link->next) {
         EContact *contact = E_CONTACT (link->data);
         if (!contact) continue;
-        gchar *vcard = e_vcard_to_string (E_VCARD (contact));
+        gchar *vcard = meridian_vcard_to_string (E_VCARD (contact));
         if (!vcard || !*vcard) {
             g_free (vcard);
             continue;
@@ -401,7 +412,7 @@ meridian_eds_ebook_apply_operation (
 
         if (uid && *uid && e_book_client_get_contact_sync (
                 client, uid, &stored_contact, NULL, &error)) {
-            confirmed_vcard = e_vcard_to_string (
+            confirmed_vcard = meridian_vcard_to_string (
                 E_VCARD (stored_contact));
         } else {
             g_clear_error (&error);
@@ -586,7 +597,7 @@ ebook_watcher_objects_changed_cb (EBookClientView *view,
         if (!contact)
             continue;
 
-        vcard = e_vcard_to_string (
+        vcard = meridian_vcard_to_string (
             E_VCARD (contact));
         if (vcard && *vcard) {
             queue_ebook_watcher_event (
