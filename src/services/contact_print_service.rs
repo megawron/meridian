@@ -44,7 +44,7 @@ fn contact_display_name(contact: &VCardContact) -> String {
     } else if !given.is_empty() {
         given.to_string()
     } else {
-        "Unbenannter Kontakt".to_string()
+        "Unnamed Contact".to_string()
     }
 }
 
@@ -104,7 +104,7 @@ fn contact_card_html_and_text(record: &EBookContactRecord) -> (String, String) {
     let mut html_fields = Vec::new();
     let mut text_fields = Vec::new();
 
-    // E-Mails
+    // Emails
     let mut emails: Vec<String> = Vec::new();
     if !contact.email.trim().is_empty() {
         emails.push(contact.email.trim().to_string());
@@ -117,9 +117,9 @@ fn contact_card_html_and_text(record: &EBookContactRecord) -> (String, String) {
     }
     if !emails.is_empty() {
         let label = if emails.len() == 1 {
-            "E-Mail"
+            "Email"
         } else {
-            "E-Mails"
+            "Emails"
         };
         let escaped_emails = emails
             .iter()
@@ -130,7 +130,7 @@ fn contact_card_html_and_text(record: &EBookContactRecord) -> (String, String) {
         text_fields.push(format!("{label}: {}", emails.join(", ")));
     }
 
-    // Telefone
+    // Phones
     let mut phones: Vec<String> = Vec::new();
     if !contact.tel.trim().is_empty() {
         phones.push(contact.tel.trim().to_string());
@@ -143,9 +143,9 @@ fn contact_card_html_and_text(record: &EBookContactRecord) -> (String, String) {
     }
     if !phones.is_empty() {
         let label = if phones.len() == 1 {
-            "Telefon"
+            "Phone"
         } else {
-            "Telefone"
+            "Phones"
         };
         let escaped_phones = phones
             .iter()
@@ -156,12 +156,12 @@ fn contact_card_html_and_text(record: &EBookContactRecord) -> (String, String) {
         text_fields.push(format!("{label}: {}", phones.join(", ")));
     }
 
-    // Adressen
+    // Addresses
     if !contact.addresses.is_empty() {
         let label = if contact.addresses.len() == 1 {
-            "Adresse"
+            "Address"
         } else {
-            "Adressen"
+            "Addresses"
         };
         let escaped_addrs = contact
             .addresses
@@ -176,9 +176,9 @@ fn contact_card_html_and_text(record: &EBookContactRecord) -> (String, String) {
     // Web / URLs
     if !contact.urls.is_empty() {
         let label = if contact.urls.len() == 1 {
-            "Webseite"
+            "Website"
         } else {
-            "Webseiten"
+            "Websites"
         };
         let escaped_urls = contact
             .urls
@@ -190,50 +190,50 @@ fn contact_card_html_and_text(record: &EBookContactRecord) -> (String, String) {
         text_fields.push(format!("{label}: {}", contact.urls.join(", ")));
     }
 
-    // Geburtstag / Jahrestag
+    // Birthday / Anniversary
     if !contact.birthday.trim().is_empty() {
         html_fields.push(format!(
-            "<dt>Geburtstag</dt><dd>{}</dd>",
+            "<dt>Birthday</dt><dd>{}</dd>",
             glib::markup_escape_text(contact.birthday.trim())
         ));
-        text_fields.push(format!("Geburtstag: {}", contact.birthday.trim()));
+        text_fields.push(format!("Birthday: {}", contact.birthday.trim()));
     }
     if !contact.anniversary.trim().is_empty() {
         html_fields.push(format!(
-            "<dt>Jahrestag</dt><dd>{}</dd>",
+            "<dt>Anniversary</dt><dd>{}</dd>",
             glib::markup_escape_text(contact.anniversary.trim())
         ));
-        text_fields.push(format!("Jahrestag: {}", contact.anniversary.trim()));
+        text_fields.push(format!("Anniversary: {}", contact.anniversary.trim()));
     }
 
-    // Kategorien
+    // Categories
     if !contact.categories.is_empty() {
         let cats = contact.categories.join(", ");
         html_fields.push(format!(
-            "<dt>Kategorien</dt><dd>{}</dd>",
+            "<dt>Categories</dt><dd>{}</dd>",
             glib::markup_escape_text(&cats)
         ));
-        text_fields.push(format!("Kategorien: {cats}"));
+        text_fields.push(format!("Categories: {cats}"));
     }
 
-    // Adressbuchquelle
+    // Address book source
     if !record.source_display_name.trim().is_empty() {
         html_fields.push(format!(
-            "<dt>Adressbuch</dt><dd>{}</dd>",
+            "<dt>Address Book</dt><dd>{}</dd>",
             glib::markup_escape_text(record.source_display_name.trim())
         ));
-        text_fields.push(format!("Adressbuch: {}", record.source_display_name.trim()));
+        text_fields.push(format!("Address Book: {}", record.source_display_name.trim()));
     }
 
-    // Verteilerliste
+    // Contact list
     let mut list_html = String::new();
     let mut list_text = Vec::new();
     if contact.is_list {
         let member_count = contact.list_members.len();
         list_html.push_str(&format!(
-            "<div class=\"contact-list-section\"><h3>Mitglieder ({member_count})</h3><ul>"
+            "<div class=\"contact-list-section\"><h3>Members ({member_count})</h3><ul>"
         ));
-        list_text.push(format!("Mitglieder ({member_count}):"));
+        list_text.push(format!("Members ({member_count}):"));
         for member in &contact.list_members {
             let m_text = member.display_text(contact.list_show_addresses);
             list_html.push_str(&format!("<li>{}</li>", glib::markup_escape_text(&m_text)));
@@ -242,15 +242,15 @@ fn contact_card_html_and_text(record: &EBookContactRecord) -> (String, String) {
         list_html.push_str("</ul></div>");
     }
 
-    // Notizen
+    // Notes
     let mut note_html = String::new();
     let mut note_text = String::new();
     if !contact.note.trim().is_empty() {
         note_html.push_str(&format!(
-            "<div class=\"contact-notes\"><h4>Notizen</h4><pre>{}</pre></div>",
+            "<div class=\"contact-notes\"><h4>Notes</h4><pre>{}</pre></div>",
             glib::markup_escape_text(contact.note.trim())
         ));
-        note_text = format!("Notizen:\n{}", contact.note.trim());
+        note_text = format!("Notes:\n{}", contact.note.trim());
     }
 
     let meta_html = if let Some(meta) = &org_meta {
@@ -290,14 +290,14 @@ pub fn build_contact_print_document(
     selection: &[EBookContactRecord],
 ) -> Result<ContactPrintDocument, String> {
     if selection.is_empty() {
-        return Err("Keine Kontakte zum Drucken ausgewählt".to_string());
+        return Err("No contacts selected for printing".to_string());
     }
 
     let mut seen = HashSet::new();
     for record in selection {
         let identity = ContactIdentity::new(record.source_uid.clone(), record.uid.clone());
         if !seen.insert(identity) {
-            return Err("Die Auswahl enthält doppelte Kontakte".to_string());
+            return Err("Selection contains duplicate contacts".to_string());
         }
     }
 
@@ -311,7 +311,7 @@ pub fn build_contact_print_document(
     let doc_title = if contact_count == 1 {
         contact_display_name(&sorted[0].contact)
     } else {
-        format!("{contact_count} Kontakte")
+        format!("{contact_count} Contacts")
     };
     let escaped_doc_title = glib::markup_escape_text(&doc_title);
 
@@ -365,19 +365,19 @@ pub fn build_contact_list_print_document(
     visible: &[EBookContactRecord],
 ) -> Result<ContactListPrintDocument, String> {
     if visible.is_empty() {
-        return Err("Es sind keine sichtbaren Kontakte zum Drucken vorhanden".to_string());
+        return Err("No visible contacts available to print".to_string());
     }
 
     let mut seen = HashSet::new();
     for record in visible {
         let identity = ContactIdentity::new(record.source_uid.clone(), record.uid.clone());
         if !seen.insert(identity) {
-            return Err("Die sichtbare Kontaktliste enthält eine doppelte Identität".to_string());
+            return Err("Visible contact list contains a duplicate identity".to_string());
         }
     }
 
     let contact_count = visible.len();
-    let doc_title = format!("Kontakte ({contact_count} Einträge)");
+    let doc_title = format!("Contacts ({contact_count} entries)");
     let escaped_doc_title = glib::markup_escape_text(&doc_title);
 
     let mut html_rows = Vec::with_capacity(visible.len());
@@ -432,11 +432,11 @@ pub fn build_contact_list_print_document(
     }
 
     let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{escaped_doc_title}</title><style>{PRINT_STYLESHEET}</style></head><body><h1 class=\"print-title\">{escaped_doc_title}</h1><table class=\"contact-table\"><thead><tr><th>Name</th><th>Organisation / Funktion</th><th>E-Mail</th><th>Telefon</th><th>Adressbuch</th><th>Kategorien</th></tr></thead><tbody>{}</tbody></table></body></html>",
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{escaped_doc_title}</title><style>{PRINT_STYLESHEET}</style></head><body><h1 class=\"print-title\">{escaped_doc_title}</h1><table class=\"contact-table\"><thead><tr><th>Name</th><th>Organization / Role</th><th>Email</th><th>Phone</th><th>Address Book</th><th>Categories</th></tr></thead><tbody>{}</tbody></table></body></html>",
         html_rows.join("")
     );
 
-    let header_text = "Name | Organisation / Funktion | E-Mail | Telefon | Adressbuch | Kategorien";
+    let header_text = "Name | Organization / Role | Email | Phone | Address Book | Categories";
     let plain_text = format!(
         "{doc_title}\n{}\n{header_text}\n{}\n{}",
         "=".repeat(doc_title.len().max(20)),
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn print_selection_fails_closed_on_empty() {
         let err = build_contact_print_document(&[]).unwrap_err();
-        assert_eq!(err, "Keine Kontakte zum Drucken ausgewählt");
+        assert_eq!(err, "No contacts selected for printing");
     }
 
     #[test]
@@ -512,7 +512,7 @@ mod tests {
             "Tech",
         );
         let err = build_contact_print_document(&[r1, r2]).unwrap_err();
-        assert_eq!(err, "Die Auswahl enthält doppelte Kontakte");
+        assert_eq!(err, "Selection contains duplicate contacts");
     }
 
     #[test]
@@ -535,16 +535,16 @@ mod tests {
         );
         assert!(doc.html.contains("<h2>Ada Lovelace</h2>"));
         assert!(doc.html.contains("Engineer, Analytics Corp"));
-        assert!(doc.html.contains("<dt>E-Mail</dt><dd>ada@example.com</dd>"));
-        assert!(doc.html.contains("<dt>Telefon</dt><dd>+49 123 456789</dd>"));
-        assert!(doc.html.contains("<dt>Kategorien</dt><dd>Kollegen</dd>"));
+        assert!(doc.html.contains("<dt>Email</dt><dd>ada@example.com</dd>"));
+        assert!(doc.html.contains("<dt>Phone</dt><dd>+49 123 456789</dd>"));
+        assert!(doc.html.contains("<dt>Categories</dt><dd>Kollegen</dd>"));
         assert!(
             doc.html
-                .contains("<dt>Adressbuch</dt><dd>Mein Adressbuch</dd>")
+                .contains("<dt>Address Book</dt><dd>Mein Adressbuch</dd>")
         );
-        assert!(doc.html.contains("<div class=\"contact-notes\"><h4>Notizen</h4><pre>Wichtiger Notiz-Text\nmit Umbruch</pre></div>"));
+        assert!(doc.html.contains("<div class=\"contact-notes\"><h4>Notes</h4><pre>Wichtiger Notiz-Text\nmit Umbruch</pre></div>"));
         assert!(doc.plain_text.contains("Ada Lovelace"));
-        assert!(doc.plain_text.contains("E-Mail: ada@example.com"));
+        assert!(doc.plain_text.contains("Email: ada@example.com"));
     }
 
     #[test]
@@ -580,7 +580,7 @@ mod tests {
         // Input unsorted
         let doc = build_contact_print_document(&[r_t, r_a, r_b]).expect("multiple print document");
         assert_eq!(doc.contact_count, 3);
-        assert!(doc.html.contains("<title>3 Kontakte</title>"));
+        assert!(doc.html.contains("<title>3 Contacts</title>"));
         assert!(doc.html.contains("<div class=\"letter-heading\">A</div>"));
         assert!(doc.html.contains("<div class=\"letter-heading\">B</div>"));
         assert!(doc.html.contains("<div class=\"letter-heading\">T</div>"));
@@ -634,13 +634,13 @@ mod tests {
         let doc = build_contact_print_document(&[record]).expect("list contact print document");
         assert_eq!(doc.contact_count, 1);
         assert!(doc.html.contains("Projekt-Team"));
-        assert!(doc.html.contains("Mitglieder (2)"));
+        assert!(doc.html.contains("Members (2)"));
         assert!(
             doc.html
                 .contains("Externer Partner &lt;ext@example.com&gt;")
         );
         assert!(doc.html.contains("Ada Lovelace &lt;ada@example.com&gt;"));
-        assert!(doc.plain_text.contains("Mitglieder (2):"));
+        assert!(doc.plain_text.contains("Members (2):"));
         assert!(
             doc.plain_text
                 .contains("Externer Partner <ext@example.com>")
@@ -682,14 +682,14 @@ mod tests {
     fn print_contact_list_table_fails_on_empty_and_duplicates() {
         assert_eq!(
             build_contact_list_print_document(&[]).unwrap_err(),
-            "Es sind keine sichtbaren Kontakte zum Drucken vorhanden"
+            "No visible contacts available to print"
         );
 
         let r1 = make_test_record("s", "L", "u1", "A", "B", "a@b.c", "O");
         let r2 = make_test_record("s", "L", "u1", "A", "B", "a@b.c", "O");
         assert_eq!(
             build_contact_list_print_document(&[r1, r2]).unwrap_err(),
-            "Die sichtbare Kontaktliste enthält eine doppelte Identität"
+            "Visible contact list contains a duplicate identity"
         );
     }
 
@@ -716,14 +716,14 @@ mod tests {
 
         let doc = build_contact_list_print_document(&[r1, r2]).expect("valid list doc");
         assert_eq!(doc.contact_count, 2);
-        assert!(doc.html.contains("<title>Kontakte (2 Einträge)</title>"));
+        assert!(doc.html.contains("<title>Contacts (2 entries)</title>"));
         assert!(doc.html.contains("<table class=\"contact-table\">"));
         assert!(doc.html.contains("<td>Ada Lovelace</td>"));
         assert!(doc.html.contains("<td>Engineer, Tech Corp</td>"));
         assert!(doc.html.contains("<td>ada@example.com</td>"));
         assert!(doc.html.contains("<td>+49 123 456789</td>"));
         assert!(doc.html.contains("<td>Charles Babbage</td>"));
-        assert!(doc.plain_text.contains("Kontakte (2 Einträge)"));
+        assert!(doc.plain_text.contains("Contacts (2 entries)"));
         assert!(doc.plain_text.contains("Ada Lovelace | Engineer, Tech Corp | ada@example.com | +49 123 456789 | Local | Kollegen"));
     }
 }

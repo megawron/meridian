@@ -272,22 +272,22 @@ impl MailStoreService {
                 .unwrap_or(false);
         if (paths.is_empty() && !welcome_file.exists()) || should_update_legacy {
             let welcome_content = "From: Meridian <noreply@meridian.local>\r\n\
-To: Benutzer <user@meridian.local>\r\n\
-Subject: Willkommen bei Meridian\r\n\
+To: User <user@meridian.local>\r\n\
+Subject: Welcome to Meridian\r\n\
 Date: Sun, 06 Sep 2026 12:00:00 +0200\r\n\
 Message-ID: <welcome-meridian@meridian.local>\r\n\
 MIME-Version: 1.0\r\n\
 Content-Type: text/plain; charset=UTF-8\r\n\
 \r\n\
-Herzlich willkommen bei Meridian!\r\n\
-Meridian vereint E-Mail, Kalender, Kontakte, Aufgaben und Notizen in einer nativen GNOME-Anwendung.\r\n\
+Welcome to Meridian!\r\n\
+Meridian brings email, calendar, contacts, tasks, and notes together in a native GNOME application.\r\n\
 \r\n\
-Erste Schritte:\r\n\
-• Bestehende Systemkonten: Über GNOME Online Accounts oder den Evolution Data Server eingerichtete Konten werden automatisch erkannt.\r\n\
-• Neues Konto verbinden: Über die Einstellungen (Konto hinzufügen) kannst du jederzeit weitere IMAP/SMTP-, Exchange/EWS-, JMAP- oder POP3-Konten einrichten.\r\n\
-• Produktivität: Verknüpfe E-Mails direkt mit Aufgaben und Notizen in der rechten Seitenleiste oder wechsle oben zwischen Mail, Kalender und Kontakten.\r\n\
+Getting started:\r\n\
+• Existing system accounts: Accounts configured via GNOME Online Accounts or Evolution Data Server are detected automatically.\r\n\
+• Connect a new account: You can set up additional IMAP/SMTP, Exchange/EWS, JMAP, or POP3 accounts anytime in Preferences (Add Account).\r\n\
+• Productivity: Link emails directly to tasks and notes in the right sidebar, or switch between Mail, Calendar, and Contacts at the top.\r\n\
 \r\n\
-Viel Freude mit Meridian!\r\n";
+Enjoy using Meridian!\r\n";
             let _ = fs::write(&welcome_file, welcome_content);
         }
     }
@@ -2406,7 +2406,7 @@ pub(crate) fn parse_rfc822_bytes(
     let (sender_name, sender_email) = headers
         .get("from")
         .map(|value| parse_address(value))
-        .unwrap_or_else(|| ("Unbekannt".to_string(), String::new()));
+        .unwrap_or_else(|| ("Unknown".to_string(), String::new()));
     let recipient = headers
         .get("to")
         .map(|value| decode_mime_header(value))
@@ -2427,7 +2427,7 @@ pub(crate) fn parse_rfc822_bytes(
         .get("subject")
         .map(|value| decode_mime_header(value))
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "(Kein Betreff)".to_string());
+        .unwrap_or_else(|| "(No subject)".to_string());
     let date = headers
         .get("date")
         .map(|value| decode_mime_header(value))
@@ -2494,7 +2494,7 @@ pub(crate) fn parse_rfc822_bytes(
     } else if is_preview_only {
         String::new()
     } else {
-        "<p>(Keine Nachricht)</p>".to_string()
+        "<p>(No message)</p>".to_string()
     };
 
     let raw_mime = (!matches!(
@@ -2518,7 +2518,7 @@ pub(crate) fn parse_rfc822_bytes(
             });
         } else if has_att_header {
             attachments.push(AttachmentInfo {
-                filename: "Anhang".to_string(),
+                filename: "Attachment".to_string(),
                 size_formatted: String::new(),
                 mime_type: "application/octet-stream".to_string(),
                 content_id: None,

@@ -29,11 +29,11 @@ impl IcalComponentKind {
 
     pub fn display_label(&self) -> &'static str {
         match self {
-            Self::Event => "Termin",
-            Self::Task => "Aufgabe",
-            Self::Memo => "Notiz",
-            Self::Timezone => "Zeitzone",
-            Self::Unknown => "Unbekannt",
+            Self::Event => "Event",
+            Self::Task => "Task",
+            Self::Memo => "Memo",
+            Self::Timezone => "Time Zone",
+            Self::Unknown => "Unknown",
         }
     }
 }
@@ -63,9 +63,9 @@ pub enum IcalDuplicatePolicy {
 impl IcalDuplicatePolicy {
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::KeepBothNewUid => "Beide behalten (neue Kennung vergeben)",
-            Self::OverwriteExisting => "Bestehende Einträge überschreiben",
-            Self::SkipExisting => "Bereits vorhandene Einträge überspringen",
+            Self::KeepBothNewUid => "Keep both (assign new ID)",
+            Self::OverwriteExisting => "Overwrite existing entries",
+            Self::SkipExisting => "Skip existing entries",
         }
     }
 }
@@ -88,9 +88,9 @@ impl IcalImportPlan {
                 "{} {}",
                 self.event_count,
                 if self.event_count == 1 {
-                    "Termin"
+                    "Event"
                 } else {
-                    "Termine"
+                    "Events"
                 }
             ));
         }
@@ -99,9 +99,9 @@ impl IcalImportPlan {
                 "{} {}",
                 self.task_count,
                 if self.task_count == 1 {
-                    "Aufgabe"
+                    "Task"
                 } else {
-                    "Aufgaben"
+                    "Tasks"
                 }
             ));
         }
@@ -110,14 +110,14 @@ impl IcalImportPlan {
                 "{} {}",
                 self.memo_count,
                 if self.memo_count == 1 {
-                    "Notiz"
+                    "Memo"
                 } else {
-                    "Notizen"
+                    "Memos"
                 }
             ));
         }
         if parts.is_empty() {
-            "Keine importierbaren Einträge gefunden".to_string()
+            "No importable entries found".to_string()
         } else {
             parts.join(", ")
         }
@@ -273,10 +273,10 @@ fn parse_component_lines(kind: IcalComponentKind, lines: &[String]) -> Option<Ic
 
     if summary.is_empty() {
         summary = match kind {
-            IcalComponentKind::Event => "Unbenannter Termin".to_string(),
-            IcalComponentKind::Task => "Unbenannte Aufgabe".to_string(),
-            IcalComponentKind::Memo => "Unbenannte Notiz".to_string(),
-            _ => "Unbenannter Eintrag".to_string(),
+            IcalComponentKind::Event => "Untitled Event".to_string(),
+            IcalComponentKind::Task => "Untitled Task".to_string(),
+            IcalComponentKind::Memo => "Untitled Memo".to_string(),
+            _ => "Untitled Entry".to_string(),
         };
     }
 
@@ -568,7 +568,7 @@ END:VCALENDAR
         assert_eq!(plan.task_count, 1);
         assert_eq!(plan.memo_count, 1);
         assert_eq!(plan.duplicate_uids, vec!["event-1@example.com"]);
-        assert_eq!(plan.summary_label(), "2 Termine, 1 Aufgabe, 1 Notiz");
+        assert_eq!(plan.summary_label(), "2 Events, 1 Task, 1 Memo");
     }
 
     #[test]

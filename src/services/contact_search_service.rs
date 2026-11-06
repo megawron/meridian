@@ -134,10 +134,10 @@ impl ContactSearchField {
     pub fn label(self) -> &'static str {
         match self {
             Self::Name => "Name",
-            Self::Email => "E-Mail",
-            Self::Phone => "Telefon",
-            Self::Category => "Kategorie",
-            Self::AnyField => "Alle Felder",
+            Self::Email => "Email",
+            Self::Phone => "Phone",
+            Self::Category => "Category",
+            Self::AnyField => "Any Field",
         }
     }
 }
@@ -174,12 +174,12 @@ pub type ContactOperator = ContactSearchOperator;
 impl ContactSearchOperator {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Contains => "enthält",
-            Self::NotContains => "enthält nicht",
-            Self::Is => "ist",
-            Self::IsNot => "ist nicht",
-            Self::StartsWith => "beginnt mit",
-            Self::EndsWith => "endet mit",
+            Self::Contains => "contains",
+            Self::NotContains => "does not contain",
+            Self::Is => "is",
+            Self::IsNot => "is not",
+            Self::StartsWith => "starts with",
+            Self::EndsWith => "ends with",
         }
     }
 }
@@ -208,8 +208,8 @@ impl Default for ContactClauseGroup {
 impl ContactClauseGroup {
     pub fn label(self) -> &'static str {
         match self {
-            Self::All => "Alle Bedingungen",
-            Self::Any => "Mindestens eine Bedingung",
+            Self::All => "All Conditions",
+            Self::Any => "Any Condition",
         }
     }
 }
@@ -549,33 +549,33 @@ impl fmt::Display for ContactSearchValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyAnyGroup => {
-                formatter.write_str("Eine Any-Gruppe benötigt mindestens eine Bedingung")
+                formatter.write_str("An Any group requires at least one condition")
             }
             Self::EmptyClauseValue { index } => {
-                write!(formatter, "Bedingung {} benötigt einen Suchwert", index + 1)
+                write!(formatter, "Condition {} requires a search value", index + 1)
             }
-            Self::EmptySourceFilter => formatter.write_str("Quellfilter darf nicht leer sein"),
+            Self::EmptySourceFilter => formatter.write_str("Source filter must not be empty"),
             Self::EmptyCategoryFilter => {
-                formatter.write_str("Kategoriefilter darf nicht leer sein")
+                formatter.write_str("Category filter must not be empty")
             }
             Self::UnsupportedOperator { field, operator } => write!(
                 formatter,
-                "Operator „{operator}“ wird für das Feld „{field}“ nicht unterstützt"
+                "Operator \"{operator}\" is not supported for field \"{field}\""
             ),
             Self::UnsupportedField(field) => {
-                write!(formatter, "Unbekanntes Suchfeld „{field}“")
+                write!(formatter, "Unknown search field \"{field}\"")
             }
             Self::UnsupportedOperatorText(operator) => {
-                write!(formatter, "Unbekannter Suchoperator „{operator}“")
+                write!(formatter, "Unknown search operator \"{operator}\"")
             }
             Self::UnsupportedRawSyntax(message) => {
-                write!(formatter, "Nicht unterstützte Suche: {message}")
+                write!(formatter, "Unsupported search: {message}")
             }
-            Self::InvalidSyntax(message) => write!(formatter, "Ungültige Suche: {message}"),
-            Self::InvalidFixture(message) => write!(formatter, "Ungültiges Suchfixture: {message}"),
+            Self::InvalidSyntax(message) => write!(formatter, "Invalid search: {message}"),
+            Self::InvalidFixture(message) => write!(formatter, "Invalid search fixture: {message}"),
             Self::UnsupportedFixtureVersion(version) => write!(
                 formatter,
-                "Suchfixture-Version {version} wird nicht unterstützt"
+                "Search fixture version {version} is not supported"
             ),
         }
     }
@@ -593,7 +593,7 @@ impl fmt::Display for ContactSearchRunError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidQuery(error) => error.fmt(formatter),
-            Self::Cancelled => formatter.write_str("Kontakt-Suche abgebrochen"),
+            Self::Cancelled => formatter.write_str("Contact search cancelled"),
         }
     }
 }
@@ -1282,7 +1282,7 @@ pub fn parse_query_text(input: &str) -> Result<ContactSearchQuery, ContactSearch
     let group = separator_group.unwrap_or(group);
     if parts.is_empty() {
         return Err(ContactSearchValidationError::InvalidSyntax(
-            "keine Bedingung gefunden".to_string(),
+            "no condition found".to_string(),
         ));
     }
     let clauses = parts
@@ -1319,7 +1319,7 @@ fn add_clause_context(
     match error {
         ContactSearchValidationError::InvalidSyntax(message) => {
             ContactSearchValidationError::InvalidSyntax(format!(
-                "Bedingung {}: {message}",
+                "Condition {}: {message}",
                 index + 1
             ))
         }
@@ -1338,7 +1338,7 @@ fn reject_unsupported_raw_syntax(input: &str) -> Result<(), ContactSearchValidat
         || lower.contains("gtk3 expression")
     {
         return Err(ContactSearchValidationError::UnsupportedRawSyntax(
-            "GTK3-Expressionen und S-Ausdrücke sind nicht Teil der portablen Suche".to_string(),
+            "GTK3 expressions and S-expressions are not part of portable search".to_string(),
         ));
     }
     Ok(())
@@ -1360,7 +1360,7 @@ fn parse_group_prefix(
             let rest = input[prefix.len()..].trim();
             if rest.is_empty() {
                 return Err(ContactSearchValidationError::InvalidSyntax(
-                    "Gruppenpräfix benötigt Bedingungen".to_string(),
+                    "group prefix requires conditions".to_string(),
                 ));
             }
             return Ok((group, rest));
@@ -1421,14 +1421,14 @@ fn split_query_expression(
     }
     if quote.is_some() {
         return Err(ContactSearchValidationError::InvalidSyntax(
-            "Anführungszeichen nicht geschlossen".to_string(),
+            "unclosed quote".to_string(),
         ));
     }
     push_query_part(&mut parts, &input[start..])?;
     let group = separators.first().copied();
     if separators.iter().any(|candidate| Some(*candidate) != group) {
         return Err(ContactSearchValidationError::InvalidSyntax(
-            "AND und OR müssen über eine All- oder Any-Gruppe getrennt werden".to_string(),
+            "AND and OR must be separated into an All or Any group".to_string(),
         ));
     }
     Ok((parts, group))
@@ -1441,7 +1441,7 @@ fn push_query_part(
     let part = part.trim();
     if part.is_empty() {
         return Err(ContactSearchValidationError::InvalidSyntax(
-            "leere Bedingung".to_string(),
+            "empty condition".to_string(),
         ));
     }
     parts.push(part.to_string());
@@ -1465,7 +1465,7 @@ fn parse_clause_text(input: &str) -> Result<ContactSearchClause, ContactSearchVa
     };
     if tokens.len() < 3 {
         return Err(ContactSearchValidationError::InvalidSyntax(
-            "erwartet wird: feld operator wert".to_string(),
+            "expected: field operator value".to_string(),
         ));
     }
     let field = parse_field(&tokens[0])?;
@@ -1503,7 +1503,7 @@ fn tokenize_clause(input: &str) -> Result<Vec<String>, ContactSearchValidationEr
     }
     if escaped || quote.is_some() {
         return Err(ContactSearchValidationError::InvalidSyntax(
-            "Anführungszeichen oder Escape nicht abgeschlossen".to_string(),
+            "unclosed quote or escape sequence".to_string(),
         ));
     }
     if !current.is_empty() {

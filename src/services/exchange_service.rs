@@ -202,7 +202,7 @@ impl ExchangeMailMessage {
             recipient_bcc: format_addresses(&self.bcc_recipients),
             reply_to: format_addresses(&self.reply_to),
             subject: if self.subject.trim().is_empty() {
-                "(Kein Betreff)".to_string()
+                "(No subject)".to_string()
             } else {
                 self.subject
             },
@@ -239,7 +239,7 @@ impl ExchangeMailMessage {
                 .into_iter()
                 .map(|attachment| crate::models::mail_message::AttachmentInfo {
                     filename: if attachment.name.trim().is_empty() {
-                        "Anhang".to_string()
+                        "Attachment".to_string()
                     } else {
                         attachment.name
                     },
@@ -1074,18 +1074,18 @@ impl std::fmt::Display for ExchangeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidUrl(message) => {
-                write!(formatter, "Ungültige Microsoft-Graph-URL: {message}")
+                write!(formatter, "Invalid Microsoft Graph URL: {message}")
             }
-            Self::InvalidQuery(message) => write!(formatter, "Ungültige Graph-Suche: {message}"),
+            Self::InvalidQuery(message) => write!(formatter, "Invalid Graph query: {message}"),
             Self::MissingAccessToken => {
                 write!(
                     formatter,
-                    "Microsoft-Graph-Zugriff benötigt ein gültiges OAuth2-Token"
+                    "Microsoft Graph access requires a valid OAuth2 token"
                 )
             }
-            Self::Cancelled => write!(formatter, "Microsoft-Graph-Anfrage wurde abgebrochen"),
+            Self::Cancelled => write!(formatter, "Microsoft Graph request was cancelled"),
             Self::Transport(message) => {
-                write!(formatter, "Microsoft-Graph-Netzwerkfehler: {message}")
+                write!(formatter, "Microsoft Graph network error: {message}")
             }
             Self::Http {
                 status,
@@ -1095,14 +1095,14 @@ impl std::fmt::Display for ExchangeError {
                 if let Some(code) = code {
                     write!(
                         formatter,
-                        "Microsoft-Graph-Fehler {status} ({code}): {message}"
+                        "Microsoft Graph error {status} ({code}): {message}"
                     )
                 } else {
-                    write!(formatter, "Microsoft-Graph-Fehler {status}: {message}")
+                    write!(formatter, "Microsoft Graph error {status}: {message}")
                 }
             }
             Self::Decode(message) => {
-                write!(formatter, "Ungültige Microsoft-Graph-Antwort: {message}")
+                write!(formatter, "Invalid Microsoft Graph response: {message}")
             }
         }
     }
@@ -1408,7 +1408,7 @@ impl ExchangeService {
         }
         if response.body.is_empty() {
             return Err(ExchangeError::Decode(
-                "Microsoft Graph lieferte eine leere Nachrichtenquelle".to_string(),
+                "Microsoft Graph returned an empty message source".to_string(),
             ));
         }
         Ok(response.body)
@@ -1469,7 +1469,7 @@ impl ExchangeService {
         let search = validate_query(search)?;
         if search.is_empty() {
             return Err(ExchangeError::InvalidQuery(
-                "Die Graph-Mail-Suche darf nicht leer sein".to_string(),
+                "Graph mail search query must not be empty".to_string(),
             ));
         }
         let path = folder_id
@@ -1524,7 +1524,7 @@ impl ExchangeService {
                 let search = validate_query(search)?;
                 if search.is_empty() {
                     return Err(ExchangeError::InvalidQuery(
-                        "Die Graph-Mail-Suche darf nicht leer sein".to_string(),
+                        "Graph mail search query must not be empty".to_string(),
                     ));
                 }
                 let path = folder_id
@@ -1644,8 +1644,8 @@ impl ExchangeService {
         max_items: usize,
     ) -> Result<Vec<ExchangeCalendarEvent>, ExchangeError> {
         let max_items = validate_limit(max_items)?;
-        let start = validate_datetime(start, "Startzeitpunkt")?;
-        let end = validate_datetime(end, "Endzeitpunkt")?;
+        let start = validate_datetime(start, "Start time")?;
+        let end = validate_datetime(end, "End time")?;
         let params = vec![
             ("startDateTime".to_string(), start),
             ("endDateTime".to_string(), end),
@@ -1708,7 +1708,7 @@ impl ExchangeService {
     ) -> Result<(), ExchangeError> {
         if to.is_empty() && cc.is_empty() && bcc.is_empty() {
             return Err(ExchangeError::InvalidQuery(
-                "Mindestens ein Empfänger ist erforderlich".to_string(),
+                "At least one recipient is required".to_string(),
             ));
         }
         let body = if body_html.trim().is_empty() {
@@ -1819,7 +1819,7 @@ impl ExchangeService {
         let label = label.trim();
         if label.is_empty() || label.chars().count() > 128 {
             return Err(ExchangeError::InvalidQuery(
-                "Das Graph-Kategorie-Label ist ungültig".to_string(),
+                "The Graph category label is invalid".to_string(),
             ));
         }
         let existing: GraphMessage = self.request_json(
@@ -1877,7 +1877,7 @@ impl ExchangeService {
         let wanted = folder_name.trim();
         if wanted.is_empty() {
             return Err(ExchangeError::InvalidQuery(
-                "Der Zielordner darf nicht leer sein".to_string(),
+                "Destination folder must not be empty".to_string(),
             ));
         }
         let folders = self.list_mail_folders_sync()?;
@@ -1892,7 +1892,7 @@ impl ExchangeService {
             })
             .map(|folder| folder.id)
             .ok_or_else(|| {
-                ExchangeError::InvalidQuery(format!("Graph-Mailordner nicht gefunden: {wanted}"))
+                ExchangeError::InvalidQuery(format!("Graph mail folder not found: {wanted}"))
             })
     }
 
@@ -1931,7 +1931,7 @@ impl ExchangeService {
             .into_iter()
             .next()
             .ok_or_else(|| {
-                ExchangeError::Decode("Graph lieferte keine kopierte Nachricht zurück".to_string())
+                ExchangeError::Decode("Graph did not return a copied message".to_string())
             })
     }
 
@@ -2052,7 +2052,7 @@ impl ExchangeService {
             && (settings.start_date.trim().is_empty() || settings.end_date.trim().is_empty())
         {
             return Err(ExchangeError::InvalidQuery(
-                "Ein geplanter Exchange-Autoresponder benötigt Start- und Enddatum".to_string(),
+                "A scheduled Exchange autoresponder requires a start and end date".to_string(),
             ));
         }
         let mut body = serde_json::json!({
@@ -2162,7 +2162,7 @@ impl ExchangeService {
     ) -> Result<(), ExchangeError> {
         if body.is_empty() {
             return Err(ExchangeError::InvalidQuery(
-                "Die RFC822-Nachricht ist leer".to_string(),
+                "The RFC822 message is empty".to_string(),
             ));
         }
         let token = self
@@ -2213,7 +2213,7 @@ impl ExchangeService {
                 Ok(result) => return result,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(ExchangeError::Transport(
-                        "der Graph-HTTP-Arbeiter wurde unerwartet beendet".to_string(),
+                        "the Graph HTTP worker terminated unexpectedly".to_string(),
                     ));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -2251,7 +2251,7 @@ impl ExchangeService {
             pages += 1;
             if pages > MAX_GRAPH_PAGES {
                 return Err(ExchangeError::Decode(
-                    "Microsoft-Graph lieferte zu viele Seiten ohne Abschluss".to_string(),
+                    "Microsoft Graph returned too many pages without completion".to_string(),
                 ));
             }
             let response: GraphCollection<T> = self.request_json_url(
@@ -2295,7 +2295,7 @@ impl ExchangeService {
             pages += 1;
             if pages > MAX_GRAPH_PAGES {
                 return Err(ExchangeError::Decode(
-                    "Microsoft-Graph lieferte zu viele Seiten ohne Abschluss".to_string(),
+                    "Microsoft Graph returned too many pages without completion".to_string(),
                 ));
             }
             let response: GraphCollection<T> = self.request_json_url(
@@ -2372,7 +2372,7 @@ impl ExchangeService {
             Url::parse(link).map_err(|error| ExchangeError::InvalidUrl(error.to_string()))?;
         if !matches!(next.scheme(), "http" | "https") {
             return Err(ExchangeError::InvalidUrl(
-                "Graph-Fortsetzungslinks müssen http oder https verwenden".to_string(),
+                "Graph continuation links must use http or https".to_string(),
             ));
         }
         let base = Url::parse(self.server_url.trim_end_matches('/'))
@@ -2384,7 +2384,7 @@ impl ExchangeService {
             || next.password().is_some()
         {
             return Err(ExchangeError::InvalidUrl(
-                "Graph-Fortsetzungslink verwendet eine fremde Herkunft".to_string(),
+                "Graph continuation link uses a foreign origin".to_string(),
             ));
         }
         Ok(next)
@@ -2395,12 +2395,12 @@ impl ExchangeService {
             .map_err(|error| ExchangeError::InvalidUrl(error.to_string()))?;
         if !matches!(base.scheme(), "http" | "https") {
             return Err(ExchangeError::InvalidUrl(
-                "nur http und https werden unterstützt".to_string(),
+                "only http and https are supported".to_string(),
             ));
         }
         if base.query().is_some() || base.fragment().is_some() {
             return Err(ExchangeError::InvalidUrl(
-                "die Basis-URL darf keine Query oder Fragment-Komponente enthalten".to_string(),
+                "the base URL must not contain a query or fragment component".to_string(),
             ));
         }
 
@@ -2429,7 +2429,7 @@ fn run_graph_http_request(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|error| ExchangeError::Transport(format!("Tokio-HTTP-Arbeiter: {error}")))?;
+        .map_err(|error| ExchangeError::Transport(format!("Tokio HTTP worker: {error}")))?;
 
     runtime.block_on(async move {
         let request_future = async move {
@@ -3024,7 +3024,7 @@ fn graph_date_time(value: &str) -> String {
 fn validate_limit(limit: usize) -> Result<usize, ExchangeError> {
     if limit == 0 {
         return Err(ExchangeError::InvalidQuery(
-            "Die maximale Anzahl muss größer als null sein".to_string(),
+            "Maximum count must be greater than zero".to_string(),
         ));
     }
     Ok(limit.min(MAX_GRAPH_ITEMS))
@@ -3041,7 +3041,7 @@ fn page_size(limit: usize) -> usize {
 fn validate_datetime(value: &str, label: &str) -> Result<String, ExchangeError> {
     let value = value.trim();
     if value.is_empty() || value.chars().count() > 128 || value.contains(['\r', '\n']) {
-        return Err(ExchangeError::InvalidQuery(format!("{label} ist ungültig")));
+        return Err(ExchangeError::InvalidQuery(format!("{label} is invalid")));
     }
     Ok(value.to_string())
 }
@@ -3065,7 +3065,7 @@ fn validate_graph_value(value: &str) -> Result<String, ExchangeError> {
     let value = value.trim();
     if value.is_empty() || value.chars().count() > 512 || value.contains(['\r', '\n']) {
         return Err(ExchangeError::InvalidQuery(
-            "Graph-ID enthält ungültige Zeichen".to_string(),
+            "Graph ID contains invalid characters".to_string(),
         ));
     }
     Ok(value.to_string())
@@ -3083,7 +3083,7 @@ fn validate_query(query: &str) -> Result<String, ExchangeError> {
     let query = query.trim();
     if query.chars().count() > MAX_QUERY_LENGTH {
         return Err(ExchangeError::InvalidQuery(format!(
-            "Suchbegriffe dürfen höchstens {MAX_QUERY_LENGTH} Zeichen enthalten"
+            "Search terms may contain at most {MAX_QUERY_LENGTH} characters"
         )));
     }
     if query
@@ -3091,7 +3091,7 @@ fn validate_query(query: &str) -> Result<String, ExchangeError> {
         .any(|character| character == '\r' || character == '\n')
     {
         return Err(ExchangeError::InvalidQuery(
-            "Suchbegriffe dürfen keine Zeilenumbrüche enthalten".to_string(),
+            "Search terms must not contain line breaks".to_string(),
         ));
     }
     Ok(query.to_string())
@@ -3170,10 +3170,10 @@ fn parse_http_error(status: StatusCode, body: &str) -> ExchangeError {
                 error.code,
                 error
                     .message
-                    .unwrap_or_else(|| "unbekannter Graph-Fehler".to_string()),
+                    .unwrap_or_else(|| "unknown Graph error".to_string()),
             )
         })
-        .unwrap_or_else(|| (None, "unbekannter Graph-Fehler".to_string()));
+        .unwrap_or_else(|| (None, "unknown Graph error".to_string()));
     ExchangeError::Http {
         status: status.as_u16(),
         code,

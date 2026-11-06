@@ -35,10 +35,10 @@ pub enum JmapError {
 impl fmt::Display for JmapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Network(msg) => write!(f, "JMAP-Netzwerkfehler: {msg}"),
-            Self::Authentication(msg) => write!(f, "JMAP-Authentifizierungsfehler: {msg}"),
-            Self::Protocol(msg) => write!(f, "JMAP-Protokollfehler: {msg}"),
-            Self::AccountNotFound(id) => write!(f, "JMAP-Konto '{id}' nicht gefunden"),
+            Self::Network(msg) => write!(f, "JMAP network error: {msg}"),
+            Self::Authentication(msg) => write!(f, "JMAP authentication error: {msg}"),
+            Self::Protocol(msg) => write!(f, "JMAP protocol error: {msg}"),
+            Self::AccountNotFound(id) => write!(f, "JMAP account '{id}' not found"),
             Self::MethodError {
                 call_id,
                 error_type,
@@ -46,11 +46,11 @@ impl fmt::Display for JmapError {
             } => {
                 write!(
                     f,
-                    "JMAP-Methodenfehler [{call_id}]: {error_type} ({})",
-                    description.as_deref().unwrap_or("keine Beschreibung")
+                    "JMAP method error [{call_id}]: {error_type} ({})",
+                    description.as_deref().unwrap_or("no description")
                 )
             }
-            Self::Serialization(msg) => write!(f, "JMAP-Serialisierungsfehler: {msg}"),
+            Self::Serialization(msg) => write!(f, "JMAP serialization error: {msg}"),
         }
     }
 }
@@ -184,15 +184,15 @@ pub struct JmapMailbox {
 }
 
 impl JmapMailbox {
-    /// Return standard German localized display label for standard roles.
+    /// Return standard localized display label for standard roles.
     pub fn localized_name(&self) -> String {
         if let Some(role) = self.role.as_deref() {
             match role.to_ascii_lowercase().as_str() {
-                "inbox" => "Posteingang".to_string(),
-                "drafts" => "Entwürfe".to_string(),
-                "sent" => "Gesendet".to_string(),
-                "trash" => "Papierkorb".to_string(),
-                "archive" => "Archiv".to_string(),
+                "inbox" => "Inbox".to_string(),
+                "drafts" => "Drafts".to_string(),
+                "sent" => "Sent".to_string(),
+                "trash" => "Trash".to_string(),
+                "archive" => "Archive".to_string(),
                 "junk" | "spam" => "Spam".to_string(),
                 _ => self.name.clone(),
             }
@@ -497,13 +497,13 @@ impl JmapClient {
             || response.status() == reqwest::StatusCode::FORBIDDEN
         {
             return Err(JmapError::Authentication(
-                "Ungültiges JMAP-API-Token oder fehlende Berechtigung".to_string(),
+                "Invalid JMAP API token or insufficient permissions".to_string(),
             ));
         }
 
         if !response.status().is_success() {
             return Err(JmapError::Protocol(format!(
-                "JMAP-Session-Abruf fehlgeschlagen mit Status: {}",
+                "JMAP session discovery failed with status: {}",
                 response.status()
             )));
         }
@@ -552,7 +552,7 @@ impl JmapClient {
             .map_err(|e| JmapError::Network(e.to_string()))?;
 
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(JmapError::Authentication("Sitzung abgelaufen".to_string()));
+            return Err(JmapError::Authentication("Session expired".to_string()));
         }
 
         let jmap_response: JmapResponse = response
@@ -837,7 +837,7 @@ impl JmapClient {
         }
 
         Err(JmapError::Protocol(
-            "E-Mail-Versand über JMAP Submission fehlgeschlagen".to_string(),
+            "Email submission via JMAP failed".to_string(),
         ))
     }
 }
@@ -907,7 +907,7 @@ mod tests {
             is_subscribed: true,
         };
 
-        assert_eq!(inbox.localized_name(), "Posteingang");
+        assert_eq!(inbox.localized_name(), "Inbox");
         assert_eq!(inbox.icon_name(), "mail-inbox-symbolic");
 
         let archive = JmapMailbox {
@@ -924,7 +924,7 @@ mod tests {
             is_subscribed: true,
         };
 
-        assert_eq!(archive.localized_name(), "Archiv");
+        assert_eq!(archive.localized_name(), "Archive");
         assert_eq!(archive.icon_name(), "folder-download-symbolic");
     }
 

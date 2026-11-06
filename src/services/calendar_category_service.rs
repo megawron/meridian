@@ -106,7 +106,7 @@ impl CalendarCategoryStore {
         }) {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                "Eine Kalenderkategorie mit diesem Namen existiert bereits",
+                "A calendar category with this name already exists",
             ));
         }
         if let Some(existing) = file
@@ -359,13 +359,13 @@ fn normalize_category(mut category: CalendarCategory) -> io::Result<CalendarCate
     if category.id.is_empty() || category.name.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Eine Kalenderkategorie benötigt ID und Namen",
+            "A calendar category requires an ID and name",
         ));
     }
     if category.name.chars().count() > 100 || !valid_color(&category.color) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Kalenderkategorie oder Farbe ist ungültig",
+            "Calendar category or color is invalid",
         ));
     }
     Ok(category)
@@ -415,22 +415,22 @@ fn default_categories() -> Vec<CalendarCategory> {
     vec![
         CalendarCategory {
             id: "category-work".to_string(),
-            name: "Arbeit".to_string(),
+            name: "Work".to_string(),
             color: "#729FCF".to_string(),
         },
         CalendarCategory {
             id: "category-personal".to_string(),
-            name: "Persönlich".to_string(),
+            name: "Personal".to_string(),
             color: "#AD7FA8".to_string(),
         },
         CalendarCategory {
             id: "category-birthday".to_string(),
-            name: "Geburtstag".to_string(),
+            name: "Birthday".to_string(),
             color: "#EF2929".to_string(),
         },
         CalendarCategory {
             id: "category-travel".to_string(),
-            name: "Reise".to_string(),
+            name: "Travel".to_string(),
             color: "#F57900".to_string(),
         },
     ]
@@ -446,7 +446,7 @@ mod tests {
         let path = root.join("categories.json");
         let store = CalendarCategoryStore::new(&path);
         assert_eq!(store.load().len(), 4);
-        assert_eq!(store.color_for("arbeit").as_deref(), Some("#729FCF"));
+        assert_eq!(store.color_for("work").as_deref(), Some("#729FCF"));
         assert!(!path.exists());
         let _ = fs::remove_dir_all(root);
     }
@@ -486,7 +486,7 @@ mod tests {
     fn ensure_names_adds_only_new_categories() {
         let root = temporary_directory("category-ensure");
         let store = CalendarCategoryStore::new(root.join("categories.json"));
-        assert_eq!(store.ensure_names(["Arbeit", "Kunde", "Kunde"]).unwrap(), 1);
+        assert_eq!(store.ensure_names(["Work", "Kunde", "Kunde"]).unwrap(), 1);
         assert_eq!(store.ensure_names(["Kunde"]).unwrap(), 0);
         assert!(store.color_for("Kunde").is_some());
         let _ = fs::remove_dir_all(root);

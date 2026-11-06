@@ -30,7 +30,7 @@ impl MemoIdentity {
     pub fn try_new(source_uid: impl Into<String>, uid: impl Into<String>) -> Result<Self, String> {
         let identity = Self::new(source_uid, uid);
         if identity.uid.trim().is_empty() {
-            Err("Eine Memo-Identität benötigt eine UID".to_string())
+            Err("A memo identity requires a UID".to_string())
         } else {
             Ok(identity)
         }
@@ -342,7 +342,7 @@ impl MemoPreviewOrientation {
             "classic" => Ok(Self::Classic),
             "vertical" => Ok(Self::Vertical),
             _ => Err(
-                "Ungültige Memo-Vorschauausrichtung; erwartet classic oder vertical".to_string(),
+                "Invalid memo preview orientation; expected classic or vertical".to_string(),
             ),
         }
     }
@@ -405,13 +405,13 @@ impl MemoPreviewState {
 pub fn validate_open_url(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err("Die Memo-URL ist leer".to_string());
+        return Err("Memo URL is empty".to_string());
     }
     if value
         .chars()
         .any(|character| character.is_control() || character.is_whitespace())
     {
-        return Err("Die Memo-URL enthält Leer- oder Steuerzeichen".to_string());
+        return Err("Memo URL contains whitespace or control characters".to_string());
     }
     if value.contains('"')
         || value.contains('\'')
@@ -419,10 +419,10 @@ pub fn validate_open_url(value: &str) -> Result<String, String> {
         || value.contains('>')
         || value.contains('\\')
     {
-        return Err("Die Memo-URL enthält unsichere Zeichen".to_string());
+        return Err("Memo URL contains unsafe characters".to_string());
     }
     let Some(colon) = value.find(':') else {
-        return Err("Die Memo-URL benötigt ein unterstütztes URI-Schema".to_string());
+        return Err("Memo URL requires a supported URI scheme".to_string());
     };
     let scheme = &value[..colon];
     if scheme.is_empty()
@@ -434,13 +434,13 @@ pub fn validate_open_url(value: &str) -> Result<String, String> {
             }
         })
     {
-        return Err("Ungültiges URI-Schema in der Memo-URL".to_string());
+        return Err("Invalid URI scheme in memo URL".to_string());
     }
     let scheme = scheme.to_ascii_lowercase();
     let remainder = value.get(colon + 1..).unwrap_or_default();
     if scheme == "http" || scheme == "https" {
         if !remainder.starts_with("//") || remainder.len() <= 2 {
-            return Err("HTTP(S)-Memo-URLs benötigen einen Host".to_string());
+            return Err("HTTP(S) memo URLs require a host".to_string());
         }
         let authority_end = remainder
             .get(2..)
@@ -454,11 +454,11 @@ pub fn validate_open_url(value: &str) -> Result<String, String> {
         ));
     } else if scheme == "mailto" {
         if remainder.is_empty() || remainder.starts_with("//") {
-            return Err("Eine mailto-Memo-URL benötigt ein Ziel".to_string());
+            return Err("A mailto memo URL requires a recipient".to_string());
         }
         return Ok(format!("mailto:{remainder}"));
     } else {
-        return Err("Nur http, https und mailto sind für Open URL portabel erlaubt".to_string());
+        return Err("Only http, https, and mailto are portably allowed for Open URL".to_string());
     }
 }
 
@@ -471,36 +471,36 @@ fn canonical_http_authority(authority: &str) -> Result<String, String> {
         || authority.contains('<')
         || authority.contains('>')
     {
-        return Err("Die Memo-URL enthält keinen gültigen HTTP-Host".to_string());
+        return Err("Memo URL does not contain a valid HTTP host".to_string());
     }
 
     if authority.starts_with('[') {
         let Some(end) = authority.find(']') else {
-            return Err("Die Memo-URL enthält keinen gültigen IPv6-Host".to_string());
+            return Err("Memo URL does not contain a valid IPv6 host".to_string());
         };
         let host = &authority[1..end];
         let host = host
             .parse::<std::net::Ipv6Addr>()
-            .map_err(|_| "Die Memo-URL enthält keinen gültigen IPv6-Host".to_string())?;
+            .map_err(|_| "Memo URL does not contain a valid IPv6 host".to_string())?;
         let suffix = &authority[end + 1..];
         let port = canonical_http_port_suffix(suffix)?;
         return Ok(format!("[{host}]{port}"));
     }
 
     if authority.matches(':').count() > 1 {
-        return Err("IPv6-Memo-Hosts müssen in eckigen Klammern stehen".to_string());
+        return Err("IPv6 memo hosts must be enclosed in square brackets".to_string());
     }
     let (host, port) = authority
         .split_once(':')
         .map_or((authority, None), |(host, port)| (host, Some(port)));
     if host.is_empty() || host == "." || host == ".." {
-        return Err("Die Memo-URL enthält keinen gültigen HTTP-Host".to_string());
+        return Err("Memo URL does not contain a valid HTTP host".to_string());
     }
     if !host
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_'))
     {
-        return Err("Die Memo-URL enthält keinen gültigen HTTP-Host".to_string());
+        return Err("Memo URL does not contain a valid HTTP host".to_string());
     }
     let port = port.map(|port| canonical_http_port_suffix(&format!(":{port}")));
     let port = port.transpose()?.unwrap_or_default();
@@ -512,29 +512,29 @@ fn canonical_http_port_suffix(suffix: &str) -> Result<String, String> {
         return Ok(String::new());
     }
     let Some(port) = suffix.strip_prefix(':') else {
-        return Err("Die Memo-URL enthält einen ungültigen Port".to_string());
+        return Err("Memo URL contains an invalid port".to_string());
     };
     if port.is_empty() || !port.chars().all(|character| character.is_ascii_digit()) {
-        return Err("Die Memo-URL enthält einen ungültigen Port".to_string());
+        return Err("Memo URL contains an invalid port".to_string());
     }
     port.parse::<u16>()
         .map(|port| format!(":{port}"))
-        .map_err(|_| "Die Memo-URL enthält einen ungültigen Port".to_string())
+        .map_err(|_| "Memo URL contains an invalid port".to_string())
 }
 
 pub fn validated_url_for_record(record: &MemoRecord) -> Result<String, String> {
     let draft = MemoEditorDraft::parse(&record.component)
-        .map_err(|error| format!("Memo-Komponente ist ungültig: {error}"))?;
+        .map_err(|error| format!("Memo component is invalid: {error}"))?;
     let url = draft
         .url
-        .ok_or_else(|| "Die ausgewählte Memo hat keine URL".to_string())?;
+        .ok_or_else(|| "The selected memo has no URL".to_string())?;
     validate_open_url(&url)
 }
 
 pub fn validate_memo_component(raw: &str) -> Result<ValidatedMemoComponent, String> {
     let mut components = parse_memo_components(raw)?;
     if components.len() != 1 {
-        return Err("Erwartet wird genau ein VJOURNAL".to_string());
+        return Err("Expected exactly one VJOURNAL".to_string());
     }
     Ok(components.remove(0))
 }
@@ -542,11 +542,11 @@ pub fn validate_memo_component(raw: &str) -> Result<ValidatedMemoComponent, Stri
 pub fn validate_memo_record(record: &MemoRecord) -> Result<ValidatedMemoComponent, String> {
     let component = validate_memo_component(&record.component)?;
     if record.uid.trim().is_empty() {
-        return Err("Die Memo-Zeile hat keine UID".to_string());
+        return Err("Memo row has no UID".to_string());
     }
     if component.uid != record.uid {
         return Err(format!(
-            "UID-Mismatch: Zeile {} enthält eine Komponente mit UID {}",
+            "UID mismatch: row {} contains a component with UID {}",
             record.uid, component.uid
         ));
     }
@@ -609,7 +609,7 @@ pub fn build_multi_export(
         .windows(2)
         .any(|window| window[0].0 == window[1].0)
     {
-        return Err("Die Auswahl enthält dieselbe (source_uid,uid)-Identität mehrfach".to_string());
+        return Err("Selection contains duplicate (source_uid,uid) identity".to_string());
     }
     Ok(envelope_from_components(
         &components
@@ -633,7 +633,7 @@ pub struct MemoPrintDocument {
 pub fn build_print_document(record: &MemoRecord) -> Result<MemoPrintDocument, String> {
     let component = validate_memo_record(record)?;
     let draft = MemoEditorDraft::parse(&component.component)
-        .map_err(|error| format!("Memo-Komponente ist ungültig: {error}"))?;
+        .map_err(|error| format!("Memo component is invalid: {error}"))?;
     let attachments = draft
         .attachments
         .iter()
@@ -659,7 +659,7 @@ pub fn build_print_document(record: &MemoRecord) -> Result<MemoPrintDocument, St
         .collect::<Vec<_>>()
         .join("");
     let html = format!(
-        "<article><h1>Zusammenfassung: {}</h1><dl><dt>Beschreibung</dt><dd>{}</dd><dt>Kategorien</dt><dd>{}</dd><dt>URL</dt><dd>{}</dd><dt>Quelle</dt><dd>{}</dd><dt>Geändert</dt><dd>{}</dd></dl><h2>Anhänge</h2><ul>{}</ul></article>",
+        "<article><h1>Summary: {}</h1><dl><dt>Description</dt><dd>{}</dd><dt>Categories</dt><dd>{}</dd><dt>URL</dt><dd>{}</dd><dt>Source</dt><dd>{}</dd><dt>Modified</dt><dd>{}</dd></dl><h2>Attachments</h2><ul>{}</ul></article>",
         escape_html(&draft.summary),
         description,
         categories,
@@ -669,7 +669,7 @@ pub fn build_print_document(record: &MemoRecord) -> Result<MemoPrintDocument, St
         attachment_bar
     );
     let plain_text = format!(
-        "{}\n\n{}\nKategorien: {}\nURL: {}\nQuelle: {}\nGeändert: {}\nAnhänge: {}",
+        "{}\n\n{}\nCategories: {}\nURL: {}\nSource: {}\nModified: {}\nAttachments: {}",
         draft.summary,
         draft.description,
         draft.categories.join(", "),
@@ -695,10 +695,10 @@ pub fn preview_for_selection(
     let selected = selected_records(records, selection)?;
     let record = selected
         .first()
-        .ok_or_else(|| "Die Vorschauauswahl ist nicht mehr vorhanden".to_string())?;
+        .ok_or_else(|| "Preview selection is no longer present".to_string())?;
     let component = validate_memo_record(record)?;
     let draft = MemoEditorDraft::parse(&component.component)
-        .map_err(|error| format!("Memo-Komponente ist ungültig: {error}"))?;
+        .map_err(|error| format!("Memo component is invalid: {error}"))?;
     let attachments = draft
         .attachments
         .iter()
@@ -716,7 +716,7 @@ pub fn preview_for_selection(
         .collect::<Vec<_>>()
         .join("\n");
     let markup = format!(
-        "<b>Zusammenfassung: {}</b>\nBeschreibung: {}\nKategorien: {}\nURL: {}\nQuelle: {}\nGeändert: {}\nAnhänge (inert):\n{}",
+        "<b>Summary: {}</b>\nDescription: {}\nCategories: {}\nURL: {}\nSource: {}\nModified: {}\nAttachments (inert):\n{}",
         escape_markup(&draft.summary),
         escape_markup(&draft.description),
         escape_markup(&draft.categories.join(", ")),
@@ -767,7 +767,7 @@ where
         .filter(|record| !is_writable(&record.source_uid))
         .map(|record| MemoMutationFailure {
             identity: MemoIdentity::from(*record),
-            error: "Die Quelle ist schreibgeschützt".to_string(),
+            error: "Source is read-only".to_string(),
         })
         .collect::<Vec<_>>();
     if !failures.is_empty() {
@@ -786,14 +786,14 @@ pub fn plan_paste(
     destination_writable: bool,
 ) -> Result<Vec<MemoPasteItem>, String> {
     if destination_source_uid.trim().is_empty() {
-        return Err("Die Zielquelle für das Einfügen ist leer".to_string());
+        return Err("Paste destination source is empty".to_string());
     }
     if !destination_writable {
-        return Err("Die Zielquelle ist schreibgeschützt".to_string());
+        return Err("Destination source is read-only".to_string());
     }
     let components = parse_memo_components(payload)?;
     if components.is_empty() {
-        return Err("Die Zwischenablage enthält kein VJOURNAL".to_string());
+        return Err("Clipboard does not contain a VJOURNAL".to_string());
     }
     let mut seen = HashSet::new();
     components
@@ -801,7 +801,7 @@ pub fn plan_paste(
         .map(|component| {
             if !seen.insert(component.uid.clone()) {
                 return Err(format!(
-                    "Doppelte UID in der Zwischenablage: {}",
+                    "Duplicate UID in clipboard: {}",
                     component.uid
                 ));
             }
@@ -830,7 +830,7 @@ pub fn plan_paste_into(
         .collect::<HashSet<_>>();
     if let Some(item) = plan.iter().find(|item| existing.contains(&item.identity)) {
         return Err(format!(
-            "Memo {} / {} ist in der Zielquelle bereits vorhanden",
+            "Memo {} / {} already exists in destination source",
             item.identity.source_uid, item.identity.uid
         ));
     }
@@ -858,19 +858,19 @@ fn selected_records<'a>(
     for identity in selection {
         if !seen.insert(identity) {
             return Err(format!(
-                "Die Auswahl enthält die Identität {} / {} mehrfach",
+                "Selection contains duplicate identity {} / {}",
                 identity.source_uid, identity.uid
             ));
         }
         if duplicate_records.contains(identity) {
             return Err(format!(
-                "Die Daten enthalten die Identität {} / {} mehrfach",
+                "Data contains duplicate identity {} / {}",
                 identity.source_uid, identity.uid
             ));
         }
         let Some(record) = by_identity.get(identity).copied() else {
             return Err(format!(
-                "Memo {} / {} ist nach dem Refresh nicht mehr vorhanden",
+                "Memo {} / {} is no longer present after refresh",
                 identity.source_uid, identity.uid
             ));
         };
@@ -882,7 +882,7 @@ fn selected_records<'a>(
 fn parse_memo_components(raw: &str) -> Result<Vec<ValidatedMemoComponent>, String> {
     let lines = physical_lines(raw);
     if lines.is_empty() {
-        return Err("Die iCalendar-Daten sind leer".to_string());
+        return Err("iCalendar data is empty".to_string());
     }
     validate_structure(&lines)?;
     let first = lines.first().map(String::as_str).unwrap_or_default();
@@ -892,10 +892,10 @@ fn parse_memo_components(raw: &str) -> Result<Vec<ValidatedMemoComponent>, Strin
             .last()
             .is_some_and(|line| line.eq_ignore_ascii_case("END:VCALENDAR"))
     {
-        return Err("VCALENDAR enthält kein abschließendes END:VCALENDAR".to_string());
+        return Err("VCALENDAR is missing a closing END:VCALENDAR".to_string());
     }
     if !is_envelope && !first.eq_ignore_ascii_case("BEGIN:VJOURNAL") {
-        return Err("Die iCalendar-Daten sind kein VJOURNAL".to_string());
+        return Err("iCalendar data is not a VJOURNAL".to_string());
     }
     if is_envelope {
         validate_envelope_contents(&lines)?;
@@ -921,26 +921,26 @@ fn parse_memo_components(raw: &str) -> Result<Vec<ValidatedMemoComponent>, Strin
             index += 1;
         }
         if depth != 0 {
-            return Err("VJOURNAL enthält kein abschließendes END:VJOURNAL".to_string());
+            return Err("VJOURNAL is missing a closing END:VJOURNAL".to_string());
         }
         let end = index - 1;
         let component = lines[start..=end].join("\r\n") + "\r\n";
         let uid = top_level_uid(&component)
-            .ok_or_else(|| "VJOURNAL enthält keine nichtleere UID".to_string())?;
+            .ok_or_else(|| "VJOURNAL is missing a non-empty UID".to_string())?;
         MemoEditorDraft::parse(&component)
-            .map_err(|error| format!("Ungültiges VJOURNAL: {error}"))?;
+            .map_err(|error| format!("Invalid VJOURNAL: {error}"))?;
         components.push(ValidatedMemoComponent { uid, component });
         last_component_end = Some(end);
     }
 
     if components.is_empty() {
-        return Err("Die iCalendar-Daten enthalten kein VJOURNAL".to_string());
+        return Err("iCalendar data does not contain a VJOURNAL".to_string());
     }
     if !is_envelope && components.len() != 1 {
-        return Err("Mehrere VJOURNALs benötigen eine VCALENDAR-Hülle".to_string());
+        return Err("Multiple VJOURNALs require a VCALENDAR envelope".to_string());
     }
     if !is_envelope && last_component_end != Some(lines.len() - 1) {
-        return Err("Ein einzelnes VJOURNAL darf keine zusätzlichen Daten enthalten".to_string());
+        return Err("A single VJOURNAL must not contain trailing data".to_string());
     }
     Ok(components)
 }
@@ -951,11 +951,11 @@ fn validate_envelope_contents(lines: &[String]) -> Result<(), String> {
         let upper = line.to_ascii_uppercase();
         if let Some(kind) = upper.strip_prefix("BEGIN:") {
             if kind == "VCALENDAR" && !stack.is_empty() {
-                return Err("VCALENDAR darf nicht verschachtelt werden".to_string());
+                return Err("VCALENDAR must not be nested".to_string());
             }
             if stack.len() == 1 && kind != "VJOURNAL" {
                 return Err(format!(
-                    "VCALENDAR enthält keine Memo-Komponente: BEGIN:{kind}"
+                    "VCALENDAR contains a non-memo component: BEGIN:{kind}"
                 ));
             }
             stack.push(kind.to_string());
@@ -963,19 +963,19 @@ fn validate_envelope_contents(lines: &[String]) -> Result<(), String> {
         }
         if let Some(kind) = upper.strip_prefix("END:") {
             let Some(open) = stack.pop() else {
-                return Err(format!("Unerwartetes END:{kind}"));
+                return Err(format!("Unexpected END:{kind}"));
             };
             if open != kind {
-                return Err(format!("BEGIN:{open} und END:{kind} passen nicht zusammen"));
+                return Err(format!("Mismatched BEGIN:{open} and END:{kind}"));
             }
             continue;
         }
         if stack.is_empty() {
-            return Err("Daten außerhalb der VCALENDAR-Hülle sind nicht erlaubt".to_string());
+            return Err("Data outside the VCALENDAR envelope is not allowed".to_string());
         }
     }
     if !stack.is_empty() {
-        return Err("VCALENDAR enthält eine nicht geschlossene Komponente".to_string());
+        return Err("VCALENDAR contains an unclosed component".to_string());
     }
     Ok(())
 }
@@ -989,7 +989,7 @@ fn validate_structure(lines: &[String]) -> Result<(), String> {
             if kind == "VJOURNAL" {
                 if vjournal_depth != 0 {
                     return Err(
-                        "VJOURNAL darf keine weitere VJOURNAL-Komponente enthalten".to_string()
+                        "VJOURNAL must not contain a nested VJOURNAL component".to_string()
                     );
                 }
                 vjournal_depth += 1;
@@ -998,10 +998,10 @@ fn validate_structure(lines: &[String]) -> Result<(), String> {
         } else if let Some(kind) = upper.strip_prefix("END:") {
             let kind = kind.to_string();
             let Some(open) = stack.pop() else {
-                return Err(format!("Unerwartetes END:{kind}"));
+                return Err(format!("Unexpected END:{kind}"));
             };
             if open != kind {
-                return Err(format!("BEGIN:{open} und END:{kind} passen nicht zusammen"));
+                return Err(format!("Mismatched BEGIN:{open} and END:{kind}"));
             }
             if kind == "VJOURNAL" {
                 vjournal_depth = vjournal_depth.saturating_sub(1);
@@ -1009,7 +1009,7 @@ fn validate_structure(lines: &[String]) -> Result<(), String> {
         }
     }
     if let Some(open) = stack.last() {
-        return Err(format!("BEGIN:{open} bleibt offen"));
+        return Err(format!("BEGIN:{open} remains unclosed"));
     }
     if lines.iter().any(|line| {
         let upper = line.to_ascii_uppercase();
@@ -1018,7 +1018,7 @@ fn validate_structure(lines: &[String]) -> Result<(), String> {
             || upper == "END:VEVENT"
             || upper == "END:VTODO"
     }) {
-        return Err("Nur VJOURNAL-Komponenten sind für die Memo-Oberfläche erlaubt".to_string());
+        return Err("Only VJOURNAL components are allowed for the memo surface".to_string());
     }
     Ok(())
 }
@@ -1106,11 +1106,11 @@ fn preview_attachment(
             label: attachment
                 .filename
                 .clone()
-                .unwrap_or_else(|| "Inline-Anhang".to_string()),
+                .unwrap_or_else(|| "Inline attachment".to_string()),
             value: attachment
                 .inline_content
                 .clone()
-                .unwrap_or_else(|| "(Inline-Inhalt nicht geöffnet)".to_string()),
+                .unwrap_or_else(|| "(Inline content not opened)".to_string()),
             inline: true,
             inert: true,
         }
@@ -1119,7 +1119,7 @@ fn preview_attachment(
             label: attachment
                 .filename
                 .clone()
-                .unwrap_or_else(|| "URI-Anhang".to_string()),
+                .unwrap_or_else(|| "URI attachment".to_string()),
             value: attachment.uri.clone().unwrap_or_default(),
             inline: false,
             inert: true,

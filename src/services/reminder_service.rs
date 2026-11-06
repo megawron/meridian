@@ -1858,7 +1858,7 @@ fn load_reminder_state(path: &Path) -> io::Result<ReminderState> {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "Nicht unterstützte Reminder-Version: {} (erwartet {})",
+                        "Unsupported reminder version: {} (expected {})",
                         state.version, CURRENT_VERSION
                     ),
                 ));
@@ -2221,7 +2221,7 @@ impl ReminderStore {
     {
         let _guard = REMINDER_STATE_LOCK
             .lock()
-            .map_err(|_| io::Error::other("Reminder-State-Sperre ist beschädigt"))?;
+            .map_err(|_| io::Error::other("Reminder state lock is poisoned"))?;
         let mut state = load_reminder_state(&self.path)?;
         let (changed, result) = update(&mut state)?;
         if changed {

@@ -364,14 +364,14 @@ pub(crate) fn normalize_contact_table_column_order(value: &str) -> Vec<String> {
 
 fn normalize_mail_folder_sort_order(value: &str) -> Result<String, String> {
     let order = serde_json::from_str::<BTreeMap<String, u32>>(value)
-        .map_err(|_| "ungültige Ordnersortierung".to_string())?;
+        .map_err(|_| "invalid folder sort order".to_string())?;
     if order
         .iter()
         .any(|(folder_id, rank)| folder_id.trim().is_empty() || *rank == 0)
     {
-        return Err("ungültige Ordnersortierung".to_string());
+        return Err("invalid folder sort order".to_string());
     }
-    serde_json::to_string(&order).map_err(|_| "ungültige Ordnersortierung".to_string())
+    serde_json::to_string(&order).map_err(|_| "invalid folder sort order".to_string())
 }
 
 fn normalized_task_filter(value: &str) -> &str {
@@ -412,7 +412,7 @@ pub(crate) fn normalize_task_preview_orientation_value(value: &str) -> Result<St
     match value.trim().to_ascii_lowercase().as_str() {
         "classic" => Ok("classic".to_string()),
         "vertical" => Ok("vertical".to_string()),
-        _ => Err("Unbekannte Aufgaben-Vorschauausrichtung".to_string()),
+        _ => Err("Unknown task preview orientation".to_string()),
     }
 }
 
@@ -420,7 +420,7 @@ pub(crate) fn validate_memo_category_filter_value(value: &str) -> Result<String,
     let value = value.trim();
     if value.is_empty() {
         return Err(
-            "Der Memo-Kategoriefilter darf bei einer Migration nicht leer sein".to_string(),
+            "Memo category filter must not be empty during migration".to_string(),
         );
     }
     if value.eq_ignore_ascii_case("any")
@@ -485,11 +485,11 @@ fn default_mail_normal_headers() -> Vec<(String, bool)> {
 pub(crate) fn validate_mail_normal_header_name(value: &str) -> Result<String, String> {
     let name = value.trim();
     if name.is_empty() {
-        return Err("Der Headername darf nicht leer sein.".to_string());
+        return Err("Header name must not be empty.".to_string());
     }
     if name.len() > MAX_MAIL_NORMAL_HEADER_NAME_BYTES {
         return Err(format!(
-            "Der Headername darf höchstens {MAX_MAIL_NORMAL_HEADER_NAME_BYTES} Zeichen lang sein."
+            "Header name must be at most {MAX_MAIL_NORMAL_HEADER_NAME_BYTES} characters long."
         ));
     }
     if !name.is_ascii()
@@ -498,7 +498,7 @@ pub(crate) fn validate_mail_normal_header_name(value: &str) -> Result<String, St
             .any(|character| !character.is_ascii_graphic() || character == ':')
     {
         return Err(
-            "Der Headername darf nur sichtbare ASCII-Zeichen enthalten und keinen Doppelpunkt."
+            "Header name may only contain printable ASCII characters and no colon."
                 .to_string(),
         );
     }
@@ -533,17 +533,17 @@ fn mail_normal_headers_variant_type() -> std::borrow::Cow<'static, glib::Variant
 pub(crate) fn parse_mail_normal_headers_value(value: &str) -> Result<Vec<(String, bool)>, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err("Die Headerliste ist leer.".to_string());
+        return Err("Header list is empty.".to_string());
     }
 
     let variant = glib::Variant::parse(Some(mail_normal_headers_variant_type().as_ref()), value)
-        .map_err(|_| "ungültige show-headers-Liste".to_string())?;
+        .map_err(|_| "invalid show-headers list".to_string())?;
     let headers = variant
         .get::<Vec<(String, bool)>>()
-        .ok_or_else(|| "ungültiger Typ für die show-headers-Liste".to_string())?;
+        .ok_or_else(|| "invalid type for show-headers list".to_string())?;
     if headers.len() > MAX_MAIL_NORMAL_HEADERS {
         return Err(format!(
-            "Die Headerliste darf höchstens {MAX_MAIL_NORMAL_HEADERS} Einträge enthalten."
+            "Header list may contain at most {MAX_MAIL_NORMAL_HEADERS} entries."
         ));
     }
 
@@ -553,7 +553,7 @@ pub(crate) fn parse_mail_normal_headers_value(value: &str) -> Result<Vec<(String
         .map(|(name, visible)| {
             let name = validate_mail_normal_header_name(&name)?;
             if !seen.insert(name.to_ascii_lowercase()) {
-                return Err("Die Headerliste enthält doppelte Feldnamen.".to_string());
+                return Err("Header list contains duplicate field names.".to_string());
             }
             Ok((name, visible))
         })
@@ -4263,7 +4263,7 @@ impl AppSettings {
             "switcher-location" => {
                 if !matches!(value, "top" | "bottom-left") {
                     return Err(format!(
-                        "ungültiger Wert für „{key}“ (erwartet „top“ oder „bottom-left“)"
+                        "invalid value for \"{key}\" (expected \"top\" or \"bottom-left\")"
                     ));
                 }
                 self.set_switcher_location(value);
@@ -4375,7 +4375,7 @@ impl AppSettings {
             "calendar-time-divisions" => {
                 let div = parse_migrated_i32(key, value)?;
                 if !matches!(div, 5 | 10 | 15 | 30 | 60) {
-                    return Err(format!("ungültige Zeiteinteilung für „{key}“"));
+                    return Err(format!("invalid time division for \"{key}\""));
                 }
                 self.set_calendar_time_divisions(div);
             }
@@ -4391,7 +4391,7 @@ impl AppSettings {
             "calendar-month-view-rows" => {
                 let rows = parse_migrated_i32(key, value)?;
                 if !matches!(rows, 5 | 6) {
-                    return Err(format!("ungültige Zeilenanzahl für „{key}“ (erlaubt: 5 oder 6)"));
+                    return Err(format!("invalid row count for \"{key}\" (allowed: 5 or 6)"));
                 }
                 self.set_calendar_month_view_rows(rows);
             }
@@ -4399,7 +4399,7 @@ impl AppSettings {
                 self.set_calendar_dim_past_events(parse_migrated_bool(key, value)?);
             }
             "calendar-chip-scale" => {
-                let scale: f64 = value.parse().map_err(|e| format!("ungültiger Wert für „{key}“: {e}"))?;
+                let scale: f64 = value.parse().map_err(|e| format!("invalid value for \"{key}\": {e}"))?;
                 self.set_calendar_chip_scale(scale);
             }
             "calendar-second-zone" => {
@@ -4436,7 +4436,7 @@ impl AppSettings {
                     .iter()
                     .any(|item| item.is_empty() || item.chars().any(char::is_control))
                 {
-                    return Err(format!("ungültige Quellenliste für „{key}“"));
+                    return Err(format!("invalid source list for \"{key}\""));
                 }
                 match key {
                     "calendar-hidden-sources" => self.set_calendar_hidden_sources(&items),
@@ -4470,7 +4470,7 @@ impl AppSettings {
             }
             "composer-charset" => {
                 let value = normalize_composer_charset(value)
-                    .ok_or_else(|| format!("ungültige Zeichenkodierung für „{key}“"))?;
+                    .ok_or_else(|| format!("invalid character encoding for \"{key}\""))?;
                 self.set_composer_charset(value);
             }
             "request-read-receipt" => {
@@ -4579,7 +4579,7 @@ impl AppSettings {
             "mail-date-align" => self.set_mail_date_align(value),
             "mail-list-view-profile" => {
                 if !matches!(value, "messages" | "wide" | "custom") {
-                    return Err(format!("ungültiges Mail-Ansichtsprofil für „{key}“"));
+                    return Err(format!("invalid mail view profile for \"{key}\""));
                 }
                 if value == "custom" {
                     self.set_string("mail-list-view-profile", value);
@@ -4609,7 +4609,7 @@ impl AppSettings {
             "crypto-protocol" => self.set_crypto_protocol(value),
             "smime-signer-certificate" => self.set_smime_signer_certificate(value),
             "smime-private-key" => {
-                return Err("geheimes S/MIME-Schlüsselfeld wird nicht importiert".to_string());
+                return Err("secret S/MIME private key field will not be imported".to_string());
             }
             "smime-recipient-certificates" => self.set_smime_recipient_certificates(
                 &value
@@ -4832,7 +4832,7 @@ impl AppSettings {
                     }
                 }
                 if labels.is_empty() {
-                    return Err("ungültige mail-labels-Liste".to_string());
+                    return Err("invalid mail-labels list".to_string());
                 }
                 self.set_mail_labels(&labels);
             }
@@ -4853,7 +4853,7 @@ impl AppSettings {
             }
             "junk-default-plugin" => {
                 if !matches!(value, "Bogofilter" | "SpamAssassin") {
-                    return Err(format!("ungültiges Junk-Plugin für „{key}“"));
+                    return Err(format!("invalid junk plugin for \"{key}\""));
                 }
                 self.set_junk_default_plugin(value);
             }
@@ -4889,12 +4889,12 @@ impl AppSettings {
             }
             "composer-reply-style" => {
                 let value = normalize_composer_reply_style(value)
-                    .ok_or_else(|| format!("ungültiger Antwort-Stil für „{key}“"))?;
+                    .ok_or_else(|| format!("invalid reply style for \"{key}\""))?;
                 self.set_composer_reply_style(value);
             }
             "composer-forward-style" => {
                 let value = normalize_composer_forward_style(value)
-                    .ok_or_else(|| format!("ungültiger Weiterleitungs-Stil für „{key}“"))?;
+                    .ok_or_else(|| format!("invalid forward style for \"{key}\""))?;
                 self.set_composer_forward_style(value);
             }
             "composer-top-signature" => {
@@ -4905,7 +4905,7 @@ impl AppSettings {
             }
             "mail-image-loading-policy" => {
                 let value = normalize_image_loading_policy(value)
-                    .ok_or_else(|| format!("ungültige Bildladerichtlinie für „{key}“"))?;
+                    .ok_or_else(|| format!("invalid image loading policy for \"{key}\""))?;
                 self.set_mail_image_loading_policy(value);
             }
             "mail-mark-seen" => {
@@ -4946,7 +4946,7 @@ impl AppSettings {
             "mail-show-real-date" => {
                 self.set_mail_show_real_date(parse_migrated_bool(key, value)?);
             }
-            _ => return Err(format!("unbekannter Migrationsschlüssel „{key}“")),
+            _ => return Err(format!("unknown migration key \"{key}\"")),
         }
         Ok(())
     }
@@ -5229,7 +5229,7 @@ fn parse_migrated_bool(key: &str, value: &str) -> Result<bool, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "yes" | "on" | "1" => Ok(true),
         "false" | "no" | "off" | "0" => Ok(false),
-        _ => Err(format!("ungültiger boolescher Wert für „{key}“")),
+        _ => Err(format!("invalid boolean value for \"{key}\"")),
     }
 }
 
@@ -5237,7 +5237,7 @@ fn parse_migrated_i32(key: &str, value: &str) -> Result<i32, String> {
     value
         .trim()
         .parse::<i32>()
-        .map_err(|_| format!("ungültiger Ganzzahlwert für „{key}“"))
+        .map_err(|_| format!("invalid integer value for \"{key}\""))
 }
 
 fn parse_migrated_i32_in_range(
@@ -5249,7 +5249,7 @@ fn parse_migrated_i32_in_range(
     let value = parse_migrated_i32(key, value)?;
     if !(minimum..=maximum).contains(&value) {
         return Err(format!(
-            "Wert für „{key}“ liegt außerhalb des Bereichs {minimum}..={maximum}"
+            "value for \"{key}\" is out of range {minimum}..={maximum}"
         ));
     }
     Ok(value)
@@ -5259,7 +5259,7 @@ fn parse_migrated_u32(key: &str, value: &str) -> Result<u32, String> {
     value
         .trim()
         .parse::<u32>()
-        .map_err(|_| format!("ungültiger positiver Ganzzahlwert für „{key}“"))
+        .map_err(|_| format!("invalid unsigned integer value for \"{key}\""))
 }
 
 fn parse_migrated_u32_in_range(
@@ -5271,7 +5271,7 @@ fn parse_migrated_u32_in_range(
     let value = parse_migrated_u32(key, value)?;
     if !(minimum..=maximum).contains(&value) {
         return Err(format!(
-            "Wert für „{key}“ liegt außerhalb des Bereichs {minimum}..={maximum}"
+            "value for \"{key}\" is out of range {minimum}..={maximum}"
         ));
     }
     Ok(value)
@@ -5279,7 +5279,7 @@ fn parse_migrated_u32_in_range(
 
 fn parse_migrated_directory(key: &str, value: &str) -> Result<String, String> {
     if value.len() > 4_096 || value.chars().any(char::is_control) {
-        return Err(format!("ungültiger Pfadwert für „{key}“"));
+        return Err(format!("invalid path value for \"{key}\""));
     }
     Ok(value.to_string())
 }

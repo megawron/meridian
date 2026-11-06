@@ -74,7 +74,7 @@ impl TlsMode {
         match self {
             Self::SslTls => "SSL/TLS",
             Self::Starttls => "STARTTLS",
-            Self::None => "Keine Verschlüsselung",
+            Self::None => "No Encryption",
         }
     }
 }
@@ -107,11 +107,11 @@ impl DiscoveryTier {
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::BuiltinProfile => "Bekannter Anbieter",
+            Self::BuiltinProfile => "Known Provider",
             Self::MozillaIspdb => "Mozilla ISPDB",
             Self::DomainAutoconfig => "Domain Autoconfig",
-            Self::DnsMx => "DNS MX Erkennung",
-            Self::Heuristic => "Standard-Heuristik",
+            Self::DnsMx => "DNS MX Detection",
+            Self::Heuristic => "Standard Heuristics",
         }
     }
 
@@ -229,11 +229,11 @@ impl AutodiscoverService {
         let email = email.trim();
         let (local, domain) = split_email_parts(email);
         if local.is_empty() || domain.is_empty() || !domain.contains('.') {
-            return Err(format!("Ungültige E-Mail-Adresse: '{email}'"));
+            return Err(format!("Invalid email address: '{email}'"));
         }
 
         if cancellation.load(Ordering::Relaxed) {
-            return Err("Vorgang abgebrochen".to_string());
+            return Err("Operation cancelled".to_string());
         }
 
         // Tier 1: Built-in Known Provider Profiles (0 ms, 100% offline)
@@ -242,7 +242,7 @@ impl AutodiscoverService {
         }
 
         if cancellation.load(Ordering::Relaxed) {
-            return Err("Vorgang abgebrochen".to_string());
+            return Err("Operation cancelled".to_string());
         }
 
         // Tier 2: Mozilla Thunderbird ISPDB HTTP Lookup
@@ -251,7 +251,7 @@ impl AutodiscoverService {
         }
 
         if cancellation.load(Ordering::Relaxed) {
-            return Err("Vorgang abgebrochen".to_string());
+            return Err("Operation cancelled".to_string());
         }
 
         // Tier 3: Domain Autoconfig HTTP Queries (.well-known and autoconfig.{domain})
@@ -260,7 +260,7 @@ impl AutodiscoverService {
         }
 
         if cancellation.load(Ordering::Relaxed) {
-            return Err("Vorgang abgebrochen".to_string());
+            return Err("Operation cancelled".to_string());
         }
 
         // Tier 4: DNS MX Resolution & SaaS Provider Pattern Matching
@@ -269,7 +269,7 @@ impl AutodiscoverService {
         }
 
         if cancellation.load(Ordering::Relaxed) {
-            return Err("Vorgang abgebrochen".to_string());
+            return Err("Operation cancelled".to_string());
         }
 
         // Tier 5: Common Host Heuristic Fallback
@@ -421,7 +421,7 @@ impl AutodiscoverService {
                     ),
                     incoming_protocol: AccountProtocol::ImapSmtp,
                     tier: DiscoveryTier::DnsMx,
-                    note: Some("Google Workspace erkannt. Bei 2FA wird ein App-Passwort benötigt (oder OAuth2).".to_string()),
+                    note: Some("Google Workspace detected. With 2FA enabled, an app password (or OAuth2) is required.".to_string()),
                 });
             }
 
@@ -452,7 +452,7 @@ impl AutodiscoverService {
                     ),
                     incoming_protocol: AccountProtocol::ImapSmtp,
                     tier: DiscoveryTier::DnsMx,
-                    note: Some("Microsoft 365 erkannt. Moderne Authentifizierung (OAuth2) empfohlen.".to_string()),
+                    note: Some("Microsoft 365 detected. Modern authentication (OAuth2) is recommended.".to_string()),
                 });
             }
 
@@ -479,7 +479,7 @@ impl AutodiscoverService {
                     ),
                     incoming_protocol: AccountProtocol::ImapSmtp,
                     tier: DiscoveryTier::DnsMx,
-                    note: Some("iCloud erkannt. Erfordert ein anwendungsspezifisches Passwort.".to_string()),
+                    note: Some("iCloud detected. Requires an app-specific password.".to_string()),
                 });
             }
 
@@ -533,7 +533,7 @@ impl AutodiscoverService {
                     ),
                     incoming_protocol: AccountProtocol::ImapSmtp,
                     tier: DiscoveryTier::DnsMx,
-                    note: Some("ProtonMail erkannt. Erfordert die lokale ProtonMail Bridge.".to_string()),
+                    note: Some("ProtonMail detected. Requires the local ProtonMail Bridge.".to_string()),
                 });
             }
         }
@@ -556,7 +556,7 @@ impl AutodiscoverService {
                         DiscoveryTier::DnsMx,
                     ) {
                         config.provider_name =
-                            format!("{} (über MX {})", config.provider_name, mx_parent_domain);
+                            format!("{} (via MX {})", config.provider_name, mx_parent_domain);
                         return Some(config);
                     }
                 }
@@ -589,7 +589,7 @@ impl AutodiscoverService {
             ),
             incoming_protocol: AccountProtocol::ImapSmtp,
             tier: DiscoveryTier::Heuristic,
-            note: Some("Einstellungen basieren auf Standard-Heuristik (imap/smtp). Bitte manuell prüfen.".to_string()),
+            note: Some("Settings are based on standard heuristics (imap/smtp). Please verify manually.".to_string()),
         }
     }
 }
@@ -622,7 +622,7 @@ static BUILTIN_PROVIDERS: &[BuiltinProviderDef] = &[
         smtp_tls: TlsMode::SslTls,
         username_template: "%EMAILADDRESS%",
         auth_mechanism: Some("OAuth2"),
-        note: Some("Für Gmail wird bei aktivierter 2FA ein App-Passwort benötigt (oder OAuth2)."),
+        note: Some("For Gmail with 2FA enabled, an app password (or OAuth2) is required."),
     },
     // 2. Microsoft Outlook / Hotmail / Live
     BuiltinProviderDef {
@@ -639,7 +639,7 @@ static BUILTIN_PROVIDERS: &[BuiltinProviderDef] = &[
         smtp_tls: TlsMode::Starttls,
         username_template: "%EMAILADDRESS%",
         auth_mechanism: Some("OAuth2"),
-        note: Some("Für Microsoft-Konten wird moderne Authentifizierung (OAuth2) empfohlen."),
+        note: Some("Modern authentication (OAuth2) is recommended for Microsoft accounts."),
     },
     // 3. Apple iCloud
     BuiltinProviderDef {
@@ -653,7 +653,7 @@ static BUILTIN_PROVIDERS: &[BuiltinProviderDef] = &[
         smtp_tls: TlsMode::Starttls,
         username_template: "%EMAILLOCALPART%",
         auth_mechanism: None,
-        note: Some("iCloud erfordert ein anwendungsspezifisches Passwort (appleid.apple.com)."),
+        note: Some("iCloud requires an app-specific password (appleid.apple.com)."),
     },
     // 4. Yahoo Mail
     BuiltinProviderDef {
@@ -670,7 +670,7 @@ static BUILTIN_PROVIDERS: &[BuiltinProviderDef] = &[
         smtp_tls: TlsMode::SslTls,
         username_template: "%EMAILADDRESS%",
         auth_mechanism: Some("OAuth2"),
-        note: Some("Yahoo erfordert ein anwendungsspezifisches Passwort oder OAuth2."),
+        note: Some("Yahoo requires an app-specific password or OAuth2."),
     },
     // 5. Posteo
     BuiltinProviderDef {
@@ -698,7 +698,7 @@ static BUILTIN_PROVIDERS: &[BuiltinProviderDef] = &[
         smtp_tls: TlsMode::Starttls,
         username_template: "%EMAILADDRESS%",
         auth_mechanism: None,
-        note: Some("Bitte stellen Sie sicher, dass der IMAP/POP3-Zugriff in den GMX-Einstellungen aktiviert ist."),
+        note: Some("Please ensure IMAP/POP3 access is enabled in your GMX settings."),
     },
     // 7. WEB.DE
     BuiltinProviderDef {
@@ -712,7 +712,7 @@ static BUILTIN_PROVIDERS: &[BuiltinProviderDef] = &[
         smtp_tls: TlsMode::Starttls,
         username_template: "%EMAILADDRESS%",
         auth_mechanism: None,
-        note: Some("Bitte stellen Sie sicher, dass der IMAP/POP3-Zugriff in den WEB.DE-Einstellungen aktiviert ist."),
+        note: Some("Please ensure IMAP/POP3 access is enabled in your WEB.DE settings."),
     },
     // 8. Mailbox.org
     BuiltinProviderDef {
@@ -754,7 +754,7 @@ static BUILTIN_PROVIDERS: &[BuiltinProviderDef] = &[
         smtp_tls: TlsMode::SslTls,
         username_template: "%EMAILADDRESS%",
         auth_mechanism: None,
-        note: Some("Erfordert das gesonderte 'Passwort für E-Mail-Programme'."),
+        note: Some("Requires the separate 'Password for email programs'."),
     },
 ];
 
@@ -765,7 +765,7 @@ fn http_fetch_get(
 ) -> Result<String, String> {
     if let Some(c) = cancellation {
         if c.load(Ordering::Relaxed) {
-            return Err("Vorgang abgebrochen".to_string());
+            return Err("Operation cancelled".to_string());
         }
     }
 
@@ -786,7 +786,7 @@ fn http_fetch_get(
 
     if let Some(c) = cancellation {
         if c.load(Ordering::Relaxed) {
-            return Err("Vorgang abgebrochen".to_string());
+            return Err("Operation cancelled".to_string());
         }
     }
 
@@ -802,7 +802,7 @@ pub fn resolve_dns_mx(domain: &str) -> Result<Vec<(u16, String)>, String> {
     let resolver = Resolver::default();
     let records = resolver
         .lookup_records(domain, ResolverRecordType::Mx, gio::Cancellable::NONE)
-        .map_err(|e| format!("DNS MX Lookup fehlgeschlagen: {e}"))?;
+        .map_err(|e| format!("DNS MX lookup failed: {e}"))?;
 
     let mut result = Vec::new();
     for var in records {
@@ -1198,6 +1198,6 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(true));
         let res = AutodiscoverService::discover_cancelable("user@gmail.com", &cancel);
         assert!(res.is_err());
-        assert_eq!(res.unwrap_err(), "Vorgang abgebrochen");
+        assert_eq!(res.unwrap_err(), "Operation cancelled");
     }
 }

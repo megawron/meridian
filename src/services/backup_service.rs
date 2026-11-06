@@ -1553,7 +1553,7 @@ impl BackupSettings {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "mail_list_column_order ist nicht kanonisch",
+                "mail_list_column_order is not canonical",
             ));
         }
         validate_u32_setting("mail_font_size", self.mail_font_size, 8, 48)?;
@@ -1610,7 +1610,7 @@ impl BackupSettings {
         if !matches!(self.calendar_time_divisions, 5 | 10 | 15 | 30 | 60) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "calendar_time_divisions ist keine gültige Zeiteinteilung",
+                "calendar_time_divisions is not a valid time division",
             ));
         }
         validate_choice(
@@ -1641,14 +1641,14 @@ impl BackupSettings {
         let folder_sort_order = serde_json::from_str::<BTreeMap<String, u32>>(
             &self.mail_folder_sort_order,
         )
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "ungültige Ordnersortierung"))?;
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid folder sort order"))?;
         if folder_sort_order
             .iter()
             .any(|(folder_id, rank)| folder_id.trim().is_empty() || *rank == 0)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "ungültige Ordnersortierung",
+                "invalid folder sort order",
             ));
         }
         validate_choice(
@@ -1822,7 +1822,7 @@ impl BackupSettings {
 fn validation_error(field: &str, reason: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
-        format!("Ungültiger Sicherungswert für {field}: {reason}"),
+        format!("Invalid backup value for {field}: {reason}"),
     )
 }
 
@@ -1835,7 +1835,7 @@ fn validate_color_setting(field: &str, value: &str) -> io::Result<()> {
     {
         Ok(())
     } else {
-        Err(validation_error(field, "ungültiger Farbwert"))
+        Err(validation_error(field, "invalid color value"))
     }
 }
 
@@ -1843,7 +1843,7 @@ fn validate_i32_setting(field: &str, value: i32, minimum: i32, maximum: i32) -> 
     if !(minimum..=maximum).contains(&value) {
         return Err(validation_error(
             field,
-            "außerhalb des portablen Wertebereichs",
+            "outside portable value range",
         ));
     }
     Ok(())
@@ -1853,7 +1853,7 @@ fn validate_u32_setting(field: &str, value: u32, minimum: u32, maximum: u32) -> 
     if !(minimum..=maximum).contains(&value) {
         return Err(validation_error(
             field,
-            "außerhalb des portablen Wertebereichs",
+            "outside portable value range",
         ));
     }
     Ok(())
@@ -1863,7 +1863,7 @@ fn validate_choice(field: &str, value: &str, choices: &[&str]) -> io::Result<()>
     if choices.contains(&value) {
         Ok(())
     } else {
-        Err(validation_error(field, "nicht unterstützt"))
+        Err(validation_error(field, "unsupported"))
     }
 }
 
@@ -1877,7 +1877,7 @@ fn validate_string(
         || value.len() > maximum_bytes
         || value.chars().any(char::is_control)
     {
-        return Err(validation_error(field, "ungültiger Textwert"));
+        return Err(validation_error(field, "invalid text value"));
     }
     Ok(())
 }
@@ -1912,16 +1912,16 @@ fn validate_mail_normal_headers(headers: &[(String, bool)]) -> io::Result<()> {
     if headers.len() > 64 {
         return Err(validation_error(
             "mail_normal_headers",
-            "ungültige Headerliste",
+            "invalid header list",
         ));
     }
     for (name, _) in headers {
         let name = super::settings_service::validate_mail_normal_header_name(name)
-            .map_err(|_| validation_error("mail_normal_headers", "ungültige Headerliste"))?;
+            .map_err(|_| validation_error("mail_normal_headers", "invalid header list"))?;
         if !seen.insert(name.to_ascii_lowercase()) {
             return Err(validation_error(
                 "mail_normal_headers",
-                "doppelte Headernamen",
+                "duplicate header names",
             ));
         }
     }
@@ -1937,7 +1937,7 @@ fn validate_font_family(value: &str) -> io::Result<()> {
     {
         return Err(validation_error(
             "mail_font_family",
-            "keine portable Schriftfamilie",
+            "not a portable font family",
         ));
     }
     Ok(())
@@ -1957,7 +1957,7 @@ fn validate_spellcheck_languages(value: &str) -> io::Result<()> {
     {
         return Err(validation_error(
             "spellcheck_languages",
-            "keine portable Sprachliste",
+            "not a portable language list",
         ));
     }
     Ok(())
@@ -1976,7 +1976,7 @@ fn validate_calendar_workdays(value: &str) -> io::Result<()> {
         {
             return Err(validation_error(
                 "calendar_workdays",
-                "keine eindeutige portable Wochentagsliste",
+                "not a unique portable weekday list",
             ));
         }
     }
@@ -1988,7 +1988,7 @@ fn validate_source_or_group_list(field: &'static str, value: &str) -> io::Result
         if value.is_empty() {
             return Ok(());
         }
-        return Err(validation_error(field, "ungültige Quellenliste"));
+        return Err(validation_error(field, "invalid source list"));
     }
 
     let mut seen = HashSet::new();
@@ -1996,7 +1996,7 @@ fn validate_source_or_group_list(field: &'static str, value: &str) -> io::Result
         if item.is_empty() || item.chars().any(char::is_control) || !seen.insert(item) {
             return Err(validation_error(
                 field,
-                "keine eindeutige portable Quellenliste",
+                "not a unique portable source list",
             ));
         }
     }
@@ -2290,7 +2290,7 @@ fn safe_backup_field_name(value: &str) -> String {
     {
         value.to_string()
     } else {
-        "nicht-öffentlicher Schlüssel".to_string()
+        "non-public key".to_string()
     }
 }
 
@@ -2309,11 +2309,11 @@ fn append_unknown_field_warnings(
     for key in unknown {
         if is_sensitive_backup_key(&key) {
             warnings.push(format!(
-                "{scope}: ein nicht-portables oder geheimes Feld wurde verworfen"
+                "{scope}: a non-portable or secret field was discarded"
             ));
         } else {
             warnings.push(format!(
-                "{scope}: unbekanntes Feld „{}“ wurde nicht übernommen",
+                "{scope}: unknown field \"{}\" was ignored",
                 safe_backup_field_name(&key)
             ));
         }
@@ -2325,14 +2325,14 @@ fn parse_backup_bundle(raw: &[u8]) -> io::Result<(BackupBundle, Vec<String>)> {
     let value = serde_json::from_slice::<serde_json::Value>(raw).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            "Ungültiges JSON-Sicherungsformat",
+            "Invalid JSON backup format",
         )
     })?;
     let mut warnings = Vec::new();
     if let Some(object) = value.as_object() {
         append_unknown_field_warnings(
             &mut warnings,
-            "Sicherungscontainer",
+            "Backup container",
             object,
             BACKUP_BUNDLE_FIELDS,
         );
@@ -2342,7 +2342,7 @@ fn parse_backup_bundle(raw: &[u8]) -> io::Result<(BackupBundle, Vec<String>)> {
         {
             append_unknown_field_warnings(
                 &mut warnings,
-                "Sicherungseinstellungen",
+                "Backup settings",
                 settings,
                 BACKUP_SETTINGS_FIELDS,
             );
@@ -2352,7 +2352,7 @@ fn parse_backup_bundle(raw: &[u8]) -> io::Result<(BackupBundle, Vec<String>)> {
                 if let Some(file) = file.as_object() {
                     append_unknown_field_warnings(
                         &mut warnings,
-                        "Sicherungsdatei",
+                        "Backup file",
                         file,
                         BACKUP_FILE_FIELDS,
                     );
@@ -2363,14 +2363,14 @@ fn parse_backup_bundle(raw: &[u8]) -> io::Result<(BackupBundle, Vec<String>)> {
     let mut bundle = serde_json::from_value::<BackupBundle>(value).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            "Ungültige Typen oder Felder im Sicherungsformat",
+            "Invalid types or fields in backup format",
         )
     })?;
     sanitize_backup_file_payloads(&mut bundle)?;
     for file in &bundle.files {
         if file.redacted_fields > 0 {
             warnings.push(format!(
-                "Sicherungsdatei enthält {} redigierte geheime JSON-Felder",
+                "Backup file contains {} redacted secret JSON fields",
                 file.redacted_fields
             ));
         }
@@ -2390,7 +2390,7 @@ fn sanitize_backup_file_payloads(bundle: &mut BackupBundle) -> io::Result<()> {
         if !file.checksum_sha256.is_empty() && file.checksum_sha256 != sha256(&contents) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Sicherungsdatei enthält nicht redigierte geheime JSON-Felder",
+                "Backup file contains unredacted secret JSON fields",
             ));
         }
         file.contents = contents;
@@ -2421,7 +2421,7 @@ impl<'de> Visitor<'de> for DuplicateJsonValueVisitor {
     type Value = ();
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("einen JSON-Wert ohne doppelte Objektschlüssel")
+        formatter.write_str("a JSON value without duplicate object keys")
     }
 
     fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E>
@@ -2498,7 +2498,7 @@ impl<'de> Visitor<'de> for DuplicateJsonValueVisitor {
         let mut keys = HashSet::new();
         while let Some(key) = map.next_key::<String>()? {
             if !keys.insert(key) {
-                return Err(serde::de::Error::custom("doppelter JSON-Schlüssel"));
+                return Err(serde::de::Error::custom("duplicate JSON key"));
             }
             map.next_value_seed(DuplicateJsonValueSeed)?;
         }
@@ -2521,7 +2521,7 @@ fn redact_backup_json(contents: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     let mut value = serde_json::from_slice::<serde_json::Value>(contents).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            "App-eigene JSON-Datei konnte nicht sicher redigiert werden",
+            "App-owned JSON file could not be safely redacted",
         )
     })?;
     let redacted = redact_json_value(&mut value);
@@ -2674,7 +2674,7 @@ where
     let mut warnings = warnings;
     if bundle.settings.is_some() && app_settings.is_none() {
         warnings.push(
-            "Portable Einstellungen wurden nicht angewendet, weil das GSettings-Schema nicht verfügbar ist"
+            "Portable settings were not applied because the GSettings schema is unavailable"
                 .to_string(),
         );
     }
@@ -2685,7 +2685,7 @@ where
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "App-Datenordner darf kein symbolischer Link sein",
+            "App data directory must not be a symbolic link",
         ));
     }
     fs::create_dir_all(&root)?;
@@ -2734,7 +2734,7 @@ fn validate_bundle(bundle: &BackupBundle) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "Nicht unterstützte Sicherungsversion: {} (erwartet {})",
+                "Unsupported backup version: {} (expected {})",
                 bundle.version, CURRENT_VERSION
             ),
         ));
@@ -2751,7 +2751,7 @@ fn validate_bundle(bundle: &BackupBundle) -> io::Result<()> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "Unbekannte app-eigene Sicherungsdatei: {}",
+                    "Unknown app-owned backup file: {}",
                     file.relative_path
                 ),
             ));
@@ -2760,7 +2760,7 @@ fn validate_bundle(bundle: &BackupBundle) -> io::Result<()> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "Integritätsprüfung der Sicherungsdatei fehlgeschlagen: {}",
+                    "Backup file integrity check failed: {}",
                     file.relative_path
                 ),
             ));
@@ -2768,7 +2768,7 @@ fn validate_bundle(bundle: &BackupBundle) -> io::Result<()> {
         if !relative_paths.insert(file.relative_path.as_str()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Doppelte Sicherungsdatei: {}", file.relative_path),
+                format!("Duplicate backup file: {}", file.relative_path),
             ));
         }
     }
@@ -2827,7 +2827,7 @@ fn delete_app_data_at(root: &Path, settings: Option<&AppSettings>) -> io::Result
                 } else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("App-Datei ist kein reguläres File: {relative_path}"),
+                        format!("App file is not a regular file: {relative_path}"),
                     ));
                 }
             }
@@ -2853,7 +2853,7 @@ fn diagnostic_bundle(root: &Path, settings_available: bool) -> io::Result<Diagno
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("App-Datei darf kein symbolischer Link sein: {relative_path}"),
+                    format!("App file must not be a symbolic link: {relative_path}"),
                 ));
             }
             Ok(metadata) => app_files.push(DiagnosticFile {
@@ -2929,7 +2929,7 @@ fn collect_owned_files(
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "App-eigenes Verzeichnis ist kein reguläres Verzeichnis: {}",
+                "App-owned directory is not a regular directory: {}",
                 relative_directory.display()
             ),
         ));
@@ -2943,7 +2943,7 @@ fn collect_owned_files(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "App-eigener Pfad darf kein symbolischer Link sein: {}",
+                    "App-owned path must not be a symbolic link: {}",
                     relative_path.display()
                 ),
             ));
@@ -2956,7 +2956,7 @@ fn collect_owned_files(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "App-eigener Pfad ist kein reguläres File: {}",
+                    "App-owned path is not a regular file: {}",
                     relative_path.display()
                 ),
             ));
@@ -2978,7 +2978,7 @@ fn validate_relative_path(value: &str) -> io::Result<()> {
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "Ungültiger Sicherungspfad",
+            "Invalid backup path",
         ));
     }
     Ok(())
@@ -2999,7 +2999,7 @@ fn ensure_safe_app_path(root: &Path, relative_path: &str) -> io::Result<()> {
     if root_metadata.file_type().is_symlink() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "App-Datenordner darf kein symbolischer Link sein",
+            "App data directory must not be a symbolic link",
         ));
     }
 
@@ -3011,7 +3011,7 @@ fn ensure_safe_app_path(root: &Path, relative_path: &str) -> io::Result<()> {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("App-Pfad enthält einen symbolischen Link: {relative_path}"),
+                        format!("App path contains a symbolic link: {relative_path}"),
                     ));
                 }
                 Ok(_) => {}
@@ -3027,7 +3027,7 @@ fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Atomarer Sicherungspfad besitzt keinen Elternordner",
+            "Atomic backup path has no parent directory",
         )
     })?;
     fs::create_dir_all(parent)?;
@@ -3037,7 +3037,7 @@ fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Atomarer Sicherungspfad besitzt keinen gültigen Dateinamen",
+                "Atomic backup path has no valid file name",
             )
         })?;
     let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -3226,7 +3226,7 @@ mod tests {
             assert!(
                 warnings
                     .iter()
-                    .any(|warning| warning.contains("geheimes Feld"))
+                    .any(|warning| warning.contains("secret field"))
             );
 
             let encoded = serde_json::to_vec(&bundle).expect("legacy fixture should round-trip");
@@ -3306,7 +3306,7 @@ mod tests {
         assert!(
             warnings
                 .iter()
-                .any(|warning| warning.contains("geheimes Feld"))
+                .any(|warning| warning.contains("secret field"))
         );
         let warning_text = warnings.join(" ");
         assert!(!warning_text.contains("MUST-NOT-APPEAR"));
@@ -3326,7 +3326,7 @@ mod tests {
         }"#;
         let error = inspect_backup(raw).expect_err("duplicate JSON keys must be rejected");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("doppelter JSON-Schlüssel"));
+        assert!(error.to_string().contains("duplicate JSON key"));
         assert!(!error.to_string().contains("FIRST-SECRET"));
         assert!(!error.to_string().contains("SECOND-SECRET"));
     }
@@ -3352,7 +3352,7 @@ mod tests {
         assert!(
             warnings
                 .iter()
-                .any(|warning| warning.contains("redigierte"))
+                .any(|warning| warning.contains("redacted"))
         );
         let contents = String::from_utf8(bundle.files[0].contents.clone())
             .expect("redacted legacy JSON should remain UTF-8");
@@ -3375,7 +3375,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("nicht redigierte geheime JSON-Felder")
+                .contains("unredacted secret JSON fields")
         );
         assert!(!error.to_string().contains("LEGACY-PRIVATE-KEY"));
 
@@ -3543,7 +3543,7 @@ mod tests {
 
         let error = restore_bundle(bundle, &root, None).expect_err("checksum must fail");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("Integritätsprüfung"));
+        assert!(error.to_string().contains("integrity check"));
         assert!(!root.join("accounts.json").exists());
 
         let _ = fs::remove_dir_all(root);

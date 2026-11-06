@@ -65,7 +65,7 @@ pub fn preview_file_or_uri(path_or_uri: &str, window_handle: Option<&str>) -> Re
 
     // Fallback: launch default desktop viewer
     gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
-        .map_err(|e| format!("Konnte Datei nicht öffnen: {e}"))
+        .map_err(|e| format!("Could not open file: {e}"))
 }
 
 /// Ensures that a previewable file exists on disk for the given `DraftAttachment`.
@@ -102,7 +102,7 @@ pub fn ensure_attachment_preview_path(
     if !attachment.path.is_empty() {
         Ok(PathBuf::from(&attachment.path))
     } else {
-        Err("Kein Dateipfad oder Inhalt für die Vorschau verfügbar".to_string())
+        Err("No file path or content available for preview".to_string())
     }
 }
 

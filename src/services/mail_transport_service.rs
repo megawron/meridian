@@ -51,9 +51,9 @@ impl MailTransportAction {
 
     const fn label(self) -> &'static str {
         match self {
-            Self::SendReceive => "Senden und Empfangen",
-            Self::ReceiveAll => "Empfang aller Konten",
-            Self::SendAll => "Senden aller ausstehenden Nachrichten",
+            Self::SendReceive => "Send and Receive",
+            Self::ReceiveAll => "Receive All Accounts",
+            Self::SendAll => "Send All Queued Messages",
         }
     }
 }
@@ -146,7 +146,7 @@ impl MailTransportError {
 impl fmt::Display for MailTransportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Cancelled => formatter.write_str("Transport wurde abgebrochen"),
+            Self::Cancelled => formatter.write_str("Transport was cancelled"),
             Self::Retryable(message) => formatter.write_str(message),
             Self::Authentication(message) => formatter.write_str(message),
             Self::Unavailable(message) => formatter.write_str(message),
@@ -165,11 +165,11 @@ pub(crate) enum MailTransportStartError {
 impl fmt::Display for MailTransportStartError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AlreadyRunning => formatter.write_str("Ein Mail-Transport läuft bereits"),
+            Self::AlreadyRunning => formatter.write_str("A mail transport is already running"),
             Self::Offline => {
-                formatter.write_str("Offline-Modus: kein neuer Mail-Transport gestartet")
+                formatter.write_str("Offline mode: no new mail transport started")
             }
-            Self::NoQueuedMessages => formatter.write_str("Keine ausstehenden Nachrichten"),
+            Self::NoQueuedMessages => formatter.write_str("No queued messages"),
         }
     }
 }
@@ -204,7 +204,7 @@ impl MailTransportSnapshot {
         if self.mode == MailTransportMode::Offline && !self.state.is_active() {
             return match self.queued_items {
                 0 => "Offline".to_string(),
-                count => format!("Offline · {count} Nachricht(en) in lokaler Warteschlange"),
+                count => format!("Offline · {count} message(s) in local queue"),
             };
         }
 
@@ -223,7 +223,7 @@ impl MailTransportSnapshot {
         }
 
         if self.state == MailTransportState::CancelRequested {
-            return "Abbruch wird ausgeführt …".to_string();
+            return "Cancelling …".to_string();
         }
 
         if matches!(
@@ -241,26 +241,26 @@ impl MailTransportSnapshot {
         }
 
         match self.state {
-            MailTransportState::Idle => "Bereit".to_string(),
+            MailTransportState::Idle => "Ready".to_string(),
             MailTransportState::Running => {
                 format!(
-                    "{} läuft …",
+                    "{} in progress …",
                     self.action
-                        .map_or("Mail-Transport", |action| action.label())
+                        .map_or("Mail transport", |action| action.label())
                 )
             }
             MailTransportState::Retrying => format!(
-                "Vorübergehender Fehler · neuer Versuch {}/{} …",
+                "Temporary error · retrying {}/{} …",
                 self.progress.attempt, self.progress.max_attempts
             ),
-            MailTransportState::CancelRequested => "Abbruch wird ausgeführt …".to_string(),
-            MailTransportState::Succeeded => "Mail-Transport abgeschlossen".to_string(),
+            MailTransportState::CancelRequested => "Cancelling …".to_string(),
+            MailTransportState::Succeeded => "Mail transport completed".to_string(),
             MailTransportState::Failed => self
                 .error
                 .as_ref()
-                .map(|error| format!("Fehler: {error}"))
-                .unwrap_or_else(|| "Mail-Transport fehlgeschlagen".to_string()),
-            MailTransportState::Cancelled => "Mail-Transport abgebrochen".to_string(),
+                .map(|error| format!("Error: {error}"))
+                .unwrap_or_else(|| "Mail transport failed".to_string()),
+            MailTransportState::Cancelled => "Mail transport cancelled".to_string(),
             MailTransportState::Offline => "Offline".to_string(),
         }
     }
@@ -415,13 +415,13 @@ impl MailTransportService {
         let id = id.trim();
         let source_uid = source_uid.trim();
         if id.is_empty() {
-            return Err("Die Transport-ID darf nicht leer sein".to_string());
+            return Err("Transport ID must not be empty".to_string());
         }
         if source_uid.is_empty() {
-            return Err("Eine Transportnachricht benötigt eine Konto-ID".to_string());
+            return Err("A transport message requires an account ID".to_string());
         }
         if raw_message.is_empty() {
-            return Err("Die RFC822-Nachricht ist leer".to_string());
+            return Err("The RFC822 message is empty".to_string());
         }
 
         let mut inner = self.lock_inner();
@@ -432,7 +432,7 @@ impl MailTransportService {
         }
         if inner.queue.iter().any(|message| message.id == id) {
             return Err(format!(
-                "Die Transport-ID {id} ist bereits für eine andere Nachricht vorgemerkt"
+                "Transport ID {id} is already queued for another message"
             ));
         }
         inner.queue.push_back(MailTransportMessage {
@@ -441,7 +441,7 @@ impl MailTransportService {
             raw_message: Arc::<[u8]>::from(raw_message.to_vec()),
         });
         if inner.mode == MailTransportMode::Offline {
-            inner.message = Some("Nachricht in lokaler Transportwarteschlange".to_string());
+            inner.message = Some("Message queued in local transport queue".to_string());
         }
         Ok(id.to_string())
     }
@@ -491,12 +491,12 @@ impl MailTransportService {
                     inner.action = None;
                     inner.error = None;
                     inner.message =
-                        Some("Offline-Modus aktiv; laufender Transport wird beendet".to_string());
+                        Some("Offline mode active; stopping active transport".to_string());
                 } else {
                     inner.state = MailTransportState::CancelRequested;
                     inner.phase = MailTransportPhase::Cancelling;
                     inner.message =
-                        Some("Online-Modus wartet auf den laufenden Abbruch".to_string());
+                        Some("Online mode waiting for active cancellation".to_string());
                 }
                 let snapshot = snapshot_from_inner(&inner);
                 (
@@ -524,9 +524,9 @@ impl MailTransportService {
                 inner.action = None;
                 inner.error = None;
                 inner.message = Some(if mode == MailTransportMode::Offline {
-                    "Offline-Modus aktiv".to_string()
+                    "Offline mode active".to_string()
                 } else {
-                    "Online-Modus aktiv".to_string()
+                    "Online mode active".to_string()
                 });
                 (None, None)
             }
@@ -546,7 +546,7 @@ impl MailTransportService {
             let mut inner = self.lock_inner();
             if inner.mode == MailTransportMode::Offline {
                 inner.message =
-                    Some("Offline-Modus: Transport bleibt in der lokalen Queue".to_string());
+                    Some("Offline mode: transport remains in local queue".to_string());
                 return Err(MailTransportStartError::Offline);
             }
             if inner.active.is_some() {
@@ -557,7 +557,7 @@ impl MailTransportService {
                 inner.phase = MailTransportPhase::Idle;
                 inner.action = None;
                 inner.error = None;
-                inner.message = Some("Keine ausstehenden Nachrichten".to_string());
+                inner.message = Some("No queued messages".to_string());
                 return Err(MailTransportStartError::NoQueuedMessages);
             }
 
@@ -581,7 +581,7 @@ impl MailTransportService {
                 ..MailTransportProgress::default()
             };
             inner.error = None;
-            inner.message = Some(format!("{} wird vorbereitet …", action.label()));
+            inner.message = Some(format!("Preparing {} …", action.label()));
             inner.active = Some(ActiveOperation {
                 generation,
                 cancellation: cancellation.clone(),
@@ -621,7 +621,7 @@ impl MailTransportService {
             let sender = active.sender.clone();
             inner.state = MailTransportState::CancelRequested;
             inner.phase = MailTransportPhase::Cancelling;
-            inner.message = Some("Abbruch angefordert …".to_string());
+            inner.message = Some("Cancellation requested …".to_string());
             Some((generation, sender, snapshot_from_inner(&inner)))
         };
         if let Some((generation, sender, snapshot)) = event {
@@ -794,7 +794,7 @@ impl MailTransportService {
                     inner.state = MailTransportState::Offline;
                     inner.phase = MailTransportPhase::Offline;
                     inner.error = None;
-                    inner.message = Some("Offline-Modus aktiv".to_string());
+                    inner.message = Some("Offline mode active".to_string());
                 } else if inner.generation != generation {
                     // An offline/online transition invalidated this result.
                     // The provider may finish eventually, but it cannot alter
@@ -802,14 +802,14 @@ impl MailTransportService {
                     inner.state = MailTransportState::Cancelled;
                     inner.phase = MailTransportPhase::Idle;
                     inner.error = None;
-                    inner.message = Some("Veraltetes Transportergebnis verworfen".to_string());
+                    inner.message = Some("Stale transport result discarded".to_string());
                 } else {
                     match result {
                         Ok(()) if cancellation_requested => {
                             inner.state = MailTransportState::Cancelled;
                             inner.phase = MailTransportPhase::Idle;
                             inner.error = None;
-                            inner.message = Some("Mail-Transport abgebrochen".to_string());
+                            inner.message = Some("Mail transport cancelled".to_string());
                         }
                         Ok(()) => {
                             inner.state = MailTransportState::Succeeded;
@@ -817,13 +817,13 @@ impl MailTransportService {
                             inner.error = None;
                             inner.message = Some(match action {
                                 MailTransportAction::SendReceive => {
-                                    "Senden und Empfangen abgeschlossen".to_string()
+                                    "Send and Receive completed".to_string()
                                 }
                                 MailTransportAction::ReceiveAll => {
-                                    "Empfang aller Konten abgeschlossen".to_string()
+                                    "Receive All Accounts completed".to_string()
                                 }
                                 MailTransportAction::SendAll => {
-                                    "Ausstehende Nachrichten gesendet".to_string()
+                                    "Queued messages sent".to_string()
                                 }
                             });
                         }
@@ -831,7 +831,7 @@ impl MailTransportService {
                             inner.state = MailTransportState::Cancelled;
                             inner.phase = MailTransportPhase::Idle;
                             inner.error = None;
-                            inner.message = Some("Mail-Transport abgebrochen".to_string());
+                            inner.message = Some("Mail transport cancelled".to_string());
                         }
                         Err(error) => {
                             inner.state = MailTransportState::Failed;
@@ -908,7 +908,7 @@ fn run_operation(
             if attempt > 1 {
                 let error = retry_error
                     .take()
-                    .unwrap_or_else(|| MailTransportError::Retryable("Neuer Versuch".to_string()));
+                    .unwrap_or_else(|| MailTransportError::Retryable("Retrying".to_string()));
                 service.publish_retry(generation, &sender, &error, attempt);
                 let delay = RETRY_BASE_DELAY
                     .checked_mul(attempt as u32 - 1)
@@ -952,7 +952,7 @@ fn run_operation(
             }
         }
         Err(MailTransportError::Permanent(
-            "Mail-Transport ohne abschließendes Ergebnis beendet".to_string(),
+            "Mail transport finished without a final result".to_string(),
         ))
     })();
 
@@ -1019,9 +1019,9 @@ fn send_queued(
         phase: MailTransportPhase::Sending,
         total: Some(total),
         detail: Some(if total == 0 {
-            "Keine ausstehenden Nachrichten".to_string()
+            "No queued messages".to_string()
         } else {
-            format!("{} ausstehende Nachricht(en)", total)
+            format!("{} queued message(s)", total)
         }),
         ..MailTransportProgress::default()
     });
@@ -1033,7 +1033,7 @@ fn send_queued(
             phase: MailTransportPhase::Sending,
             completed: index,
             total: Some(total),
-            detail: Some(format!("Sende Nachricht {}/{}", index + 1, total)),
+            detail: Some(format!("Sending message {}/{}", index + 1, total)),
             ..MailTransportProgress::default()
         });
         let _sent_folder_copy_saved = camel_mail_service::send_message_with_cancellation(
@@ -1051,7 +1051,7 @@ fn send_queued(
             phase: MailTransportPhase::Sending,
             completed: index + 1,
             total: Some(total),
-            detail: Some(format!("Nachricht {}/{} gesendet", index + 1, total)),
+            detail: Some(format!("Sent message {}/{}", index + 1, total)),
             ..MailTransportProgress::default()
         });
     }
@@ -1067,7 +1067,7 @@ fn receive_all(
     }
     progress(MailTransportProgress {
         phase: MailTransportPhase::Receiving,
-        detail: Some("Neue Nachrichten werden von allen Konten abgerufen …".to_string()),
+        detail: Some("Fetching new messages from all accounts …".to_string()),
         ..MailTransportProgress::default()
     });
 
@@ -1081,7 +1081,7 @@ fn receive_all(
         Ok(load) if load.failed_sources > 0 => {
             let warning = load.warning.unwrap_or_else(|| {
                 format!(
-                    "{}/{} Mailkonto(e) konnten nicht synchronisiert werden",
+                    "Could not synchronize {}/{} mail account(s)",
                     load.failed_sources, load.configured_sources
                 )
             });
@@ -1092,7 +1092,7 @@ fn receive_all(
                 phase: MailTransportPhase::Receiving,
                 completed: load.successful_sources,
                 total: Some(load.configured_sources.max(1)),
-                detail: Some("Empfang aller Konten abgeschlossen".to_string()),
+                detail: Some("Receive All Accounts completed".to_string()),
                 ..MailTransportProgress::default()
             });
             Ok(())
@@ -1104,7 +1104,7 @@ fn receive_all(
             if graph_service_for_configured_account_worker().is_some() {
                 progress(MailTransportProgress {
                     phase: MailTransportPhase::Receiving,
-                    detail: Some("Microsoft Graph wird als Provider verwendet …".to_string()),
+                    detail: Some("Using Microsoft Graph as provider …".to_string()),
                     ..MailTransportProgress::default()
                 });
                 let cursors = std::collections::HashMap::new();
@@ -1128,7 +1128,7 @@ fn receive_all(
                             phase: MailTransportPhase::Receiving,
                             completed: load.successful_sources,
                             total: Some(load.configured_sources.max(1)),
-                            detail: Some("Empfang aller Konten abgeschlossen".to_string()),
+                            detail: Some("Receive All Accounts completed".to_string()),
                             ..MailTransportProgress::default()
                         });
                         Ok(())
@@ -1149,7 +1149,7 @@ fn graph_transport_load_result(
         Ok(load) if load.failed_sources > 0 => {
             let warning = load.warning.unwrap_or_else(|| {
                 format!(
-                    "{}/{} Graph-Mailkonto(e) konnten nicht synchronisiert werden",
+                    "Could not synchronize {}/{} Graph mail account(s)",
                     load.failed_sources, load.configured_sources
                 )
             });
@@ -1162,20 +1162,20 @@ fn graph_transport_load_result(
             let graph_error = classify_provider_error(graph_error);
             Err(match graph_error {
                 MailTransportError::Retryable(message) => MailTransportError::Retryable(format!(
-                    "Mailkonto-Synchronisation nicht verfügbar ({camel_error}); Graph: {message}"
+                    "Mail account synchronization unavailable ({camel_error}); Graph: {message}"
                 )),
                 MailTransportError::Authentication(message) => {
                     MailTransportError::Authentication(format!(
-                        "Mailkonto-Synchronisation nicht verfügbar ({camel_error}); Graph: {message}"
+                        "Mail account synchronization unavailable ({camel_error}); Graph: {message}"
                     ))
                 }
                 MailTransportError::Unavailable(message) => {
                     MailTransportError::Unavailable(format!(
-                        "Mailkonto-Synchronisation nicht verfügbar ({camel_error}); Graph: {message}"
+                        "Mail account synchronization unavailable ({camel_error}); Graph: {message}"
                     ))
                 }
                 MailTransportError::Permanent(message) => MailTransportError::Permanent(format!(
-                    "Mailkonto-Synchronisation nicht verfügbar ({camel_error}); Graph: {message}"
+                    "Mail account synchronization unavailable ({camel_error}); Graph: {message}"
                 )),
                 MailTransportError::Cancelled => MailTransportError::Cancelled,
             })
@@ -1230,9 +1230,9 @@ fn load_camel_for_transport(
 
     result.unwrap_or_else(|| {
         Err(if worker_finished {
-            "Camel-Mail-Arbeiter lieferte kein Ergebnis".to_string()
+            "Camel mail worker returned no result".to_string()
         } else {
-            "Camel-Mail-Arbeiter wurde unerwartet beendet".to_string()
+            "Camel mail worker terminated unexpectedly".to_string()
         })
     })
 }
@@ -1249,7 +1249,7 @@ fn camel_progress_to_transport(
         .folder_name
         .as_deref()
         .or(progress.source_display_name.as_deref())
-        .map(|name| format!("Empfange {name} …"));
+        .map(|name| format!("Receiving {name} …"));
     MailTransportProgress {
         phase,
         completed: progress.processed_sources,

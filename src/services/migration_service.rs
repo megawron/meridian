@@ -231,7 +231,7 @@ pub fn import_evolution_local_data(
             Ok(raw) => raw,
             Err(error) => {
                 warnings.push(format!(
-                    "{}: lokale Profildatei konnte nicht gelesen werden: {error}",
+                    "{}: local profile file could not be read: {error}",
                     migration_source_label(&path)
                 ));
                 continue;
@@ -266,7 +266,7 @@ pub fn import_evolution_local_data(
         0
     } else if !calendar_store.is_writable() {
         warnings.push(
-            "Lokale iCalendar-Dateien wurden nicht übernommen: Zielkalender ist schreibgeschützt"
+            "Local iCalendar files were not imported: target calendar is read-only"
                 .to_string(),
         );
         0
@@ -277,7 +277,7 @@ pub fn import_evolution_local_data(
         0
     } else if !contact_store.is_writable() {
         warnings.push(
-            "Lokale vCard-Dateien wurden nicht übernommen: Zieladressbuch ist schreibgeschützt"
+            "Local vCard files were not imported: target address book is read-only"
                 .to_string(),
         );
         0
@@ -355,7 +355,7 @@ fn import_evolution_sources_inner(
             Err(error) => {
                 report.skipped_sources += 1;
                 report.warnings.push(format!(
-                    "{}: Datei konnte nicht gelesen werden: {error}",
+                    "{}: file could not be read: {error}",
                     migration_source_label(&path)
                 ));
                 continue;
@@ -397,7 +397,7 @@ fn import_evolution_sources_inner(
                     io::Error::new(
                         error.kind(),
                         format!(
-                            "Profil aus {} konnte nicht gespeichert werden: {error}",
+                            "Profile from {} could not be saved: {error}",
                             migration_source_label(&path)
                         ),
                     )
@@ -451,7 +451,7 @@ fn import_evolution_sources_inner(
             Ok(raw) => raw,
             Err(error) => {
                 report.warnings.push(format!(
-                    "{}: Einstellungsdatei konnte nicht gelesen werden: {error}",
+                    "{}: settings file could not be read: {error}",
                     migration_source_label(&path)
                 ));
                 continue;
@@ -466,7 +466,7 @@ fn import_evolution_sources_inner(
                 .is_some()
             {
                 report.warnings.push(format!(
-                    "{}: doppelter Einstellungswert für „{}“ wurde durch den späteren Eintrag ersetzt",
+                    "{}: duplicate setting value for \"{}\" was replaced by a later entry",
                     migration_source_label(&path),
                     setting.key
                 ));
@@ -488,7 +488,7 @@ fn import_evolution_sources_inner(
             Ok(raw) => raw,
             Err(error) => {
                 report.warnings.push(format!(
-                    "{}: Filterdatei konnte nicht gelesen werden: {error}",
+                    "{}: filter file could not be read: {error}",
                     migration_source_label(&path)
                 ));
                 continue;
@@ -498,7 +498,7 @@ fn import_evolution_sources_inner(
             Ok(rules) => rules,
             Err(reason) => {
                 report.warnings.push(format!(
-                    "{}: Filter konnten nicht importiert werden: {reason}",
+                    "{}: filters could not be imported: {reason}",
                     migration_source_label(&path)
                 ));
                 continue;
@@ -511,7 +511,7 @@ fn import_evolution_sources_inner(
             match filter_store.upsert(rule) {
                 Ok(()) => report.imported_filters += 1,
                 Err(error) => report.warnings.push(format!(
-                    "{}: Filter konnte nicht gespeichert werden: {error}",
+                    "{}: filter could not be saved: {error}",
                     migration_source_label(&path)
                 )),
             }
@@ -525,7 +525,7 @@ fn import_evolution_sources_inner(
             Ok(raw) => raw,
             Err(error) => {
                 report.warnings.push(format!(
-                    "{}: Signaturliste konnte nicht gelesen werden: {error}",
+                    "{}: signature list could not be read: {error}",
                     migration_source_label(&list_path)
                 ));
                 continue;
@@ -549,7 +549,7 @@ fn import_evolution_sources_inner(
                 safe_profile_path(root, list_path.parent().unwrap_or(root), &relative_path)
             else {
                 report.warnings.push(format!(
-                    "{}: Unsicherer Signaturpfad wurde ignoriert",
+                    "{}: unsafe signature path was ignored",
                     migration_source_label(&list_path)
                 ));
                 continue;
@@ -558,7 +558,7 @@ fn import_evolution_sources_inner(
                 Ok(contents) => contents,
                 Err(error) => {
                     report.warnings.push(format!(
-                        "{}: Signatur konnte nicht gelesen werden: {error}",
+                        "{}: signature could not be read: {error}",
                         migration_source_label(&signature_path)
                     ));
                     continue;
@@ -583,7 +583,7 @@ fn import_evolution_sources_inner(
                 .or_else(|| first_xml_text(&signature_body, "name"))
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or_else(|| {
-                    format!("Importierte Evolution-Signatur {}", signature_index + 1)
+                    format!("Imported Evolution Signature {}", signature_index + 1)
                 });
             let sig_key = format!(
                 "{}:{}:{}:{}",
@@ -615,7 +615,7 @@ fn import_evolution_sources_inner(
                     }
                 }
                 Err(error) => report.warnings.push(format!(
-                    "{}: Signatur konnte nicht gespeichert werden: {error}",
+                    "{}: signature could not be saved: {error}",
                     migration_source_label(&signature_path)
                 )),
             }
@@ -630,7 +630,7 @@ fn collect_source_files(root: &Path, result: &mut Vec<PathBuf>) -> io::Result<()
     if !metadata.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Der ausgewählte Evolution-Profilpfad ist kein Ordner",
+            "The selected Evolution profile path is not a folder",
         ));
     }
 
@@ -749,11 +749,11 @@ fn save_imported_sources(
     }
     if let Err(error) = cache.save(kind, sources) {
         warnings.push(format!(
-            "{} EDS-Quellen konnten nicht im Offline-Cache gespeichert werden: {error}",
+            "{} EDS sources could not be saved to offline cache: {error}",
             match kind {
                 EdsSourceKind::Mail => "Mail",
-                EdsSourceKind::Calendar => "Kalender",
-                EdsSourceKind::AddressBook => "Adressbuch",
+                EdsSourceKind::Calendar => "Calendar",
+                EdsSourceKind::AddressBook => "Address Book",
             }
         ));
     }
@@ -828,7 +828,7 @@ fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
         if line.starts_with('[') {
             if !line.ends_with(']') {
                 result.warnings.push(format!(
-                    "{}: unvollständiger Abschnitt in Zeile {} wurde ignoriert",
+                    "{}: incomplete section in line {} was ignored",
                     migration_source_label(path),
                     line_index + 1
                 ));
@@ -841,7 +841,7 @@ fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
         let Some((raw_key, raw_value)) = line.split_once('=').or_else(|| line.split_once(':'))
         else {
             result.warnings.push(format!(
-                "{}: unvollständige Einstellungszeile {} wurde ignoriert",
+                "{}: incomplete setting line {} was ignored",
                 migration_source_label(path),
                 line_index + 1
             ));
@@ -859,7 +859,7 @@ fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
             Ok(Some(setting)) => setting,
             Ok(None) => {
                 result.warnings.push(format!(
-                    "{}: unbekannte oder nicht unterstützte Einstellung „{}“ wurde nicht übernommen",
+                    "{}: unknown or unsupported setting \"{}\" was not imported",
                     migration_source_label(path),
                     safe_warning_key(&key)
                 ));
@@ -867,7 +867,7 @@ fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
             }
             Err(reason) => {
                 result.warnings.push(format!(
-                    "{}: Wert für Einstellung „{}“ ist {} und wurde nicht übernommen",
+                    "{}: value for setting \"{}\" is {} and was not imported",
                     migration_source_label(path),
                     safe_warning_key(&key),
                     reason
@@ -879,7 +879,7 @@ fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
             Ok(value) => value,
             Err(reason) => {
                 result.warnings.push(format!(
-                    "{}: Wert für Einstellung „{}“ ist {} und wurde nicht übernommen",
+                    "{}: value for setting \"{}\" is {} and was not imported",
                     migration_source_label(path),
                     safe_warning_key(&canonical_key),
                     reason
@@ -894,7 +894,7 @@ fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
     }
     if result.settings.is_empty() && !raw.trim().is_empty() {
         result.warnings.push(format!(
-            "{}: keine unterstützten nicht-geheimen Evolution-Einstellungen gefunden",
+            "{}: no supported non-secret Evolution settings found",
             migration_source_label(path)
         ));
     }
@@ -905,7 +905,7 @@ fn parse_evolution_settings(raw: &str, path: &Path) -> ParsedEvolutionSettings {
 /// user-selected absolute profile path.  Relative setting/filter keys remain
 /// useful context and are already passed through the safe label helpers.
 fn migration_source_label(_path: &Path) -> &'static str {
-    "Evolution-Profil"
+    "Evolution profile"
 }
 
 fn normalize_setting_key(value: &str) -> String {
@@ -1076,7 +1076,7 @@ fn canonical_setting(
                     if enabled { "12h" } else { "24h" }.to_string(),
                 )
             })
-            .ok_or("kein gültiger boolescher Wert")
+            .ok_or("not a valid boolean value")
             .map(Some);
     }
     if key == "use-12-hour-clock" {
@@ -1087,7 +1087,7 @@ fn canonical_setting(
                     if enabled { "12h" } else { "24h" }.to_string(),
                 )
             })
-            .ok_or("kein gültiger boolescher Wert")
+            .ok_or("not a valid boolean value")
             .map(Some);
     }
     if canonical == "calendar-week-start" {
@@ -1101,7 +1101,7 @@ fn canonical_setting(
         value = match value.to_ascii_lowercase().as_str() {
             "0" | "classic" => "classic".to_string(),
             "1" | "vertical" => "vertical".to_string(),
-            _ => return Err("keine unterstützte Aufgaben-Vorschauausrichtung"),
+            _ => return Err("unsupported task preview orientation"),
         };
     }
     Ok(Some((canonical.to_string(), value)))
@@ -1353,7 +1353,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
     if is_boolean_migration_key(key) {
         return parse_setting_bool(value)
             .map(|value| value.to_string())
-            .ok_or("kein gültiger boolescher Wert");
+            .ok_or("not a valid boolean value");
     }
 
     match key {
@@ -1361,7 +1361,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
         "window-height" => normalize_i32_setting(value, 480, i32::MAX),
         "switcher-location" => match value {
             "top" | "bottom-left" => Ok(value.to_string()),
-            _ => Err("keine unterstützte Position des Modulumschalters"),
+            _ => Err("unsupported module switcher location"),
         },
         "mail-sidebar-position" => normalize_i32_setting(value, 0, 2_000),
         "mail-modern-preview-position" | "mail-classic-preview-position" => {
@@ -1379,7 +1379,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
                 "minutes" | "min" | "0" => Ok("minutes".to_string()),
                 "hours" | "hour" | "1" => Ok("hours".to_string()),
                 "days" | "day" | "2" => Ok("days".to_string()),
-                _ => Err("keine unterstützte Zeiteinheit"),
+                _ => Err("unsupported time unit"),
             }
         }
         "mail-sync-interval" => normalize_u32_setting(value, 0, 86_400),
@@ -1396,12 +1396,12 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
         "contact-open-map-target" => match value.trim().to_ascii_lowercase().as_str() {
             "openstreetmap" | "osm" => Ok("openstreetmap".to_string()),
             "google" | "googlemaps" | "google-maps" => Ok("google".to_string()),
-            _ => Err("kein unterstützter Kartendienst"),
+            _ => Err("unsupported map service"),
         },
         "contact-layout" => match value.trim().to_ascii_lowercase().as_str() {
             "0" | "classic" => Ok("classic".to_string()),
             "1" | "vertical" => Ok("vertical".to_string()),
-            _ => Err("kein unterstütztes Kontaktlayout"),
+            _ => Err("unsupported contact layout"),
         },
         "contact-completion-book-sources" => {
             let uids = value
@@ -1411,7 +1411,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
                 .map(String::from)
                 .collect::<Vec<_>>();
             if uids.iter().any(|s| s.chars().any(char::is_control)) {
-                Err("ungültige Quellenliste")
+                Err("invalid source list")
             } else {
                 Ok(crate::services::settings_service::sanitize_source_list(&uids).join(","))
             }
@@ -1419,21 +1419,21 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
         "calendar-tag-vpane-position" => normalize_i32_setting(value, 100, 2_000),
         "composer-charset" => normalize_composer_charset(value)
             .map(str::to_string)
-            .ok_or("keine unterstützte Zeichenkodierung"),
+            .ok_or("unsupported character encoding"),
         "composer-reply-style" => {
             crate::services::settings_service::normalize_composer_reply_style(value)
                 .map(str::to_string)
-                .ok_or("kein unterstützter Antwort-Stil")
+                .ok_or("unsupported reply style")
         }
         "composer-forward-style" => {
             crate::services::settings_service::normalize_composer_forward_style(value)
                 .map(str::to_string)
-                .ok_or("kein unterstützter Weiterleitungs-Stil")
+                .ok_or("unsupported forward style")
         }
         "mail-image-loading-policy" => {
             crate::services::settings_service::normalize_image_loading_policy(value)
                 .map(str::to_string)
-                .ok_or("keine unterstützte Bildladerichtlinie")
+                .ok_or("unsupported image loading policy")
         }
         "mail-mark-seen-timeout" => normalize_u32_setting(value, 0, 60_000),
         "mail-citation-color-1"
@@ -1451,7 +1451,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
                     value.to_ascii_lowercase()
                 })
             }
-            _ => Err("kein unterstützter Bereich"),
+            _ => Err("unsupported active view"),
         },
         "calendar-view" => match value.to_ascii_lowercase().as_str() {
             "day" | "week" | "workweek" | "work-week" | "month" | "agenda" | "year" | "list" => {
@@ -1461,11 +1461,11 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
                     value.to_ascii_lowercase()
                 })
             }
-            _ => Err("keine unterstützte Kalenderansicht"),
+            _ => Err("unsupported calendar view"),
         },
         "calendar-time-divisions" => match value.trim().parse::<i32>() {
             Ok(5 | 10 | 15 | 30 | 60) => Ok(value.trim().to_string()),
-            _ => Err("keine unterstützte Zeiteinteilung"),
+            _ => Err("unsupported time division"),
         },
         "calendar-second-zone" => {
             let trimmed = value.trim();
@@ -1477,7 +1477,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
             {
                 Ok(trimmed.to_string())
             } else {
-                Err("keine gültige Zeitzone")
+                Err("invalid time zone")
             }
         }
         "calendar-second-zones" => {
@@ -1490,7 +1490,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
                 !z.chars()
                     .all(|c| c.is_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'))
             }) {
-                Err("ungültige Zeitzonenliste")
+                Err("invalid time zone list")
             } else {
                 Ok(zones.join(","))
             }
@@ -1509,7 +1509,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>();
             if items.iter().any(|s| s.chars().any(char::is_control)) {
-                Err("ungültige Quellenliste")
+                Err("invalid source list")
             } else {
                 let mut ordered = Vec::new();
                 let mut seen = std::collections::HashSet::new();
@@ -1531,7 +1531,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>();
             if items.iter().any(|s| s.chars().any(char::is_control)) {
-                Err("ungültige Gruppenreihenfolge")
+                Err("invalid group order")
             } else {
                 let mut ordered = Vec::new();
                 let mut seen = std::collections::HashSet::new();
@@ -1546,44 +1546,44 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
         "calendar-week-start" => match value.to_ascii_lowercase().as_str() {
             "0" | "monday" | "mon" => Ok("monday".to_string()),
             "1" | "sunday" | "sun" => Ok("sunday".to_string()),
-            _ => Err("kein unterstützter Wochenbeginn"),
+            _ => Err("unsupported week start"),
         },
         "calendar-workdays" => normalize_workdays_setting(value),
         "date-format" => match value.to_ascii_lowercase().as_str() {
             "german" | "de" | "de-de" => Ok("german".to_string()),
             "iso" | "yyyy-mm-dd" => Ok("iso".to_string()),
             "us" | "american" | "en-us" => Ok("us".to_string()),
-            _ => Err("kein unterstütztes Datumsformat"),
+            _ => Err("unsupported date format"),
         },
         "time-format" => match value.to_ascii_lowercase().as_str() {
             "12h" | "12-hour" | "12-hour-clock" => Ok("12h".to_string()),
             "24h" | "24-hour" | "24-hour-clock" => Ok("24h".to_string()),
-            _ => Err("kein unterstütztes Zeitformat"),
+            _ => Err("unsupported time format"),
         },
         "mail-default-folder" => match value.to_ascii_lowercase().as_str() {
             "all" | "inbox" | "sent" | "drafts" | "trash" | "archive" => {
                 Ok(value.to_ascii_lowercase())
             }
             "spam" | "junk" => Ok("spam".to_string()),
-            _ => Err("kein unterstützter Standardordner"),
+            _ => Err("unsupported default folder"),
         },
         "mail-layout" => match value.to_ascii_lowercase().as_str() {
             "classic" | "modern" | "horizontal" | "vertical" => Ok(value.to_ascii_lowercase()),
-            _ => Err("kein unterstütztes Mail-Layout"),
+            _ => Err("unsupported mail layout"),
         },
         "mail-normal-headers" => parse_mail_normal_headers_value(value)
             .map(|_| value.to_string())
-            .map_err(|_| "keine gültige Headerliste"),
+            .map_err(|_| "invalid header list"),
         "local-mail-directory" | "local-calendar-directory" | "local-contact-directory" => {
             if value.len() > 4_096 || value.chars().any(char::is_control) {
-                Err("kein sicherer portabler Verzeichnispfad")
+                Err("not a safe portable directory path")
             } else {
                 Ok(value.to_string())
             }
         }
         "mail-row-density" => match value.to_ascii_lowercase().as_str() {
             "compact" | "comfortable" | "spacious" => Ok(value.to_ascii_lowercase()),
-            _ => Err("keine unterstützte Mail-Dichte"),
+            _ => Err("unsupported mail density"),
         },
         "mail-sort-field" => match value.to_ascii_lowercase().as_str() {
             "subject" => Ok("subject".to_string()),
@@ -1593,20 +1593,20 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
             "flagged" | "starred" => Ok("flagged".to_string()),
             "important" => Ok("important".to_string()),
             "attachment" | "attachments" => Ok("attachments".to_string()),
-            _ => Err("kein unterstütztes Mail-Sortierfeld"),
+            _ => Err("unsupported mail sort field"),
         },
         "color-scheme" => match value.to_ascii_lowercase().as_str() {
             "system" | "light" | "dark" => Ok(value.to_ascii_lowercase()),
-            _ => Err("kein unterstütztes Farbschema"),
+            _ => Err("unsupported color scheme"),
         },
         "crypto-protocol" => match value.to_ascii_lowercase().as_str() {
             "openpgp" | "pgp" => Ok("openpgp".to_string()),
             "smime" | "s/mime" => Ok("smime".to_string()),
-            _ => Err("kein unterstütztes Kryptoprotokoll"),
+            _ => Err("unsupported crypto protocol"),
         },
         "quote-style" => match value.to_ascii_lowercase().as_str() {
             "prefix" | "blockquote" => Ok(value.to_ascii_lowercase()),
-            _ => Err("kein unterstützter Zitierstil"),
+            _ => Err("unsupported quote style"),
         },
         "task-filter" => match value.to_ascii_lowercase().as_str() {
             "all" | "today" | "next-7" | "next-30" | "next-365" | "active" | "important"
@@ -1617,39 +1617,39 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
                     normalized => normalized.to_string(),
                 })
             }
-            _ => Err("kein unterstützter Aufgabenfilter"),
+            _ => Err("unsupported task filter"),
         },
         "task-category-filter" => {
             if value.len() > MAX_TASK_CATEGORY_FILTER_BYTES || value.chars().any(char::is_control) {
-                Err("ungültiger Aufgaben-Kategoriefilter")
+                Err("invalid task category filter")
             } else {
                 Ok(value.to_string())
             }
         }
         "task-search-mode" => match value.to_ascii_lowercase().as_str() {
             "any-field" | "summary" | "description" | "advanced" => Ok(value.to_ascii_lowercase()),
-            _ => Err("kein unterstützter Aufgaben-Suchmodus"),
+            _ => Err("unsupported task search mode"),
         },
         "task-sort-field" => match value.to_ascii_lowercase().as_str() {
             "due" | "title" | "priority" => Ok(value.to_ascii_lowercase()),
-            _ => Err("kein unterstütztes Aufgaben-Sortierfeld"),
+            _ => Err("unsupported task sort field"),
         },
         "task-preview-orientation" => normalize_task_preview_orientation_value(value)
-            .map_err(|_| "keine unterstützte Aufgaben-Vorschauausrichtung"),
+            .map_err(|_| "unsupported task preview orientation"),
         "memo-search-mode" => {
-            normalize_memo_search_mode_value(value).map_err(|_| "kein unterstützter Memo-Suchmodus")
+            normalize_memo_search_mode_value(value).map_err(|_| "unsupported memo search mode")
         }
         "memo-category-filter" => validate_memo_category_filter_value(value)
-            .map_err(|_| "ungültiger Memo-Kategoriefilter"),
+            .map_err(|_| "invalid memo category filter"),
         "memo-source-filter" => {
-            normalize_memo_source_filter_value(value).map_err(|_| "ungültiger Memo-Quellenfilter")
+            normalize_memo_source_filter_value(value).map_err(|_| "invalid memo source filter")
         }
         "memo-sort-field" => match value.to_ascii_lowercase().as_str() {
             "updated" | "title" | "source" => Ok(value.to_ascii_lowercase()),
-            _ => Err("kein unterstütztes Memo-Sortierfeld"),
+            _ => Err("unsupported memo sort field"),
         },
         "memo-preview-orientation" => normalize_memo_preview_orientation_value(value)
-            .map_err(|_| "keine unterstützte Memo-Vorschauausrichtung"),
+            .map_err(|_| "unsupported memo preview orientation"),
         "mail-font-family" => {
             if value.is_empty()
                 || value.len() > 120
@@ -1657,7 +1657,7 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
                     !(character.is_ascii_alphanumeric() || " ,-_'\"".contains(character))
                 })
             {
-                Err("keine portable Schriftfamilie")
+                Err("not a portable font family")
             } else {
                 Ok(value.to_string())
             }
@@ -1676,20 +1676,20 @@ fn normalize_imported_setting_value(key: &str, value: &str) -> Result<String, &'
             {
                 Ok(value.to_string())
             } else {
-                Err("keine portable Sprachliste")
+                Err("not a portable language list")
             }
         }
         "junk-empty-on-exit-days" => normalize_i32_setting(value, 0, 365),
         "junk-default-plugin" => {
             if value.len() > 128 || value.chars().any(char::is_control) {
-                Err("ungültiges Junk-Plugin")
+                Err("invalid junk plugin")
             } else {
                 Ok(value.to_string())
             }
         }
         "junk-custom-header" | "junk-custom-header-value" => {
             if value.len() > 256 || value.chars().any(char::is_control) {
-                Err("ungültiger Junk-Header")
+                Err("invalid junk header")
             } else {
                 Ok(value.to_string())
             }
@@ -1787,9 +1787,9 @@ fn is_boolean_migration_key(key: &str) -> bool {
 }
 
 fn normalize_i32_setting(value: &str, minimum: i32, maximum: i32) -> Result<String, &'static str> {
-    let value = value.parse::<i32>().map_err(|_| "keine gültige Ganzzahl")?;
+    let value = value.parse::<i32>().map_err(|_| "not a valid integer")?;
     if value < minimum || value > maximum {
-        return Err("außerhalb des portablen Wertebereichs");
+        return Err("outside the portable value range");
     }
     Ok(value.to_string())
 }
@@ -1797,9 +1797,9 @@ fn normalize_i32_setting(value: &str, minimum: i32, maximum: i32) -> Result<Stri
 fn normalize_u32_setting(value: &str, minimum: u32, maximum: u32) -> Result<String, &'static str> {
     let value = value
         .parse::<u32>()
-        .map_err(|_| "keine gültige positive Ganzzahl")?;
+        .map_err(|_| "not a valid unsigned integer")?;
     if value < minimum || value > maximum {
-        return Err("außerhalb des portablen Wertebereichs");
+        return Err("outside the portable value range");
     }
     Ok(value.to_string())
 }
@@ -1829,7 +1829,7 @@ fn normalize_workdays_setting(value: &str) -> Result<String, &'static str> {
             "sat" => "saturday".to_string(),
             "sun" => "sunday".to_string(),
             value if DAYS.contains(&value) => value.to_string(),
-            _ => return Err("enthält einen unbekannten Arbeitstag"),
+            _ => return Err("contains an unknown workday"),
         };
         if !normalized.contains(&candidate) {
             normalized.push(candidate);
@@ -1846,7 +1846,7 @@ fn safe_warning_key(value: &str) -> String {
     {
         value.to_string()
     } else {
-        "nicht-öffentlicher Schlüssel".to_string()
+        "non-public key".to_string()
     }
 }
 
@@ -1881,7 +1881,7 @@ fn decode_setting_value(
     if let Some(explicit_type) = explicit_type
         && !setting_types_compatible(expected_type, explicit_type)
     {
-        return Err("besitzt einen falschen Typ");
+        return Err("has an invalid type");
     }
 
     match explicit_type {
@@ -1889,7 +1889,7 @@ fn decode_setting_value(
         Some(SettingValueType::String) => parse_setting_string(value),
         Some(SettingValueType::HeaderArray) => {
             if value.trim().is_empty() {
-                Err("besitzt eine leere Headerliste")
+                Err("has an empty header list")
             } else {
                 Ok(value.trim().to_string())
             }
@@ -1919,7 +1919,7 @@ fn split_setting_type_prefix(
     let value = raw_value.trim();
     let Some((prefix, rest)) = value.split_once(char::is_whitespace) else {
         if value.starts_with('@') {
-            return Err("besitzt einen unvollständigen Typpräfix");
+            return Err("has an incomplete type prefix");
         }
         return Ok((None, value));
     };
@@ -1930,8 +1930,8 @@ fn split_setting_type_prefix(
         "@u" | "uint32" => Some(SettingValueType::Uint32),
         "@as" | "as" => Some(SettingValueType::StringArray),
         "@a(sb)" | "a(sb)" => Some(SettingValueType::HeaderArray),
-        "@d" => return Err("besitzt einen nicht unterstützten Gleitkommatyp"),
-        _ if prefix.starts_with('@') => return Err("besitzt einen unbekannten Typpräfix"),
+        "@d" => return Err("has an unsupported floating-point type"),
+        _ if prefix.starts_with('@') => return Err("has an unknown type prefix"),
         _ => {
             // A plain untyped string is allowed to contain whitespace.  Only
             // a recognized type token consumes the first word; otherwise the
@@ -1941,7 +1941,7 @@ fn split_setting_type_prefix(
         }
     };
     if explicit_type.is_some() && rest.trim().is_empty() {
-        return Err("besitzt keinen Wert");
+        return Err("has no value");
     }
     Ok((explicit_type, rest.trim()))
 }
@@ -1992,17 +1992,17 @@ fn parse_setting_string(value: &str) -> Result<String, &'static str> {
             escaped = true;
         } else if character == quote {
             if !characters.all(char::is_whitespace) {
-                return Err("besitzt Text nach dem Stringabschluss");
+                return Err("has trailing text after string closing quote");
             }
             if escaped {
-                return Err("besitzt einen unvollständigen Escape");
+                return Err("has an incomplete escape sequence");
             }
             return Ok(unescape_setting_value(&raw));
         } else {
             raw.push(character);
         }
     }
-    Err("besitzt einen nicht abgeschlossenen String")
+    Err("has an unclosed string")
 }
 
 fn unescape_setting_value(value: &str) -> String {
@@ -2102,7 +2102,7 @@ fn decode_gvariant_string_list(value: &str) -> Result<String, &'static str> {
                 .iter()
                 .any(|value| value.contains(',') || value.chars().any(char::is_control))
             {
-                return Err("besitzt ein nicht-portables Stringlistenelement");
+                return Err("has a non-portable string list element");
             }
             return Ok(values.join(","));
         }
@@ -2112,7 +2112,7 @@ fn decode_gvariant_string_list(value: &str) -> Result<String, &'static str> {
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))
     else {
-        return Err("besitzt keine gültige Stringliste");
+        return Err("does not have a valid string list");
     };
     if body.trim().is_empty() {
         return Ok(String::new());
@@ -2129,13 +2129,13 @@ fn decode_gvariant_string_list(value: &str) -> Result<String, &'static str> {
         }
         if characters.peek().is_none() {
             return if trailing_comma {
-                Err("besitzt ein fehlendes Stringlistenelement")
+                Err("has a missing string list element")
             } else {
                 Ok(result.join(","))
             };
         }
         let Some(quote @ ('\'' | '"')) = characters.next() else {
-            return Err("besitzt ein ungültiges Stringlistenelement");
+            return Err("has an invalid string list element");
         };
         let mut raw_item = String::new();
         let mut escaped = false;
@@ -2155,11 +2155,11 @@ fn decode_gvariant_string_list(value: &str) -> Result<String, &'static str> {
             }
         }
         if escaped || !closed {
-            return Err("besitzt ein nicht abgeschlossenes Stringlistenelement");
+            return Err("has an unclosed string list element");
         }
         let item = unescape_setting_value(&raw_item);
         if item.contains(',') || item.chars().any(char::is_control) {
-            return Err("besitzt ein nicht-portables Stringlistenelement");
+            return Err("has a non-portable string list element");
         }
         result.push(item);
         while characters
@@ -2171,7 +2171,7 @@ fn decode_gvariant_string_list(value: &str) -> Result<String, &'static str> {
         match characters.next() {
             None => break,
             Some(',') => trailing_comma = true,
-            Some(_) => return Err("besitzt ein ungültiges Trennzeichen in der Stringliste"),
+            Some(_) => return Err("has an invalid delimiter in string list"),
         }
     }
     Ok(result.join(","))
@@ -2190,7 +2190,7 @@ fn collect_named_files(root: &Path, file_name: &str, result: &mut Vec<PathBuf>) 
     if !metadata.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Der ausgewählte Evolution-Profilpfad ist kein Ordner",
+            "The selected Evolution profile path is not a folder",
         ));
     }
 
@@ -2219,7 +2219,7 @@ fn collect_local_data_files(root: &Path, result: &mut Vec<PathBuf>) -> io::Resul
     if !metadata.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Der ausgewählte Evolution-Profilpfad ist kein Ordner",
+            "The selected Evolution profile path is not a folder",
         ));
     }
 
@@ -2251,7 +2251,7 @@ fn collect_local_mail_files(root: &Path, result: &mut Vec<PathBuf>) -> io::Resul
     if !metadata.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Der ausgewählte Evolution-Profilpfad ist kein Ordner",
+            "The selected Evolution profile path is not a folder",
         ));
     }
 
@@ -2538,7 +2538,7 @@ fn parse_evolution_filters(raw: &str, path: &Path) -> Result<Vec<MailFilterRule>
 
         let name = attribute_value(&opening_tag, "name")
             .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| format!("Importierte Evolution-Regel {}", index + 1));
+            .unwrap_or_else(|| format!("Imported Evolution Rule {}", index + 1));
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         path.to_string_lossy().hash(&mut hasher);
         index.hash(&mut hasher);
@@ -2581,7 +2581,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             && parse_setting_bool(&enabled).is_none()
         {
             warnings.push(format!(
-                "{}: Aktivierungswert in „{}“ ist nicht unterstützt und wird als aktiviert behandelt",
+                "{}: enabled value in \"{}\" is not supported and will be treated as enabled",
                 migration_source_label(path),
                 rule_name
             ));
@@ -2591,7 +2591,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             && filter_scope_from_evolution_name(&scope).is_none()
         {
             warnings.push(format!(
-                "{}: Filterbereich „{}“ in „{}“ wird als Eingang verarbeitet",
+                "{}: filter scope \"{}\" in \"{}\" will be processed as incoming",
                 migration_source_label(path),
                 safe_warning_key(&scope),
                 rule_name
@@ -2602,7 +2602,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             && !matches!(match_type.to_ascii_lowercase().as_str(), "all" | "any")
         {
             warnings.push(format!(
-                "{}: Verknüpfung „{}“ in „{}“ wird als UND verarbeitet",
+                "{}: match type \"{}\" in \"{}\" will be processed as AND",
                 migration_source_label(path),
                 safe_warning_key(&match_type),
                 rule_name
@@ -2617,14 +2617,14 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             let Some(field) = filter_field_from_evolution_name(&name) else {
                 if name.trim().is_empty() {
                     warnings.push(format!(
-                        "{}: Bedingung {} in „{}“ besitzt kein unterstütztes Feld",
+                        "{}: condition {} in \"{}\" does not have a supported field",
                         migration_source_label(path),
                         part_index + 1,
                         rule_name
                     ));
                 } else {
                     warnings.push(format!(
-                        "{}: Bedingung „{}“ in „{}“ wird portabel nicht ausgewertet",
+                        "{}: condition \"{}\" in \"{}\" is not evaluated portably",
                         migration_source_label(path),
                         safe_warning_key(&name),
                         rule_name
@@ -2637,7 +2637,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
                 extract_xml_blocks(&part_body, "value").into_iter().next()
             else {
                 warnings.push(format!(
-                    "{}: Wert für Bedingung „{}“ in „{}“ fehlt und wird nicht importiert",
+                    "{}: value for condition \"{}\" in \"{}\" is missing and will not be imported",
                     migration_source_label(path),
                     safe_warning_key(&name),
                     rule_name
@@ -2650,7 +2650,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
                 && !is_supported_filter_value_type(&value_type)
             {
                 warnings.push(format!(
-                    "{}: Werttyp „{}“ für Bedingung „{}“ in „{}“ wird portabel als Text verarbeitet",
+                    "{}: value type \"{}\" for condition \"{}\" in \"{}\" will be processed portably as text",
                     migration_source_label(path),
                     safe_warning_key(&value_type),
                     safe_warning_key(&name),
@@ -2660,14 +2660,14 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             let operator_name = attribute_value(&value_tag, "name").unwrap_or_default();
             if operator_name.trim().is_empty() {
                 warnings.push(format!(
-                    "{}: Vergleich für Bedingung „{}“ in „{}“ fehlt und wird als „enthält“ importiert",
+                    "{}: operator for condition \"{}\" in \"{}\" is missing and will be imported as \"contains\"",
                     migration_source_label(path),
                     safe_warning_key(&name),
                     rule_name
                 ));
             } else if filter_operator_from_evolution_name(&operator_name).is_none() {
                 warnings.push(format!(
-                    "{}: Vergleich „{}“ in „{}“ wird portabel als „enthält“ importiert",
+                    "{}: operator \"{}\" in \"{}\" will be imported portably as \"contains\"",
                     migration_source_label(path),
                     safe_warning_key(&operator_name),
                     rule_name
@@ -2678,7 +2678,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             if value.trim().is_empty() && !operator.allows_empty_value(field) {
                 condition_imported = false;
                 warnings.push(format!(
-                    "{}: Leerer Wert für Bedingung „{}“ in „{}“ wird nicht importiert",
+                    "{}: empty value for condition \"{}\" in \"{}\" will not be imported",
                     migration_source_label(path),
                     safe_warning_key(&name),
                     rule_name
@@ -2699,7 +2699,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
                 .unwrap_or_default();
             if name.trim().is_empty() {
                 warnings.push(format!(
-                    "{}: Aktion {} in „{}“ besitzt keinen unterstützten Namen",
+                    "{}: action {} in \"{}\" does not have a supported name",
                     migration_source_label(path),
                     action_index + 1,
                     rule_name
@@ -2708,7 +2708,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             }
             if filter_action_requires_target(&name) && target.trim().is_empty() {
                 warnings.push(format!(
-                    "{}: Aktion „{}“ in „{}“ besitzt kein Ziel und wird nicht importiert",
+                    "{}: action \"{}\" in \"{}\" has no target and will not be imported",
                     migration_source_label(path),
                     safe_warning_key(&name),
                     rule_name
@@ -2727,7 +2727,7 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
             };
             if filter_action_from_evolution_name(&name, recognition_target).is_none() {
                 warnings.push(format!(
-                    "{}: Aktion „{}“ in „{}“ wird portabel nicht ausgeführt",
+                    "{}: action \"{}\" in \"{}\" is not executed portably",
                     migration_source_label(path),
                     safe_warning_key(&name),
                     rule_name
@@ -2738,14 +2738,14 @@ fn unsupported_filter_warnings(raw: &str, path: &Path) -> Vec<String> {
         }
         if !portable_condition {
             warnings.push(format!(
-                "{}: Regel „{}“ besitzt keine importierbare Bedingung",
+                "{}: rule \"{}\" has no importable condition",
                 migration_source_label(path),
                 rule_name
             ));
         }
         if !portable_action {
             warnings.push(format!(
-                "{}: Regel „{}“ besitzt keine importierbare Aktion",
+                "{}: rule \"{}\" has no importable action",
                 migration_source_label(path),
                 rule_name
             ));
@@ -2758,7 +2758,7 @@ fn filter_warning_label(name: Option<&str>, index: usize) -> String {
     let name = name
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "Regel");
+        .unwrap_or_else(|| "Rule");
     let label = name.replace(['\r', '\n'], " ");
     let label = if label.chars().count() > 80 {
         let mut shortened = label.chars().take(80).collect::<String>();
@@ -2767,8 +2767,8 @@ fn filter_warning_label(name: Option<&str>, index: usize) -> String {
     } else {
         label
     };
-    if label == "Regel" {
-        format!("Regel {index}")
+    if label == "Rule" {
+        format!("Rule {index}")
     } else {
         label
     }
@@ -3062,7 +3062,7 @@ fn parse_source(raw: &str) -> Result<SourceKeyFile, &'static str> {
         {
             let group = group.trim();
             if group.is_empty() {
-                return Err("leere Keyfile-Gruppe");
+                return Err("empty keyfile group");
             }
             current_group = Some(group.to_string());
             source.groups.entry(group.to_string()).or_default();
@@ -3071,13 +3071,13 @@ fn parse_source(raw: &str) -> Result<SourceKeyFile, &'static str> {
 
         let Some(group) = current_group.as_ref() else {
             source.warnings.push(format!(
-                "Zeile {line_number}: Eintrag außerhalb einer Keyfile-Gruppe wurde ignoriert"
+                "Line {line_number}: entry outside a keyfile group was ignored"
             ));
             continue;
         };
         let Some((key, value)) = line.split_once('=') else {
             source.warnings.push(format!(
-                "Zeile {line_number}: nicht unterstützter Keyfile-Eintrag wurde ignoriert"
+                "Line {line_number}: unsupported keyfile entry was ignored"
             ));
             continue;
         };
@@ -3091,7 +3091,7 @@ fn parse_source(raw: &str) -> Result<SourceKeyFile, &'static str> {
         }
         if !is_supported_source_key(group, key) {
             source.warnings.push(format!(
-                "Zeile {line_number}: unbekanntes oder nicht unterstütztes Feld „{}“ wurde nicht übernommen",
+                "Line {line_number}: unknown or unsupported field \"{}\" was not imported",
                 safe_warning_key(key)
             ));
         }
@@ -3103,7 +3103,7 @@ fn parse_source(raw: &str) -> Result<SourceKeyFile, &'static str> {
     }
 
     if source.groups.is_empty() {
-        return Err("keine gültige Keyfile-Gruppe gefunden");
+        return Err("no valid keyfile group found");
     }
     Ok(source)
 }
@@ -3297,7 +3297,7 @@ fn profile_from_source_with_warnings(
         )
     })
     .and_then(normalize_email)
-    .ok_or_else(|| "keine Mailadresse gefunden (kein Mailkonto)".to_string())?;
+    .ok_or_else(|| "no email address found (not a mail account)".to_string())?;
 
     let uid = first_value(
         source,
@@ -3327,7 +3327,7 @@ fn profile_from_source_with_warnings(
     let protocol = protocol_from_backend(&backend);
     if !backend.trim().is_empty() && !is_known_mail_backend(&backend) {
         warnings.push(
-            "nicht unterstütztes Mail-Backend wurde als portables IMAP/SMTP-Konto übernommen"
+            "unsupported mail backend was imported as a portable IMAP/SMTP account"
                 .to_string(),
         );
     }
@@ -3363,7 +3363,7 @@ fn profile_from_source_with_warnings(
     let (tls_mode, tls_value_supported) = tls_mode_with_status(tls_value.as_deref());
     if tls_value.is_some() && !tls_value_supported {
         warnings.push(
-            "nicht unterstützte Mail-Verschlüsselungsart wurde als TLS-Fallback übernommen"
+            "unsupported mail encryption mode was imported as a TLS fallback"
                 .to_string(),
         );
     }
@@ -3459,7 +3459,7 @@ fn profile_from_source_with_warnings(
             Some(enabled) => enabled,
             None => {
                 warnings
-                    .push("ungültiger Aktivierungswert wurde als aktiviert übernommen".to_string());
+                    .push("invalid enabled value was imported as enabled".to_string());
                 true
             }
         },
@@ -3548,7 +3548,7 @@ fn parse_source_port(
         Ok(port) if port > 0 => port,
         _ => {
             warnings.push(format!(
-                "ungültiger {label}-Port wurde durch den portablen Standard ersetzt"
+                "invalid {label} port was replaced by the portable default"
             ));
             fallback
         }
@@ -3745,7 +3745,7 @@ unknown-setting='value'
             value: "Grüne Gruppe".to_string(),
         }));
         let warning_text = parsed.warnings.join(" ");
-        assert!(warning_text.contains("Evolution-Profil"));
+        assert!(warning_text.contains("Evolution profile"));
         assert!(!warning_text.contains("secret-profile"));
         assert!(!warning_text.contains("with credentials"));
     }
@@ -3891,7 +3891,7 @@ day-second-zone='bad zone; danger'
         assert!(negative.warnings[0].contains("calendar-time-divisions"));
         assert!(negative.warnings[1].contains("calendar-view"));
         assert!(negative.warnings[2].contains("calendar-second-zone"));
-        assert!(negative.warnings[3].contains("keine unterstützten nicht-geheimen"));
+        assert!(negative.warnings[3].contains("no supported non-secret"));
     }
 
     #[test]
@@ -4508,17 +4508,17 @@ Password=must-not-be-retained
         assert_eq!(profile.protocol, AccountProtocol::ImapSmtp);
         assert_eq!(profile.imap_port, 993);
         assert_eq!(profile.smtp_port, 465);
-        assert!(warnings.iter().any(|warning| warning.contains("Backend")));
-        assert!(warnings.iter().any(|warning| warning.contains("IMAP-Port")));
+        assert!(warnings.iter().any(|warning| warning.contains("backend")));
+        assert!(warnings.iter().any(|warning| warning.contains("IMAP port")));
         assert!(
             warnings
                 .iter()
-                .any(|warning| warning.contains("Verschlüsselungsart"))
+                .any(|warning| warning.contains("encryption mode"))
         );
         assert!(
             warnings
                 .iter()
-                .any(|warning| warning.contains("Aktivierungswert"))
+                .any(|warning| warning.contains("enabled value"))
         );
         assert!(
             !warnings

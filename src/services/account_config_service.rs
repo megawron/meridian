@@ -305,38 +305,38 @@ impl AccountProfile {
     pub fn validate(&self) -> Result<(), String> {
         let email = self.email.trim();
         if email.is_empty() || !is_plausible_address(email) {
-            return Err("Bitte eine gültige E-Mail-Adresse eingeben".to_string());
+            return Err("Please enter a valid email address".to_string());
         }
         if self.display_name.trim().is_empty() {
-            return Err("Der Anzeigename darf nicht leer sein".to_string());
+            return Err("Display name must not be empty".to_string());
         }
         if self.id.trim().is_empty() {
-            return Err("Das Konto besitzt keine gültige interne ID".to_string());
+            return Err("Account does not have a valid internal ID".to_string());
         }
         if !matches!(self.tls_mode.as_str(), "tls" | "starttls" | "none") {
-            return Err("Die Verschlüsselungsart ist ungültig".to_string());
+            return Err("Invalid encryption method".to_string());
         }
         if self.imap_port == 0 || self.smtp_port == 0 {
-            return Err("IMAP-/SMTP-Ports müssen zwischen 1 und 65535 liegen".to_string());
+            return Err("IMAP/SMTP ports must be between 1 and 65535".to_string());
         }
         if self.protocol.requires_mail_servers() && self.imap_host.trim().is_empty() {
             return Err(format!(
-                "Bitte einen {}-Posteingangsserver eingeben",
+                "Please enter an incoming {} server",
                 self.protocol.incoming_server_label()
             ));
         }
         if matches!(self.protocol, AccountProtocol::ImapSmtp) && self.smtp_host.trim().is_empty() {
-            return Err("Bitte einen SMTP-Postausgangsserver eingeben".to_string());
+            return Err("Please enter an outgoing SMTP server".to_string());
         }
         if self
             .aliases
             .iter()
             .any(|alias| !alias.trim().is_empty() && !is_plausible_address(alias.trim()))
         {
-            return Err("Jede Alias-Adresse muss eine gültige E-Mail-Adresse sein".to_string());
+            return Err("Every alias must be a valid email address".to_string());
         }
         if !self.reply_to.trim().is_empty() && !is_plausible_address(self.reply_to.trim()) {
-            return Err("Die Antwortadresse ist ungültig".to_string());
+            return Err("Reply-To address is invalid".to_string());
         }
         Ok(())
     }
@@ -755,7 +755,7 @@ pub fn discover_and_validate_exchange_services(
         .build()
     {
         Ok(c) => c,
-        Err(e) => return ExchangeDiscoveryStatus::Error(format!("HTTP-Client-Fehler: {e}")),
+        Err(e) => return ExchangeDiscoveryStatus::Error(format!("HTTP client error: {e}")),
     };
 
     // 1. Build Autodiscover candidate URLs in GNOME Evolution sequence
@@ -808,9 +808,9 @@ pub fn discover_and_validate_exchange_services(
 
                     if let Some(ews) = ews_url {
                         let msg = if !oab_url.is_empty() {
-                            "✓ Exchange-Dienste (EWS & OAB) erfolgreich per Autodiscover ermittelt".to_string()
+                            "✓ Exchange services (EWS & OAB) successfully discovered via Autodiscover".to_string()
                         } else {
-                            "✓ EWS-Dienst per Autodiscover ermittelt (OAB nicht vom Server bereitgestellt)".to_string()
+                            "✓ EWS service discovered via Autodiscover (OAB not provided by server)".to_string()
                         };
                         return ExchangeDiscoveryStatus::Success {
                             ews_url: ews,
@@ -821,7 +821,7 @@ pub fn discover_and_validate_exchange_services(
                 }
             } else if status == 401 {
                 return ExchangeDiscoveryStatus::AuthFailed(
-                    "Authentifizierung fehlgeschlagen (HTTP 401): Bitte Benutzername und Passwort überprüfen.".to_string(),
+                    "Authentication failed (HTTP 401): Please check your username and password.".to_string(),
                 );
             }
         }
@@ -830,7 +830,7 @@ pub fn discover_and_validate_exchange_services(
     // 2. Fallback / Error Handling matching original Evolution
     if input_host.trim().is_empty() {
         return ExchangeDiscoveryStatus::ServerNotFound(
-            "Abfrage des Autodiscover-Dienstes ist fehlgeschlagen: Die Rechneradresse darf nicht leer sein. Bitte geben Sie die Rechneradresse (Host-URL) Ihres Exchange-Servers ein.".to_string(),
+            "Autodiscover service query failed: Host address must not be empty. Please enter the host address (Host URL) of your Exchange server.".to_string(),
         );
     }
 
@@ -846,29 +846,29 @@ pub fn discover_and_validate_exchange_services(
                 ExchangeDiscoveryStatus::Success {
                     ews_url: fallback_ews_url,
                     oab_url: String::new(),
-                    message: "✓ EWS-Endpunkt aktiv und Authentifizierung erfolgreich. (OAB ist optional und bleibt leer)".to_string(),
+                    message: "✓ EWS endpoint active and authentication succeeded. (OAB is optional and remains empty)".to_string(),
                 }
             } else if status == 401 {
                 ExchangeDiscoveryStatus::AuthFailed(
-                    "Authentifizierung fehlgeschlagen (HTTP 401): Bitte Benutzername und Passwort überprüfen.".to_string(),
+                    "Authentication failed (HTTP 401): Please check your username and password.".to_string(),
                 )
             } else if status == 403 {
                 ExchangeDiscoveryStatus::AuthFailed(
-                    "Zugriff verweigert (HTTP 403): Benutzer besitzt keine Berechtigung für diesen EWS-Dienst.".to_string(),
+                    "Access denied (HTTP 403): User does not have permission for this EWS service.".to_string(),
                 )
             } else if status == 404 {
                 ExchangeDiscoveryStatus::ServerNotFound(format!(
-                    "EWS-Endpunkt nicht gefunden (HTTP 404 auf {fallback_ews_url}). Bitte Serveradresse prüfen."
+                    "EWS endpoint not found (HTTP 404 on {fallback_ews_url}). Please check the server address."
                 ))
             } else {
                 ExchangeDiscoveryStatus::Error(format!(
-                    "Server antwortete mit Fehler (HTTP {status}) auf {fallback_ews_url}."
+                    "Server responded with error (HTTP {status}) on {fallback_ews_url}."
                 ))
             }
         }
         Err(err) => {
             ExchangeDiscoveryStatus::ServerNotFound(format!(
-                "Server {host_base} nicht erreichbar: {err}"
+                "Server {host_base} unreachable: {err}"
             ))
         }
     }
@@ -879,7 +879,7 @@ pub fn discover_and_validate_exchange_services(
 pub fn query_exchange_auth_methods(host_or_url: &str) -> Result<Vec<String>, String> {
     let trimmed = host_or_url.trim();
     if trimmed.is_empty() {
-        return Err("Die Rechneradresse darf nicht leer sein.".to_string());
+        return Err("Host address must not be empty.".to_string());
     }
 
     let ews_url = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -898,10 +898,10 @@ pub fn query_exchange_auth_methods(host_or_url: &str) -> Result<Vec<String>, Str
         .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(6))
         .build()
-        .map_err(|e| format!("HTTP-Client-Fehler: {e}"))?;
+        .map_err(|e| format!("HTTP client error: {e}"))?;
 
     let resp = client.get(&ews_url).send().map_err(|e| {
-        format!("Server unter {ews_url} nicht erreichbar: {e}")
+        format!("Server at {ews_url} unreachable: {e}")
     })?;
 
     let mut detected = Vec::new();
@@ -931,7 +931,7 @@ pub fn query_exchange_auth_methods(host_or_url: &str) -> Result<Vec<String>, Str
             detected.push("Basic".to_string());
         } else {
             return Err(format!(
-                "Server antwortete mit HTTP {}, kündigte aber keine unterstützten Authentifizierungsarten im WWW-Authenticate-Header an.",
+                "Server responded with HTTP {}, but did not advertise any supported authentication methods in the WWW-Authenticate header.",
                 resp.status()
             ));
         }
@@ -939,7 +939,7 @@ pub fn query_exchange_auth_methods(host_or_url: &str) -> Result<Vec<String>, Str
 
     let mut ordered = Vec::new();
     if detected.iter().any(|d| d == "NTLM") {
-        ordered.push("NTLM / Windows-Authentifizierung".to_string());
+        ordered.push("NTLM / Windows Authentication".to_string());
     }
     if detected.iter().any(|d| d == "Kerberos") {
         ordered.push("Kerberos / GSSAPI".to_string());
@@ -948,7 +948,7 @@ pub fn query_exchange_auth_methods(host_or_url: &str) -> Result<Vec<String>, Str
         ordered.push("OAuth2 / Modern Auth (M365)".to_string());
     }
     if detected.iter().any(|d| d == "Basic") {
-        ordered.push("Standard-Passwort (Basic / Plain)".to_string());
+        ordered.push("Password (Basic / Plain)".to_string());
     }
 
     Ok(ordered)
@@ -1257,7 +1257,7 @@ pub fn sync_profile_to_eds(
     }
 
     if let Err(err) = fs::create_dir_all(&sources_dir) {
-        return Err(format!("Verzeichnis {} konnte nicht erstellt werden: {}", sources_dir.display(), err));
+        return Err(format!("Could not create directory {}: {}", sources_dir.display(), err));
     }
     let mut files_changed = false;
 
@@ -2026,7 +2026,7 @@ mod tests {
         match res {
             ExchangeDiscoveryStatus::ServerNotFound(msg) => {
                 assert!(msg.contains("Autodiscover"));
-                assert!(msg.contains("Rechneradresse"));
+                assert!(msg.contains("Host address"));
             }
             other => panic!("Expected ServerNotFound, got {:?}", other),
         }

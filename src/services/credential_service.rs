@@ -34,7 +34,7 @@ impl CredentialService {
     pub fn set_password(account_uid: &str, password: &str) -> Result<(), String> {
         let account_uid = account_uid.trim();
         if account_uid.is_empty() {
-            return Err("Kontokennung darf nicht leer sein".into());
+            return Err("Account identifier must not be empty".into());
         }
 
         crate::services::camel_mail_service::store_source_password(account_uid, password)

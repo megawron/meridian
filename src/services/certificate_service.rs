@@ -29,9 +29,9 @@ impl CertCategory {
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Personal => "Ihre Zertifikate",
-            Self::Contact => "Kontakte",
-            Self::Authority => "Zertifizierungsstellen",
+            Self::Personal => "Your Certificates",
+            Self::Contact => "Contacts",
+            Self::Authority => "Certification Authorities",
         }
     }
 }
@@ -68,14 +68,14 @@ impl TrustLevel {
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::AlwaysTrust => "Immer vertrauen",
-            Self::Trusted => "Vertrauenswürdig (Standard)",
-            Self::Marginal => "Eingeschränkt vertrauenswürdig",
-            Self::NeverTrust => "Niemals vertrauen (gesperrt)",
-            Self::Untrusted => "Nicht vertrauenswürdig",
-            Self::Unknown => "Unbekannt",
-            Self::TrustForSigning => "Für Signaturen vertrauen",
-            Self::TrustForEncryption => "Für Verschlüsselung vertrauen",
+            Self::AlwaysTrust => "Always Trust",
+            Self::Trusted => "Trusted (Default)",
+            Self::Marginal => "Marginally Trusted",
+            Self::NeverTrust => "Never Trust (Revoked)",
+            Self::Untrusted => "Untrusted",
+            Self::Unknown => "Unknown",
+            Self::TrustForSigning => "Trust for Signatures",
+            Self::TrustForEncryption => "Trust for Encryption",
         }
     }
 }
@@ -151,28 +151,28 @@ impl KeyUsageFlags {
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
         if self.digital_signature || self.non_repudiation {
-            parts.push("Signatur");
+            parts.push("Signature");
         }
         if self.key_encipherment || self.data_encipherment || self.key_agreement {
-            parts.push("Verschlüsselung");
+            parts.push("Encryption");
         }
         if self.email_protection {
-            parts.push("E-Mail-Schutz");
+            parts.push("Email Protection");
         }
         if self.server_auth {
             parts.push("TLS/Web");
         }
         if self.code_signing {
-            parts.push("Code-Signatur");
+            parts.push("Code Signing");
         }
         if self.key_cert_sign {
-            parts.push("Zertifikatsausstellung");
+            parts.push("Certificate Issuing");
         }
         if self.crl_sign {
-            parts.push("Sperrlistenprüfung");
+            parts.push("CRL Signing");
         }
         if parts.is_empty() {
-            "Keine Einschränkung".to_string()
+            "Unrestricted".to_string()
         } else {
             parts.join(", ")
         }
@@ -262,7 +262,7 @@ impl OpenPgpKeyRecord {
             issuer_org: "GnuPG".to_string(),
             serial_hex: self.key_id.clone(),
             not_before: self.created_at.clone(),
-            not_after: self.expires_at.clone().unwrap_or_else(|| "Kein Ablaufdatum".to_string()),
+            not_after: self.expires_at.clone().unwrap_or_else(|| "No expiration date".to_string()),
             is_expired: false,
             sha256_fingerprint: self.fingerprint.clone(),
             key_usage: vec!["Digital Signature".to_string(), "Key Encipherment".to_string()],
@@ -446,7 +446,7 @@ impl X509Parser {
             } else if !subject_org.is_empty() {
                 subject_cn = subject_org.clone();
             } else {
-                subject_cn = "Unbenanntes Zertifikat".to_string();
+                subject_cn = "Unnamed Certificate".to_string();
             }
         }
 
@@ -851,7 +851,7 @@ impl OpenSslBridge {
                 output = legacy_output;
             } else {
                 let err_msg = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("PKCS#12-Import fehlgeschlagen: {err_msg}"));
+                return Err(format!("PKCS#12 import failed: {err_msg}"));
             }
         }
 
@@ -1399,7 +1399,7 @@ impl CertificateService {
         if Self::store().set_trust_level(cert_id, trust) {
             Ok(())
         } else {
-            Err(format!("Zertifikat {cert_id} nicht gefunden"))
+            Err(format!("Certificate {cert_id} not found"))
         }
     }
 
@@ -1407,7 +1407,7 @@ impl CertificateService {
         if Self::store().set_ca_trust(cert_id, ssl, email, code_sign) {
             Ok(())
         } else {
-            Err(format!("Zertifikat {cert_id} nicht gefunden"))
+            Err(format!("Certificate {cert_id} not found"))
         }
     }
 
@@ -1703,7 +1703,7 @@ mod tests {
         let wrong_res = OpenSslBridge::import_pkcs12(&p12_std_path, Some("WrongPassword999!"), &key_dir, &cert_dir);
         assert!(wrong_res.is_err(), "Import with wrong passphrase must fail");
         let err_msg = wrong_res.unwrap_err();
-        assert!(err_msg.contains("fehlgeschlagen") || err_msg.contains("OpenSSL"), "Error message should describe failure: {err_msg}");
+        assert!(err_msg.contains("failed") || err_msg.contains("OpenSSL"), "Error message should describe failure: {err_msg}");
 
         // 4. Adversarial: Empty passphrase on encrypted PKCS#12 must return Err
         let empty_res = OpenSslBridge::import_pkcs12(&p12_std_path, None, &key_dir, &cert_dir);

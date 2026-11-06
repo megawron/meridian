@@ -40,17 +40,17 @@ pub enum MailOperationKind {
 impl fmt::Display for MailOperationKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
-            Self::SetMessageState => "Lesestatus/Markierung",
-            Self::Delete => "Löschen",
-            Self::Move => "Verschieben",
-            Self::Copy => "Kopieren",
-            Self::Archive => "Archivieren",
-            Self::MarkJunk => "Als Spam markieren",
-            Self::MarkNotJunk => "Als Nicht-Spam markieren",
-            Self::MarkImportant => "Als wichtig markieren",
-            Self::MarkNotImportant => "Wichtig-Markierung entfernen",
-            Self::SetLabel => "Label ändern",
-            Self::SetFollowUp => "Nachverfolgung",
+            Self::SetMessageState => "Read/flag status",
+            Self::Delete => "Delete",
+            Self::Move => "Move",
+            Self::Copy => "Copy",
+            Self::Archive => "Archive",
+            Self::MarkJunk => "Mark as spam",
+            Self::MarkNotJunk => "Mark as not spam",
+            Self::MarkImportant => "Mark as important",
+            Self::MarkNotImportant => "Remove important mark",
+            Self::SetLabel => "Change label",
+            Self::SetFollowUp => "Follow-up",
         };
         formatter.write_str(label)
     }
@@ -125,14 +125,14 @@ impl MailOperationStatus {
 impl fmt::Display for MailOperationStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
-            Self::Queued => "wartend",
-            Self::Running => "läuft",
-            Self::RollingBack => "wird zurückgerollt",
-            Self::Succeeded => "erfolgreich",
-            Self::Failed => "fehlgeschlagen",
-            Self::Conflict => "Konflikt",
-            Self::Cancelled => "abgebrochen",
-            Self::RollbackFailed => "Rückabwicklung fehlgeschlagen",
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::RollingBack => "rolling back",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Conflict => "conflict",
+            Self::Cancelled => "cancelled",
+            Self::RollbackFailed => "rollback failed",
         };
         formatter.write_str(label)
     }
@@ -175,31 +175,31 @@ impl fmt::Display for MailOperationError {
         match self {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Backend { operation, message } => {
-                write!(formatter, "{operation} ist fehlgeschlagen: {message}")
+                write!(formatter, "{operation} failed: {message}")
             }
             Self::Conflict { operation, message } => {
-                write!(formatter, "Konflikt bei {operation}: {message}")
+                write!(formatter, "Conflict during {operation}: {message}")
             }
             Self::Unsupported { operation, backend } => write!(
                 formatter,
-                "{operation} ist mit dem Backend {backend} noch nicht verfügbar"
+                "{operation} is not yet available with the {backend} backend"
             ),
             Self::Busy { operation, message } => {
                 write!(
                     formatter,
-                    "{operation} für {message} wird bereits ausgeführt"
+                    "{operation} for {message} is already in progress"
                 )
             }
             Self::Cancelled { operation } => {
-                write!(formatter, "{operation} wurde abgebrochen")
+                write!(formatter, "{operation} was cancelled")
             }
             Self::Lifecycle { operation, status } => write!(
                 formatter,
-                "{operation} kann im Status {status} nicht erneut gestartet werden"
+                "{operation} cannot be restarted in status {status}"
             ),
             Self::RollbackFailed { operation, message } => write!(
                 formatter,
-                "{operation} ist fehlgeschlagen und konnte nicht vollständig zurückgerollt werden: {message}"
+                "{operation} failed and could not be completely rolled back: {message}"
             ),
         }
     }
@@ -343,7 +343,7 @@ impl MailCommand {
                 is_unread: before_unread,
                 is_flagged: before_flagged,
             },
-            "Lesestatus/Markierung".to_string(),
+            "Read/flag status".to_string(),
         )
     }
 
@@ -368,9 +368,9 @@ impl MailCommand {
                 metadata: before,
             },
             match after.state {
-                MailFollowUpState::None => "Nachverfolgung entfernen",
-                MailFollowUpState::FollowUp => "Zur Nachverfolgung markieren",
-                MailFollowUpState::Completed => "Nachverfolgung abschließen",
+                MailFollowUpState::None => "Remove follow-up",
+                MailFollowUpState::FollowUp => "Mark for follow-up",
+                MailFollowUpState::Completed => "Complete follow-up",
             }
             .to_string(),
         )
@@ -400,7 +400,7 @@ impl MailCommand {
                 location: Some(inverse_location),
                 destination: location.folder_name,
             },
-            format!("Nachricht nach {destination} verschieben"),
+            format!("Move message to {destination}"),
         )
     }
 
@@ -423,9 +423,9 @@ impl MailCommand {
                 is_junk: before,
             },
             if after {
-                "Als Spam markieren".to_string()
+                "Mark as spam".to_string()
             } else {
-                "Spam-Markierung entfernen".to_string()
+                "Remove spam mark".to_string()
             },
         )
     }
@@ -447,7 +447,7 @@ impl MailCommand {
                 location: None,
                 destination: previous_folder,
             },
-            "Nachricht lokal als Spam markieren".to_string(),
+            "Mark message as spam locally".to_string(),
         )
     }
 
@@ -464,7 +464,7 @@ impl MailCommand {
                 location: None,
                 is_junk: true,
             },
-            "Lokale Spam-Markierung entfernen".to_string(),
+            "Remove local spam mark".to_string(),
         )
     }
 
@@ -487,9 +487,9 @@ impl MailCommand {
                 is_important: before,
             },
             if after {
-                "Als wichtig markieren".to_string()
+                "Mark as important".to_string()
             } else {
-                "Wichtig-Markierung entfernen".to_string()
+                "Remove important mark".to_string()
             },
         )
     }
@@ -508,9 +508,9 @@ impl MailCommand {
                 is_important: before,
             },
             if after {
-                "Als wichtig markieren".to_string()
+                "Mark as important".to_string()
             } else {
-                "Wichtig-Markierung entfernen".to_string()
+                "Remove important mark".to_string()
             },
         )
     }
@@ -537,9 +537,9 @@ impl MailCommand {
                 labeled: before,
             },
             if after {
-                "Label gesetzt".to_string()
+                "Label set".to_string()
             } else {
-                "Label entfernt".to_string()
+                "Label removed".to_string()
             },
         )
     }
@@ -567,9 +567,9 @@ impl MailCommand {
                 labeled: before,
             },
             if after {
-                "Label gesetzt".to_string()
+                "Label set".to_string()
             } else {
-                "Label entfernt".to_string()
+                "Label removed".to_string()
             },
         )
     }
@@ -585,7 +585,7 @@ impl MailCommand {
                 id,
                 location: Some(location),
             },
-            "Nachricht löschen".to_string(),
+            "Delete message".to_string(),
         )
     }
 
@@ -597,7 +597,7 @@ impl MailCommand {
                 location: None,
             },
             MailOperation::RestoreDeleted { id, location: None },
-            "Nachricht lokal ausblenden".to_string(),
+            "Hide message locally".to_string(),
         )
     }
 
@@ -612,7 +612,7 @@ impl MailCommand {
                 location: None,
             },
             MailOperation::Delete { id, location: None },
-            "Nachricht wiederherstellen".to_string(),
+            "Restore message".to_string(),
         )
     }
 
@@ -627,7 +627,7 @@ impl MailCommand {
                 id,
                 location: Some(location),
             },
-            "Nachricht archivieren".to_string(),
+            "Archive message".to_string(),
         )
     }
 
@@ -644,7 +644,7 @@ impl MailCommand {
                 location: None,
                 destination: previous_folder,
             },
-            "Nachricht lokal archivieren".to_string(),
+            "Archive message locally".to_string(),
         )
     }
 
@@ -667,7 +667,7 @@ impl MailCommand {
                 location: None,
                 destination: previous_folder,
             },
-            format!("Nachricht lokal nach {destination} verschieben"),
+            format!("Move message locally to {destination}"),
         )
     }
 
@@ -685,7 +685,7 @@ impl MailCommand {
                 location: None,
                 destination: destination.clone(),
             },
-            format!("Nachricht lokal nach {destination} kopiert"),
+            format!("Copied message locally to {destination}"),
         )
     }
 
@@ -709,7 +709,7 @@ impl MailCommand {
                 location: None,
                 destination: destination.clone(),
             },
-            format!("Nachricht nach {destination} kopiert"),
+            format!("Copied message to {destination}"),
         )
     }
 
@@ -1327,7 +1327,7 @@ impl MailCommandStack {
             Err(MailOperationError::RollbackFailed {
                 operation,
                 message: format!(
-                    "Ursprünglicher Fehler: {original}; Rückabwicklung: {}",
+                    "Original error: {original}; rollback: {}",
                     rollback_errors.join("; ")
                 ),
             })
@@ -1723,7 +1723,7 @@ impl MailOperationsService {
                     {
                         return Err(MailOperationError::Unsupported {
                             operation: MailOperationKind::SetFollowUp,
-                            backend: "Camel (eigener Follow-up-Text ist noch nicht über die native Brücke verfügbar)",
+                            backend: "Camel (custom follow-up text is not yet available through the native bridge)",
                         });
                     }
                     camel_mail_service::set_follow_up_state(
@@ -1971,7 +1971,7 @@ impl MailOperationsService {
                     {
                         return Err(MailOperationError::Unsupported {
                             operation: MailOperationKind::SetFollowUp,
-                            backend: "Camel (eigener Follow-up-Text ist noch nicht über die native Brücke verfügbar)",
+                            backend: "Camel (custom follow-up text is not yet available through the native bridge)",
                         });
                     }
                     camel_mail_service::apply_follow_up_state_with_cancellation(
@@ -2199,7 +2199,7 @@ impl MailOperationsService {
     }
 
     fn unsupported(operation: MailOperationKind) -> MailOperationError {
-        Self::unsupported_backend(operation, "lokaler Nur-Lese-Import")
+        Self::unsupported_backend(operation, "local read-only import")
     }
 
     fn unsupported_backend(
@@ -2642,7 +2642,7 @@ mod tests {
             .undo(&operations)
             .expect("undo should succeed")
             .expect("one command should be undone");
-        assert_eq!(undone.description(), "Lesestatus/Markierung");
+        assert_eq!(undone.description(), "Read/flag status");
         assert!(!history.can_undo());
         assert!(history.can_redo());
         let state = MailMetadataStore::new(store.metadata_path()).load();
@@ -3016,7 +3016,7 @@ mod tests {
             command.inverse,
             MailOperation::Delete { ref id, location: None } if id == "deleted-message"
         ));
-        assert_eq!(command.description(), "Nachricht wiederherstellen");
+        assert_eq!(command.description(), "Restore message");
     }
 
     #[test]

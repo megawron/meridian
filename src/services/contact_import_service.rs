@@ -20,9 +20,9 @@ impl ContactImportFormat {
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::VCard => "vCard (.vcf, .vcard)",
-            Self::Csv => "Kommagetrennte Werte (.csv)",
+            Self::Csv => "Comma-Separated Values (.csv)",
             Self::Ldif => "LDAP Data Interchange Format (.ldif, .ldi)",
-            Self::Unknown => "Unbekanntes Format",
+            Self::Unknown => "Unknown Format",
         }
     }
 }
@@ -52,9 +52,9 @@ pub enum ContactDuplicatePolicy {
 impl ContactDuplicatePolicy {
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::KeepBothNew => "Beide behalten (neuen Kontakt erstellen)",
-            Self::OverwriteExisting => "Bestehende Kontakte überschreiben",
-            Self::SkipExisting => "Bereits vorhandene Kontakte überspringen",
+            Self::KeepBothNew => "Keep both (create new contact)",
+            Self::OverwriteExisting => "Overwrite existing contacts",
+            Self::SkipExisting => "Skip existing contacts",
         }
     }
 }
@@ -72,24 +72,24 @@ impl ContactImportPlan {
     pub fn summary_label(&self) -> String {
         let count = self.items.len();
         if count == 0 {
-            return "Keine importierbaren Kontakte gefunden".to_string();
+            return "No importable contacts found".to_string();
         }
 
         let base = format!(
             "{} {}",
             count,
             if count == 1 {
-                "Kontakt gefunden"
+                "contact found"
             } else {
-                "Kontakte gefunden"
+                "contacts found"
             }
         );
 
         if self.duplicate_count > 0 {
             format!(
-                "{base} ({} Duplikat{})",
+                "{base} ({} duplicate{})",
                 self.duplicate_count,
-                if self.duplicate_count == 1 { "" } else { "e" }
+                if self.duplicate_count == 1 { "" } else { "s" }
             )
         } else {
             base
@@ -147,7 +147,7 @@ pub fn parse_vcard_stream(content: &str) -> Vec<ContactImportItem> {
         } else if !contact.email.trim().is_empty() {
             contact.email.clone()
         } else {
-            "Unbenannter Kontakt".to_string()
+            "Unnamed Contact".to_string()
         };
 
         let first_name = if !contact.name.given.trim().is_empty() {
@@ -774,7 +774,7 @@ mail: danny@example.com
         assert_eq!(plan.items.len(), 2);
         assert_eq!(plan.duplicate_count, 1);
         assert_eq!(plan.duplicate_names, vec!["Anna Schmidt"]);
-        assert_eq!(plan.summary_label(), "2 Kontakte gefunden (1 Duplikat)");
+        assert_eq!(plan.summary_label(), "2 contacts found (1 duplicate)");
     }
 
     #[test]

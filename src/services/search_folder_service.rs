@@ -168,12 +168,12 @@ impl SavedSearch {
     ) -> io::Result<crate::services::search_engine::ParsedMailSearchQuery> {
         validate_bounded_text(&self.id, "ID", MAX_ID_CHARS, true)?;
         validate_bounded_text(&self.name, "Name", MAX_NAME_CHARS, true)?;
-        validate_bounded_text(&self.query, "Suchabfrage", MAX_QUERY_CHARS, true)?;
+        validate_bounded_text(&self.query, "Search query", MAX_QUERY_CHARS, true)?;
 
         validate_search_syntax(&self.query).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("Ungültige Suchabfrage: {error}"),
+                format!("Invalid search query: {error}"),
             )
         })?;
         let parsed = parse_mail_query(&self.query, self.field.search_scope())
@@ -181,12 +181,12 @@ impl SavedSearch {
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "Gespeicherte Suchen benötigen eine Suchabfrage",
+                    "Saved searches require a search query",
                 )
             })?;
         validate_folder_id(self.folder_id.as_deref())?;
-        validate_identity(self.source_uid.as_deref(), "Quell-ID")?;
-        validate_identity(self.folder_name.as_deref(), "Ordnername")?;
+        validate_identity(self.source_uid.as_deref(), "Source ID")?;
+        validate_identity(self.folder_name.as_deref(), "Folder name")?;
 
         match self.scope {
             SavedSearchScope::CurrentFolder | SavedSearchScope::CurrentFolderAndSubfolders => {
@@ -199,7 +199,7 @@ impl SavedSearch {
                 if !local_identity && !remote_identity {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "Ordnersuchen benötigen entweder eine lokale Ordner-ID oder die vollständige Quell-/Ordneridentität",
+                        "Folder searches require either a local folder ID or the complete source/folder identity",
                     ));
                 }
                 if local_identity
@@ -210,7 +210,7 @@ impl SavedSearch {
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "Lokale Ordnersuchen benötigen eine konkrete Ordner-ID ohne dynamischen Quelltrenner",
+                        "Local folder searches require a concrete folder ID without a dynamic source separator",
                     ));
                 }
                 if remote_identity {
@@ -222,7 +222,7 @@ impl SavedSearch {
                     if self.folder_id.as_deref() != Some(expected.as_str()) {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
-                            "Remote-Ordner-ID stimmt nicht mit Quell-ID und Ordnername überein",
+                            "Remote folder ID does not match source ID and folder name",
                         ));
                     }
                 }
@@ -234,7 +234,7 @@ impl SavedSearch {
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "Kontosuchen benötigen genau eine Quell-ID und keine Ordneridentität",
+                        "Account searches require exactly one source ID and no folder identity",
                     ));
                 }
             }
@@ -245,7 +245,7 @@ impl SavedSearch {
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "Kontenübergreifende Suchen dürfen keine Quellen- oder Ordneridentität enthalten",
+                        "Cross-account searches must not contain a source or folder identity",
                     ));
                 }
             }
@@ -261,13 +261,13 @@ impl SavedSearch {
         if self.ast.trim().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Gespeicherte Suchen benötigen ein AST-Suchfixture",
+                "Saved searches require an AST search fixture",
             ));
         }
         let decoded = decode_mail_query_fixture(&self.ast).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Ungültiges AST-Suchfixture: {error}"),
+                format!("Invalid AST search fixture: {error}"),
             )
         })?;
         // Compare canonical wire forms rather than resolved AST dates. Relative
@@ -279,7 +279,7 @@ impl SavedSearch {
         if decoded_fixture != parsed_fixture {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "AST-Suchfixture und Suchabfrage stimmen nicht überein",
+                "AST search fixture and search query do not match",
             ));
         }
         Ok(())
@@ -292,7 +292,7 @@ fn encode_fixture(
     encode_mail_query_fixture(parsed).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("AST-Suchfixture konnte nicht erzeugt werden: {error}"),
+            format!("AST search fixture could not be generated: {error}"),
         )
     })
 }
@@ -306,13 +306,13 @@ fn validate_bounded_text(
     if required && value.trim().is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("Gespeicherte Suchen benötigen {label}"),
+            format!("Saved searches require {label}"),
         ));
     }
     if value.chars().count() > max_chars || value.chars().any(char::is_control) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("Ungültiger oder zu langer Wert für {label}"),
+            format!("Invalid or overly long value for {label}"),
         ));
     }
     Ok(())
@@ -332,7 +332,7 @@ fn validate_folder_id(value: Option<&str>) -> io::Result<()> {
     if value.trim().is_empty() || value.chars().count() > MAX_IDENTITY_CHARS {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Ungültige oder zu lange Ordner-ID",
+            "Invalid or overly long folder ID",
         ));
     }
     // Remote dynamic folder IDs use one NUL as the stable source/name
@@ -343,7 +343,7 @@ fn validate_folder_id(value: Option<&str>) -> io::Result<()> {
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Ungültige Ordner-ID",
+            "Invalid folder ID",
         ));
     }
     Ok(())
@@ -372,7 +372,7 @@ fn validate_searches(searches: &[SavedSearch]) -> io::Result<()> {
         if !ids.insert(search.id.as_str()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Doppelte ID für gespeicherte Suche: {}", search.id),
+                format!("Duplicate saved search ID: {}", search.id),
             ));
         }
     }
@@ -430,28 +430,28 @@ impl SearchFolderService {
         vec![
             SearchFolderObject::new(
                 "vfolder-unread",
-                "Ungelesen (Alle Konten)",
+                "Unread (All Accounts)",
                 "mail-unread-symbolic",
                 "is:unread",
                 0,
             ),
             SearchFolderObject::new(
                 "vfolder-flagged",
-                "Wichtig & Markiert",
+                "Important & Starred",
                 "mail-mark-important-symbolic",
                 "is:starred",
                 0,
             ),
             SearchFolderObject::new(
                 "vfolder-important",
-                "Wichtig",
+                "Important",
                 "mail-mark-important-symbolic",
                 "is:important",
                 0,
             ),
             SearchFolderObject::new(
                 "vfolder-recent",
-                "Letzte 7 Tage",
+                "Last 7 Days",
                 "appointment-soon-symbolic",
                 "after:7d",
                 0,
@@ -478,7 +478,7 @@ impl SearchFolderService {
         let lock = Self::path_lock(&self.path)?;
         let _guard = lock
             .lock()
-            .map_err(|_| io::Error::other("Gespeicherte-Suchen-Sperre ist vergiftet"))?;
+            .map_err(|_| io::Error::other("Saved search lock is poisoned"))?;
         let mut searches = self.load_saved_strict()?;
         if let Some(existing) = searches
             .iter_mut()
@@ -495,7 +495,7 @@ impl SearchFolderService {
         let lock = Self::path_lock(&self.path)?;
         let _guard = lock
             .lock()
-            .map_err(|_| io::Error::other("Gespeicherte-Suchen-Sperre ist vergiftet"))?;
+            .map_err(|_| io::Error::other("Saved search lock is poisoned"))?;
         let mut searches = self.load_saved_strict()?;
         let original_len = searches.len();
         if let Some(index) = searches.iter().position(|search| search.id == id) {
@@ -513,7 +513,7 @@ impl SearchFolderService {
         let locks = SEARCH_FILE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut locks = locks
             .lock()
-            .map_err(|_| io::Error::other("Gespeicherte-Suchen-Lock-Registry ist vergiftet"))?;
+            .map_err(|_| io::Error::other("Saved search lock registry is poisoned"))?;
         Ok(locks
             .entry(key)
             .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -529,7 +529,7 @@ impl SearchFolderService {
         let version = serde_json::from_slice::<SearchFileVersion>(&raw).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Ungültige gespeicherte-Suchen-Datei: {error}"),
+                format!("Invalid saved search file: {error}"),
             )
         })?;
 
@@ -538,7 +538,7 @@ impl SearchFolderService {
                 let file = serde_json::from_slice::<SearchFileV1>(&raw).map_err(|error| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Ungültige v1-Suchdatei: {error}"),
+                        format!("Invalid v1 search file: {error}"),
                     )
                 })?;
                 let searches = file
@@ -553,7 +553,7 @@ impl SearchFolderService {
                 let file = serde_json::from_slice::<SearchFileV2>(&raw).map_err(|error| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Ungültige v2-Suchdatei: {error}"),
+                        format!("Invalid v2 search file: {error}"),
                     )
                 })?;
                 validate_searches(&file.searches)?;
@@ -562,7 +562,7 @@ impl SearchFolderService {
             unsupported => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "Nicht unterstützte gespeicherte-Suchen-Version: {unsupported} (erwartet {LEGACY_VERSION} oder {CURRENT_VERSION})"
+                    "Unsupported saved search version: {unsupported} (expected {LEGACY_VERSION} or {CURRENT_VERSION})"
                 ),
             )),
         }
@@ -676,7 +676,7 @@ mod tests {
     fn test_default_vfolders() {
         let vfolders = SearchFolderService::default_vfolders();
         assert_eq!(vfolders.len(), 4);
-        assert_eq!(vfolders[0].name(), "Ungelesen (Alle Konten)");
+        assert_eq!(vfolders[0].name(), "Unread (All Accounts)");
         assert_eq!(vfolders[0].query_expression(), "is:unread");
         assert_eq!(vfolders[0].unread_count(), 0);
     }

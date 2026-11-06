@@ -262,7 +262,7 @@ pub fn group_messages_with_options(
             let thread_id = first_identifier[index].take().unwrap_or_else(|| {
                 let subject = normalized_subject(inputs[index].subject);
                 if subject.is_empty() {
-                    format!("subject:(ohne Betreff):{index}")
+                    format!("subject:(no subject):{index}")
                 } else {
                     format!("subject:{subject}")
                 }
@@ -298,7 +298,7 @@ pub fn group_messages_with_options(
         let thread_id = concrete_id.unwrap_or_else(|| {
             let subject = normalized_subject(inputs[members[0]].subject);
             if subject.is_empty() {
-                format!("subject:(ohne Betreff):{}", members[0])
+                format!("subject:(no subject):{}", members[0])
             } else {
                 format!("subject:{subject}")
             }

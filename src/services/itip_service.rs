@@ -39,9 +39,9 @@ impl ItipReplyStatus {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Accepted => "Zusagen",
-            Self::Tentative => "Mit Vorbehalt",
-            Self::Declined => "Ablehnen",
+            Self::Accepted => "Accept",
+            Self::Tentative => "Tentative",
+            Self::Declined => "Decline",
         }
     }
 }
@@ -126,17 +126,17 @@ pub fn build_reply_component(
     comment: Option<&str>,
 ) -> Result<String, String> {
     if !matches!(invitation.method, ItipMethod::Request | ItipMethod::Add) {
-        return Err("Für diese iTIP-Nachricht ist keine Antwort vorgesehen".to_string());
+        return Err("No reply is intended for this iTIP message".to_string());
     }
     let attendee = normalize_attendee_address(attendee).ok_or_else(|| {
-        "Für die Antwort wird eine gültige eigene E-Mail-Adresse benötigt".to_string()
+        "A valid own email address is required to reply".to_string()
     })?;
     let uid = top_level_property(&invitation.event.component, "UID")
         .map(|(_, value)| value)
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| invitation.event.uid.clone());
     if uid.trim().is_empty() {
-        return Err("Die Einladung besitzt keine UID".to_string());
+        return Err("The invitation has no UID".to_string());
     }
 
     let mut lines = vec![
@@ -462,7 +462,7 @@ fn top_level_properties(raw: &str, target: &str) -> Vec<(String, String)> {
     properties
 }
 
-/// Formats an RFC 5545 RRULE into a human-readable summary string in German.
+/// Formats an RFC 5545 RRULE into a human-readable summary string.
 pub fn format_recurrence_summary(rrule: &str) -> String {
     let mut parts = Vec::new();
     let mut freq = String::new();
@@ -483,13 +483,13 @@ pub fn format_recurrence_summary(rrule: &str) -> String {
                 for day in v.split(',') {
                     let day_upper = day.trim().to_ascii_uppercase();
                     let d = match day_upper.as_str() {
-                        "MO" => "Mo".to_string(),
-                        "TU" => "Di".to_string(),
-                        "WE" => "Mi".to_string(),
-                        "TH" => "Do".to_string(),
-                        "FR" => "Fr".to_string(),
-                        "SA" => "Sa".to_string(),
-                        "SU" => "So".to_string(),
+                        "MO" => "Mon".to_string(),
+                        "TU" => "Tue".to_string(),
+                        "WE" => "Wed".to_string(),
+                        "TH" => "Thu".to_string(),
+                        "FR" => "Fri".to_string(),
+                        "SA" => "Sat".to_string(),
+                        "SU" => "Sun".to_string(),
                         other => other.to_string(),
                     };
                     by_days.push(d);
@@ -504,46 +504,46 @@ pub fn format_recurrence_summary(rrule: &str) -> String {
     match freq.as_str() {
         "DAILY" => {
             if interval == 1 {
-                parts.push("Täglich".to_string());
+                parts.push("Daily".to_string());
             } else {
-                parts.push(format!("Alle {interval} Tage"));
+                parts.push(format!("Every {interval} days"));
             }
         }
         "WEEKLY" => {
             if interval == 1 {
-                parts.push("Wöchentlich".to_string());
+                parts.push("Weekly".to_string());
             } else {
-                parts.push(format!("Alle {interval} Wochen"));
+                parts.push(format!("Every {interval} weeks"));
             }
             if !by_days.is_empty() {
-                parts.push(format!("jeden {}", by_days.join(", ")));
+                parts.push(format!("on {}", by_days.join(", ")));
             }
         }
         "MONTHLY" => {
             if interval == 1 {
-                parts.push("Monatlich".to_string());
+                parts.push("Monthly".to_string());
             } else {
-                parts.push(format!("Alle {interval} Monate"));
+                parts.push(format!("Every {interval} months"));
             }
         }
         "YEARLY" => {
             if interval == 1 {
-                parts.push("Jährlich".to_string());
+                parts.push("Yearly".to_string());
             } else {
-                parts.push(format!("Alle {interval} Jahre"));
+                parts.push(format!("Every {interval} years"));
             }
         }
         _ => {
             if !rrule.trim().is_empty() {
-                parts.push(format!("Wiederholung ({rrule})"));
+                parts.push(format!("Recurrence ({rrule})"));
             }
         }
     }
 
     if let Some(c) = count {
-        parts.push(format!("({c} Mal)"));
+        parts.push(format!("({c} times)"));
     } else if let Some(u) = until {
-        parts.push(format!("(bis {u})"));
+        parts.push(format!("(until {u})"));
     }
 
     if parts.is_empty() {
@@ -743,19 +743,19 @@ mod tests {
     fn formats_recurrence_summary_properly() {
         assert_eq!(
             format_recurrence_summary("FREQ=WEEKLY;BYDAY=MO,WE,FR"),
-            "Wöchentlich jeden Mo, Mi, Fr"
+            "Weekly on Mon, Wed, Fri"
         );
         assert_eq!(
             format_recurrence_summary("FREQ=DAILY;INTERVAL=2;COUNT=5"),
-            "Alle 2 Tage (5 Mal)"
+            "Every 2 days (5 times)"
         );
         assert_eq!(
             format_recurrence_summary("FREQ=MONTHLY;UNTIL=20261231T235959Z"),
-            "Monatlich (bis 20261231T235959Z)"
+            "Monthly (until 20261231T235959Z)"
         );
         assert_eq!(
             format_recurrence_summary("FREQ=YEARLY"),
-            "Jährlich"
+            "Yearly"
         );
     }
 

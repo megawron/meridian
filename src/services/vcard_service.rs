@@ -193,37 +193,37 @@ impl VCardListMember {
                 if is_valid_email(&self.email) {
                     None
                 } else {
-                    Some("ungültige externe E-Mail-Adresse".to_string())
+                    Some("invalid external email address".to_string())
                 }
             }
             VCardListMemberKind::LocalContact => {
                 if self.contact_uid.trim().is_empty() {
-                    Some("lokale Kontakt-UID fehlt".to_string())
+                    Some("missing local contact UID".to_string())
                 } else if !is_valid_email(&self.email) {
-                    Some("lokales Mitglied hat keine gültige E-Mail-Adresse".to_string())
+                    Some("local member does not have a valid email address".to_string())
                 } else {
                     None
                 }
             }
             VCardListMemberKind::NestedList => {
                 if self.contact_uid.trim().is_empty() {
-                    Some("verschachtelte Liste hat keine CL-UID".to_string())
+                    Some("nested list is missing CL-UID".to_string())
                 } else if self.display_name.trim().is_empty() {
-                    Some("verschachtelte Liste hat keinen Anzeigenamen".to_string())
+                    Some("nested list is missing display name".to_string())
                 } else {
                     None
                 }
             }
             VCardListMemberKind::StandardMember => {
                 if self.email.trim().is_empty() && self.value.trim().is_empty() {
-                    Some("Mitgliedswert fehlt".to_string())
+                    Some("missing member value".to_string())
                 } else if !self.email.trim().is_empty() && !is_valid_email(&self.email) {
-                    Some("MEMBER enthält keine gültige mailto-Adresse".to_string())
+                    Some("MEMBER does not contain a valid mailto address".to_string())
                 } else {
                     None
                 }
             }
-            VCardListMemberKind::Invalid => Some("unbekanntes Listenmitglied".to_string()),
+            VCardListMemberKind::Invalid => Some("unknown list member".to_string()),
         }
     }
 
@@ -619,26 +619,26 @@ impl VCardContact {
             return None;
         }
         if self.version.trim().eq_ignore_ascii_case("4.0") && !self.has_vcard4_group_kind() {
-            return Some("Eine vCard-4-Kontaktliste benötigt KIND:group".to_string());
+            return Some("A vCard 4 contact list requires KIND:group".to_string());
         }
         if self.version.trim().eq_ignore_ascii_case("4.0") {
             return self
                 .invalid_list_members()
                 .into_iter()
                 .next()
-                .map(|(index, error)| format!("Listenmitglied {} ist {error}", index + 1));
+                .map(|(index, error)| format!("List member {} is {error}", index + 1));
         }
         if self
             .list_members
             .iter()
             .any(|member| matches!(member.kind, VCardListMemberKind::StandardMember))
         {
-            return Some("vCard-3-Kontaktlisten benötigen EMAIL-Ziele".to_string());
+            return Some("vCard 3 contact lists require EMAIL destinations".to_string());
         }
         self.invalid_list_members()
             .into_iter()
             .next()
-            .map(|(index, error)| format!("Listenmitglied {} ist {error}", index + 1))
+            .map(|(index, error)| format!("List member {} is {error}", index + 1))
     }
 
     /// Serialize this contact into vCard format.
@@ -1008,7 +1008,7 @@ impl VCardContact {
     pub fn merge_vcards(primary: &str, duplicates: &[&str]) -> Result<String, String> {
         let mut primary_lines = unfold_vcard_lines(primary);
         if !is_complete_vcard(&primary_lines) {
-            return Err("Der Primärkontakt enthält keine gültige vCard".to_string());
+            return Err("Primary contact does not contain a valid vCard".to_string());
         }
 
         let mut seen = primary_lines
@@ -1018,14 +1018,14 @@ impl VCardContact {
         let insertion_index = primary_lines
             .iter()
             .position(|line| line.eq_ignore_ascii_case("END:VCARD"))
-            .ok_or_else(|| "Primärkontakt enthält kein END:VCARD".to_string())?;
+            .ok_or_else(|| "Primary contact does not contain END:VCARD".to_string())?;
         let mut additions = Vec::new();
 
         for (duplicate_index, duplicate) in duplicates.iter().enumerate() {
             let lines = unfold_vcard_lines(duplicate);
             if !is_complete_vcard(&lines) {
                 return Err(format!(
-                    "Das Duplikat an Position {} enthält keine gültige vCard",
+                    "Duplicate at position {} does not contain a valid vCard",
                     duplicate_index + 1
                 ));
             }
@@ -2127,7 +2127,7 @@ mod tests {
         let primary = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:primary\r\nFN:Ada\r\nEND:VCARD\r\n";
         let error = VCardContact::merge_vcards(primary, &["BEGIN:VCARD\r\nFN:Broken\r\n"])
             .expect_err("malformed duplicate should be rejected");
-        assert!(error.contains("Duplikat"));
+        assert!(error.contains("Duplicate"));
     }
 
     #[test]

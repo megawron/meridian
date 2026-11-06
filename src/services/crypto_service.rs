@@ -48,8 +48,8 @@ impl CryptoProtocol {
         match self {
             Self::OpenPgp => "OpenPGP",
             Self::Smime => "S/MIME",
-            Self::Unknown => "Unbekanntes Format",
-            Self::None => "Keine",
+            Self::Unknown => "Unknown Format",
+            Self::None => "None",
         }
     }
 }
@@ -106,27 +106,27 @@ impl MailCryptoDetails {
         let signed = self.signature_status != SignatureStatus::None;
         let encrypted = self.encryption_status != EncryptionStatus::NotEncrypted;
         if !signed && !encrypted {
-            return "Keine OpenPGP-/S/MIME-Sicherung erkannt".to_string();
+            return "No OpenPGP/S/MIME protection detected".to_string();
         }
 
         let mut details = Vec::new();
         if signed {
             details.push(match self.signature_status {
-                SignatureStatus::ValidGood => "Signatur gültig",
+                SignatureStatus::ValidGood => "Signature valid",
                 SignatureStatus::ValidUntrusted => {
-                    "Signatur gültig, Schlüssel nicht vertrauenswürdig"
+                    "Signature valid, key untrusted"
                 }
-                SignatureStatus::InvalidBadSignature => "Signatur ungültig",
-                SignatureStatus::ExpiredKey => "Signatur vorhanden, Schlüssel abgelaufen",
-                SignatureStatus::NoKeyAvailable => "Signatur vorhanden, nicht verifiziert",
+                SignatureStatus::InvalidBadSignature => "Signature invalid",
+                SignatureStatus::ExpiredKey => "Signature present, key expired",
+                SignatureStatus::NoKeyAvailable => "Signature present, not verified",
                 SignatureStatus::None => "",
             });
         }
         if encrypted {
             details.push(match self.encryption_status {
-                EncryptionStatus::EncryptedValid => "verschlüsselt",
+                EncryptionStatus::EncryptedValid => "encrypted",
                 EncryptionStatus::EncryptedUnknownKey => {
-                    "verschlüsselt, Entschlüsselung nicht verfügbar"
+                    "encrypted, decryption unavailable"
                 }
                 EncryptionStatus::NotEncrypted => "",
             });
@@ -216,7 +216,7 @@ fn inspect_openpgp_mime_inner(
     recursion_depth: usize,
 ) -> Result<OpenPgpInspection, String> {
     if recursion_depth > 2 {
-        return Err("Verschachtelte OpenPGP-Nachricht ist zu tief verschachtelt".to_string());
+        return Err("Nested OpenPGP message is nested too deeply".to_string());
     }
 
     let mut details = CryptoService::verify_signature(raw);
@@ -241,10 +241,10 @@ fn inspect_openpgp_mime_inner(
 
     if media_type == "multipart/signed" {
         let boundary = mime_parameter_value(content_type, "boundary")
-            .ok_or_else(|| "OpenPGP-Signatur enthält keine MIME-Grenze".to_string())?;
+            .ok_or_else(|| "OpenPGP signature is missing a MIME boundary".to_string())?;
         let parts = split_multipart_parts(body, &boundary);
         if parts.len() < 2 {
-            return Err("OpenPGP-Signatur enthält nicht genügend MIME-Teile".to_string());
+            return Err("OpenPGP signature does not contain enough MIME parts".to_string());
         }
         let (signature_headers, signature_body) = parse_mime_entity(parts[1])?;
         let signature = decode_mime_body(&signature_headers, signature_body)?;
@@ -260,10 +260,10 @@ fn inspect_openpgp_mime_inner(
 
     if media_type == "multipart/encrypted" {
         let boundary = mime_parameter_value(content_type, "boundary")
-            .ok_or_else(|| "OpenPGP-Verschlüsselung enthält keine MIME-Grenze".to_string())?;
+            .ok_or_else(|| "OpenPGP encrypted message is missing a MIME boundary".to_string())?;
         let parts = split_multipart_parts(body, &boundary);
         if parts.len() < 2 {
-            return Err("OpenPGP-Verschlüsselung enthält nicht genügend MIME-Teile".to_string());
+            return Err("OpenPGP encrypted message does not contain enough MIME parts".to_string());
         }
         let (encrypted_headers, encrypted_body) = parse_mime_entity(parts[1])?;
         let ciphertext = decode_mime_body(&encrypted_headers, encrypted_body)?;
@@ -315,7 +315,7 @@ fn inspect_smime_mime_inner(
     recursion_depth: usize,
 ) -> Result<OpenPgpInspection, String> {
     if recursion_depth > 2 {
-        return Err("Verschachtelte S/MIME-Nachricht ist zu tief verschachtelt".to_string());
+        return Err("Nested S/MIME message is nested too deeply".to_string());
     }
 
     let mut details = CryptoService::verify_signature(raw);
@@ -339,10 +339,10 @@ fn inspect_smime_mime_inner(
 
     if media_type == "multipart/signed" {
         let boundary = mime_parameter_value(content_type, "boundary")
-            .ok_or_else(|| "S/MIME-Signatur enthält keine MIME-Grenze".to_string())?;
+            .ok_or_else(|| "S/MIME signature is missing a MIME boundary".to_string())?;
         let parts = split_multipart_parts(body, &boundary);
         if parts.len() < 2 {
-            return Err("S/MIME-Signatur enthält nicht genügend MIME-Teile".to_string());
+            return Err("S/MIME signature does not contain enough MIME parts".to_string());
         }
         let (signature_headers, signature_body) = parse_mime_entity(parts[1])?;
         let signature = decode_mime_body(&signature_headers, signature_body)?;
@@ -404,7 +404,7 @@ type MimeHeaders = HashMap<String, String>;
 
 fn parse_mime_entity(raw: &[u8]) -> Result<(MimeHeaders, &[u8]), String> {
     let (separator, separator_len) = find_header_separator(raw)
-        .ok_or_else(|| "MIME-Entity enthält keinen gültigen Headerabschluss".to_string())?;
+        .ok_or_else(|| "MIME entity is missing a valid header terminator".to_string())?;
     let headers = parse_mime_headers(&raw[..separator])?;
     Ok((headers, &raw[separator + separator_len..]))
 }
@@ -428,7 +428,7 @@ fn parse_mime_headers(raw: &[u8]) -> Result<MimeHeaders, String> {
             continue;
         }
         let Some(separator) = line.iter().position(|byte| *byte == b':') else {
-            return Err("MIME-Entity enthält einen ungültigen Header".to_string());
+            return Err("MIME entity contains an invalid header".to_string());
         };
         if let Some(name) = current_name.take() {
             headers.insert(name, current_value.trim().to_string());
@@ -530,35 +530,35 @@ fn decode_base64_payload(raw: &[u8]) -> Result<Vec<u8>, String> {
         return Ok(Vec::new());
     }
     if values.len() % 4 != 0 {
-        return Err("OpenPGP-Teil enthält ungültiges Base64".to_string());
+        return Err("OpenPGP part contains invalid Base64".to_string());
     }
 
     let mut decoded = Vec::with_capacity(values.len() / 4 * 3);
     for (index, chunk) in values.chunks_exact(4).enumerate() {
         let first = base64_value(chunk[0])
-            .ok_or_else(|| "OpenPGP-Teil enthält ungültiges Base64".to_string())?;
+            .ok_or_else(|| "OpenPGP part contains invalid Base64".to_string())?;
         let second = base64_value(chunk[1])
-            .ok_or_else(|| "OpenPGP-Teil enthält ungültiges Base64".to_string())?;
+            .ok_or_else(|| "OpenPGP part contains invalid Base64".to_string())?;
         let last = index == values.len() / 4 - 1;
         if chunk[2] == b'=' {
             if !last || chunk[3] != b'=' {
-                return Err("OpenPGP-Teil enthält ungültiges Base64-Padding".to_string());
+                return Err("OpenPGP part contains invalid Base64 padding".to_string());
             }
             decoded.push((first << 2) | (second >> 4));
             continue;
         }
         let third = base64_value(chunk[2])
-            .ok_or_else(|| "OpenPGP-Teil enthält ungültiges Base64".to_string())?;
+            .ok_or_else(|| "OpenPGP part contains invalid Base64".to_string())?;
         decoded.push((first << 2) | (second >> 4));
         decoded.push((second << 4) | (third >> 2));
         if chunk[3] == b'=' {
             if !last {
-                return Err("OpenPGP-Teil enthält ungültiges Base64-Padding".to_string());
+                return Err("OpenPGP part contains invalid Base64 padding".to_string());
             }
             continue;
         }
         let fourth = base64_value(chunk[3])
-            .ok_or_else(|| "OpenPGP-Teil enthält ungültiges Base64".to_string())?;
+            .ok_or_else(|| "OpenPGP part contains invalid Base64".to_string())?;
         decoded.push((third << 6) | fourth);
     }
     Ok(decoded)
@@ -741,7 +741,7 @@ fn run_gpg_verify(data: &[u8], signature: &[u8]) -> Result<GpgVerifyResult, Stri
     let _ = fs::remove_file(&data_path);
     let _ = fs::remove_file(&signature_path);
     let output = result
-        .map_err(|error| format!("GnuPG-Verifikation konnte nicht gestartet werden: {error}"))?;
+        .map_err(|error| format!("Could not start GnuPG verification: {error}"))?;
     let status = parse_gpg_status(&output.stderr);
     Ok(GpgVerifyResult {
         status: signature_status_from_gpg(&status),
@@ -758,15 +758,15 @@ fn run_gpg_clear_verify(input: &[u8]) -> Result<GpgVerifyResult, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("GnuPG-Verifikation konnte nicht gestartet werden: {error}"))?;
+        .map_err(|error| format!("Could not start GnuPG verification: {error}"))?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(input)
-            .map_err(|error| format!("GnuPG-Eingabe konnte nicht geschrieben werden: {error}"))?;
+            .map_err(|error| format!("Could not write GnuPG input: {error}"))?;
     }
     let output = child
         .wait_with_output()
-        .map_err(|error| format!("GnuPG-Prozess konnte nicht beendet werden: {error}"))?;
+        .map_err(|error| format!("Could not complete GnuPG process: {error}"))?;
     let status = parse_gpg_status(&output.stderr);
     Ok(GpgVerifyResult {
         status: signature_status_from_gpg(&status),
@@ -789,15 +789,15 @@ fn run_gpg_decrypt(ciphertext: &[u8]) -> Result<GpgDecryptResult, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("GnuPG-Entschlüsselung konnte nicht gestartet werden: {error}"))?;
+        .map_err(|error| format!("Could not start GnuPG decryption: {error}"))?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(ciphertext)
-            .map_err(|error| format!("GnuPG-Eingabe konnte nicht geschrieben werden: {error}"))?;
+            .map_err(|error| format!("Could not write GnuPG input: {error}"))?;
     }
     let output = child
         .wait_with_output()
-        .map_err(|error| format!("GnuPG-Prozess konnte nicht beendet werden: {error}"))?;
+        .map_err(|error| format!("Could not complete GnuPG process: {error}"))?;
     let status = parse_gpg_status(&output.stderr);
     Ok(GpgDecryptResult {
         success: status.decryption_okay && !status.decryption_failed,
@@ -809,7 +809,7 @@ fn run_gpg_decrypt(ciphertext: &[u8]) -> Result<GpgDecryptResult, String> {
 fn run_openssl_cms_sign(input: &[u8], options: &SmimeOptions) -> Result<Vec<u8>, String> {
     if options.signer_certificate.trim().is_empty() || options.private_key.trim().is_empty() {
         return Err(
-            "S/MIME-Signatur aktiviert, aber Zertifikat oder privater Schlüssel fehlt".to_string(),
+            "S/MIME signing enabled, but certificate or private key is missing".to_string(),
         );
     }
     let arguments = vec![
@@ -828,15 +828,15 @@ fn run_openssl_cms_sign(input: &[u8], options: &SmimeOptions) -> Result<Vec<u8>,
         "-out".to_string(),
         "-".to_string(),
     ];
-    let output = run_openssl_with_input(&arguments, input, "S/MIME-Signieren")?;
+    let output = run_openssl_with_input(&arguments, input, "S/MIME signing")?;
     if !output.success {
         return Err(format!(
-            "S/MIME-Signieren fehlgeschlagen: {}",
+            "S/MIME signing failed: {}",
             command_diagnostic(&output.stderr)
         ));
     }
     if output.stdout.is_empty() {
-        return Err("S/MIME-Signieren lieferte keine Signatur".to_string());
+        return Err("S/MIME signing returned no signature".to_string());
     }
     Ok(output.stdout)
 }
@@ -847,7 +847,7 @@ fn run_openssl_cms_encrypt(
 ) -> Result<Vec<u8>, String> {
     if recipient_certificates.is_empty() {
         return Err(
-            "S/MIME-Verschlüsselung aktiviert, aber kein Empfängerzertifikat ist konfiguriert"
+            "S/MIME encryption enabled, but no recipient certificate is configured"
                 .to_string(),
         );
     }
@@ -868,15 +868,15 @@ fn run_openssl_cms_encrypt(
         arguments.push("-recip".to_string());
         arguments.push(certificate.trim().to_string());
     }
-    let output = run_openssl_with_input(&arguments, input, "S/MIME-Verschlüsseln")?;
+    let output = run_openssl_with_input(&arguments, input, "S/MIME encryption")?;
     if !output.success {
         return Err(format!(
-            "S/MIME-Verschlüsseln fehlgeschlagen: {}",
+            "S/MIME encryption failed: {}",
             command_diagnostic(&output.stderr)
         ));
     }
     if output.stdout.is_empty() {
-        return Err("S/MIME-Verschlüsseln lieferte keine Nachricht".to_string());
+        return Err("S/MIME encryption returned no message".to_string());
     }
     Ok(output.stdout)
 }
@@ -992,7 +992,7 @@ fn run_openssl_cms_decrypt(
         "-out".to_string(),
         "-".to_string(),
     ];
-    let output = run_openssl_with_input(&arguments, ciphertext, "S/MIME-Entschlüsseln")?;
+    let output = run_openssl_with_input(&arguments, ciphertext, "S/MIME decryption")?;
     Ok(SmimeDecryptResult {
         success: output.success,
         plaintext: output.stdout,
@@ -1009,7 +1009,7 @@ fn run_openssl_with_input(
     command_arguments.push("-in".to_string());
     command_arguments.push(input_path.to_string_lossy().into_owned());
     let result = run_openssl_command(&command_arguments)
-        .map_err(|error| format!("{operation} konnte nicht ausgeführt werden: {error}"));
+        .map_err(|error| format!("Could not execute {operation}: {error}"));
     let _ = fs::remove_file(&input_path);
     result
 }
@@ -1019,7 +1019,7 @@ fn run_openssl_command(arguments: &[String]) -> Result<OpenSslCommandOutput, Str
     let output = Command::new(binary)
         .args(arguments)
         .output()
-        .map_err(|error| format!("OpenSSL konnte nicht gestartet werden: {error}"))?;
+        .map_err(|error| format!("Could not start OpenSSL: {error}"))?;
     Ok(OpenSslCommandOutput {
         success: output.status.success(),
         stdout: output.stdout,
@@ -1033,7 +1033,7 @@ fn command_diagnostic(stderr: &[u8]) -> String {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .last()
-        .unwrap_or("unbekannter OpenSSL-Fehler")
+        .unwrap_or("unknown OpenSSL error")
         .to_string()
 }
 
@@ -1057,11 +1057,11 @@ fn write_secure_temp_file(label: &str, contents: &[u8]) -> Result<PathBuf, Strin
     }
     let mut file = options
         .open(&path)
-        .map_err(|error| format!("Temporäre GnuPG-Datei konnte nicht erstellt werden: {error}"))?;
+        .map_err(|error| format!("Could not create temporary GnuPG file: {error}"))?;
     if let Err(error) = file.write_all(contents) {
         let _ = fs::remove_file(&path);
         return Err(format!(
-            "Temporäre GnuPG-Datei konnte nicht geschrieben werden: {error}"
+            "Could not write temporary GnuPG file: {error}"
         ));
     }
     Ok(path)
@@ -1079,7 +1079,7 @@ pub(crate) fn protect_rfc822(raw: &[u8], options: &OpenPgpOptions) -> Result<Vec
     }
     if options.sign && options.signing_key.trim().is_empty() {
         return Err(
-            "OpenPGP-Signatur aktiviert, aber kein passender Schlüssel ist verfügbar".to_string(),
+            "OpenPGP signing enabled, but no suitable key is available".to_string(),
         );
     }
 
@@ -1101,7 +1101,7 @@ pub(crate) fn protect_rfc822(raw: &[u8], options: &OpenPgpOptions) -> Result<Vec
         }
         if recipients.is_empty() {
             return Err(
-                "OpenPGP-Verschlüsselung aktiviert, aber kein Empfängerschlüssel gefunden"
+                "OpenPGP encryption enabled, but no recipient key was found"
                     .to_string(),
             );
         }
@@ -1126,7 +1126,7 @@ pub(crate) fn protect_smime_rfc822(raw: &[u8], options: &SmimeOptions) -> Result
         && (options.signer_certificate.trim().is_empty() || options.private_key.trim().is_empty())
     {
         return Err(
-            "S/MIME-Signatur aktiviert, aber Zertifikat oder privater Schlüssel fehlt".to_string(),
+            "S/MIME signing enabled, but certificate or private key is missing".to_string(),
         );
     }
 
@@ -1217,7 +1217,7 @@ fn append_base64_lines(output: &mut Vec<u8>, input: &[u8]) {
 /// decoded text.
 fn split_rfc822_entity(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     let (separator, separator_len) = find_header_separator(raw).ok_or_else(|| {
-        "Die RFC822-Nachricht enthält keinen gültigen Headerabschluss".to_string()
+        "RFC822 message is missing a valid header terminator".to_string()
     })?;
     let header_bytes = &raw[..separator];
     let body = &raw[separator + separator_len..];
@@ -1229,7 +1229,7 @@ fn split_rfc822_entity(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         if !line.starts_with(b" ") && !line.starts_with(b"\t") {
             let Some(separator) = line.iter().position(|byte| *byte == b':') else {
-                return Err("Die RFC822-Nachricht enthält einen ungültigen Header".to_string());
+                return Err("RFC822 message contains an invalid header".to_string());
             };
             let name = String::from_utf8_lossy(&line[..separator]).to_ascii_lowercase();
             if name == "mime-version" {
@@ -1245,7 +1245,7 @@ fn split_rfc822_entity(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
         }
     }
     if entity_lines.is_empty() {
-        return Err("Die RFC822-Nachricht enthält keinen MIME-Content-Type".to_string());
+        return Err("RFC822 message is missing a MIME Content-Type".to_string());
     }
 
     let mut outer = serialize_header_lines(&outer_lines);
@@ -1372,7 +1372,7 @@ fn run_gpg_sign(input: &[u8], signing_key: &str) -> Result<Vec<u8>, String> {
         "--output=-".to_string(),
     ];
     arguments.push(format!("--local-user={signing_key}"));
-    run_gpg(&arguments, input, "Signieren")
+    run_gpg(&arguments, input, "signing")
 }
 
 fn run_gpg_encrypt(input: &[u8], recipients: &[String]) -> Result<Vec<u8>, String> {
@@ -1386,7 +1386,7 @@ fn run_gpg_encrypt(input: &[u8], recipients: &[String]) -> Result<Vec<u8>, Strin
     for recipient in recipients {
         arguments.push(format!("--recipient={recipient}"));
     }
-    run_gpg(&arguments, input, "Verschlüsseln")
+    run_gpg(&arguments, input, "encryption")
 }
 
 fn run_gpg(arguments: &[String], input: &[u8], operation: &str) -> Result<Vec<u8>, String> {
@@ -1397,15 +1397,15 @@ fn run_gpg(arguments: &[String], input: &[u8], operation: &str) -> Result<Vec<u8
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("GnuPG konnte nicht gestartet werden: {error}"))?;
+        .map_err(|error| format!("Could not start GnuPG: {error}"))?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(input)
-            .map_err(|error| format!("GnuPG-Eingabe konnte nicht geschrieben werden: {error}"))?;
+            .map_err(|error| format!("Could not write GnuPG input: {error}"))?;
     }
     let output = child
         .wait_with_output()
-        .map_err(|error| format!("GnuPG-Prozess konnte nicht beendet werden: {error}"))?;
+        .map_err(|error| format!("Could not complete GnuPG process: {error}"))?;
     if !output.status.success() {
         let detail = output
             .stderr
@@ -1414,11 +1414,11 @@ fn run_gpg(arguments: &[String], input: &[u8], operation: &str) -> Result<Vec<u8
             .map(|line| String::from_utf8_lossy(line).trim().to_string())
             .filter(|line| !line.is_empty() && !line.starts_with("[GNUPG:]"))
             .last()
-            .unwrap_or_else(|| "unbekannter GnuPG-Fehler".to_string());
-        return Err(format!("OpenPGP-{operation} fehlgeschlagen: {detail}"));
+            .unwrap_or_else(|| "unknown GnuPG error".to_string());
+        return Err(format!("OpenPGP {operation} failed: {detail}"));
     }
     if output.stdout.is_empty() {
-        return Err(format!("OpenPGP-{operation} lieferte keine Ausgabe"));
+        return Err(format!("OpenPGP {operation} returned no output"));
     }
     Ok(output.stdout)
 }
@@ -1440,7 +1440,7 @@ pub(crate) fn normalize_recipient_addresses(fields: &[String]) -> Result<Vec<Str
                 || address.chars().any(|character| character.is_control())
                 || (!address.contains('@') && !address.starts_with("0x"))
             {
-                return Err(format!("Ungültiger OpenPGP-Empfänger: {token}"));
+                return Err(format!("Invalid OpenPGP recipient: {token}"));
             }
             if !recipients
                 .iter()
@@ -1461,7 +1461,7 @@ pub(crate) fn list_openpgp_keys() -> Result<Vec<OpenPgpKey>, String> {
     let output = Command::new(binary)
         .args(["--batch", "--with-colons", "--list-keys"])
         .output()
-        .map_err(|error| format!("GnuPG-Schlüsselbund konnte nicht gelesen werden: {error}"))?;
+        .map_err(|error| format!("Could not read GnuPG keyring: {error}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr
@@ -1469,9 +1469,9 @@ pub(crate) fn list_openpgp_keys() -> Result<Vec<OpenPgpKey>, String> {
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with("[GNUPG:]"))
             .last()
-            .unwrap_or("unbekannter GnuPG-Fehler");
+            .unwrap_or("unknown GnuPG error");
         return Err(format!(
-            "GnuPG-Schlüsselbund konnte nicht gelesen werden: {detail}"
+            "Could not read GnuPG keyring: {detail}"
         ));
     }
 
@@ -1578,7 +1578,7 @@ mod tests {
         assert!(details.signer_identity.is_none());
         assert_eq!(
             details.display_text(),
-            "Keine OpenPGP-/S/MIME-Sicherung erkannt"
+            "No OpenPGP/S/MIME protection detected"
         );
     }
 
@@ -1587,7 +1587,7 @@ mod tests {
         let details = CryptoService::verify_signature(b"-----BEGIN PGP SIGNED MESSAGE-----");
         assert_eq!(details.protocol, CryptoProtocol::OpenPgp);
         assert_eq!(details.signature_status, SignatureStatus::NoKeyAvailable);
-        assert!(details.display_text().contains("nicht verifiziert"));
+        assert!(details.display_text().contains("not verified"));
     }
 
     #[test]
@@ -1601,7 +1601,7 @@ mod tests {
         assert!(
             details
                 .display_text()
-                .contains("Entschlüsselung nicht verfügbar")
+                .contains("decryption unavailable")
         );
     }
 
@@ -1618,7 +1618,7 @@ mod tests {
         );
         assert_eq!(
             details.display_text(),
-            "S/MIME: verschlüsselt, Entschlüsselung nicht verfügbar"
+            "S/MIME: encrypted, decryption unavailable"
         );
     }
 
@@ -1765,6 +1765,6 @@ mod tests {
     fn inspection_rejects_a_malformed_openpgp_mime_envelope() {
         let raw = b"Content-Type: multipart/signed; protocol=\"application/pgp-signature\"; boundary=\"b\"\r\n\r\n--b\r\n";
         let error = inspect_openpgp_mime(raw).expect_err("missing MIME parts should fail");
-        assert!(error.contains("nicht genügend MIME-Teile"));
+        assert!(error.contains("not contain enough MIME parts"));
     }
 }

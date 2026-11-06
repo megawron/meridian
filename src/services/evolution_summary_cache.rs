@@ -236,7 +236,7 @@ pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
                         let display_name = match resolved_name {
                             Some(name) => name,
                             None if std::env::var_os("MERIDIAN_CAMEL_CACHE_DIR").is_some() => {
-                                "E-Mail-Konto".to_string()
+                                "Email Account".to_string()
                             }
                             None => continue,
                         };
@@ -352,9 +352,9 @@ impl SqliteDb {
     fn open(path: &Path) -> Result<Self, String> {
         let path_str = path
             .to_str()
-            .ok_or_else(|| "Ungültiger Pfad zur folders.db".to_string())?;
+            .ok_or_else(|| "Invalid path to folders.db".to_string())?;
         let c_path = CString::new(path_str)
-            .map_err(|_| "NUL-Byte im Pfad zur folders.db".to_string())?;
+            .map_err(|_| "NUL byte in path to folders.db".to_string())?;
 
         let mut ptr: *mut Sqlite3 = std::ptr::null_mut();
         let rc = unsafe { sqlite3_open_v2(c_path.as_ptr(), &mut ptr, SQLITE_OPEN_READONLY, std::ptr::null()) };
@@ -364,9 +364,9 @@ impl SqliteDb {
                 unsafe { sqlite3_close(ptr) };
                 msg
             } else {
-                format!("Fehlercode {rc}")
+                format!("error code {rc}")
             };
-            return Err(format!("Konnte folders.db nicht öffnen: {err_msg}"));
+            return Err(format!("Could not open folders.db: {err_msg}"));
         }
 
         // Enable memory-mapped I/O (up to 4 GB) and in-memory temp B-trees for high-scale folders
@@ -451,7 +451,7 @@ impl SqliteDb {
         let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
         let rc = unsafe { sqlite3_prepare_v2(self.ptr, sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut()) };
         if rc != SQLITE_OK || stmt.is_null() {
-            return Err("Konnte folders-Tabelle nicht vorbereiten".to_string());
+            return Err("Could not prepare folders table query".to_string());
         }
 
         let mut map = HashMap::new();
@@ -623,7 +623,7 @@ pub fn load_folders_from_sqlite(
     let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
     let rc = unsafe { sqlite3_prepare_v2(db.ptr, sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut()) };
     if rc != SQLITE_OK || stmt.is_null() {
-        return Err("Konnte folders-Tabelle nicht vorbereiten".to_string());
+        return Err("Could not prepare folders table query".to_string());
     }
 
     let shared_profiles = crate::services::account_config_service::AccountConfigStore::default()
@@ -655,7 +655,7 @@ pub fn load_folders_from_sqlite(
                 let mut mapped_display_name = if let Some(stripped) = name.strip_prefix("[Gmail]/") {
                     stripped.rsplit('/').next().unwrap_or(stripped).to_string()
                 } else if leaf_name.eq_ignore_ascii_case("INBOX") {
-                    "Posteingang".to_string()
+                    "Inbox".to_string()
                 } else {
                     leaf_name.to_string()
                 };
@@ -1189,11 +1189,11 @@ pub fn load_folder_messages_page_from_sqlite(
          FROM {table_name}{where_clause} ORDER BY dreceived DESC, dsent DESC{limit_clause};"
     );
 
-    let c_sql = CString::new(sql_str).map_err(|_| "Ungültiger SQL-String".to_string())?;
+    let c_sql = CString::new(sql_str).map_err(|_| "Invalid SQL query string".to_string())?;
     let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
     let rc = unsafe { sqlite3_prepare_v2(db.ptr, c_sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut()) };
     if rc != SQLITE_OK || stmt.is_null() {
-        return Err(format!("Konnte Abfrage auf {table_name} nicht vorbereiten"));
+        return Err(format!("Could not prepare query on {table_name}"));
     }
 
     // Resolve folder-level mapping once outside the row loop
@@ -1346,7 +1346,7 @@ pub fn load_folder_messages_page_from_sqlite(
                 }]
             } else if has_attachments {
                 vec![AttachmentInfo {
-                    filename: "Anhang".to_string(),
+                    filename: "Attachment".to_string(),
                     size_formatted: String::new(),
                     mime_type: "application/octet-stream".to_string(),
                     content_id: None,
@@ -1536,11 +1536,11 @@ pub fn load_folder_messages_window_from_sqlite(
         }
     };
 
-    let c_sql = CString::new(sql_str).map_err(|_| "Ungültiger SQL-String".to_string())?;
+    let c_sql = CString::new(sql_str).map_err(|_| "Invalid SQL query string".to_string())?;
     let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
     let rc = unsafe { sqlite3_prepare_v2(db.ptr, c_sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut()) };
     if rc != SQLITE_OK || stmt.is_null() {
-        return Err(format!("Konnte Window-Abfrage auf {table_name} nicht vorbereiten"));
+        return Err(format!("Could not prepare window query on {table_name}"));
     }
 
     let shared_profiles = crate::services::account_config_service::AccountConfigStore::default()
@@ -1688,7 +1688,7 @@ pub fn load_folder_messages_window_from_sqlite(
                 }]
             } else if has_attachments {
                 vec![AttachmentInfo {
-                    filename: "Anhang".to_string(),
+                    filename: "Attachment".to_string(),
                     size_formatted: String::new(),
                     mime_type: "application/octet-stream".to_string(),
                     content_id: None,
@@ -1782,7 +1782,7 @@ pub fn load_folder_unread_or_flagged_from_sqlite(
          ORDER BY dreceived DESC, dsent DESC{limit_clause};"
     );
 
-    let c_sql = CString::new(sql_str).map_err(|_| "Ungültiger SQL-String".to_string())?;
+    let c_sql = CString::new(sql_str).map_err(|_| "Invalid SQL query string".to_string())?;
     let mut stmt: *mut Sqlite3Stmt = std::ptr::null_mut();
     let rc = unsafe { sqlite3_prepare_v2(db.ptr, c_sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut()) };
     if rc != SQLITE_OK || stmt.is_null() {
@@ -1932,7 +1932,7 @@ pub fn load_folder_unread_or_flagged_from_sqlite(
                 }]
             } else if has_attachments {
                 vec![AttachmentInfo {
-                    filename: "Anhang".to_string(),
+                    filename: "Attachment".to_string(),
                     size_formatted: String::new(),
                     mime_type: "application/octet-stream".to_string(),
                     content_id: None,
@@ -2284,7 +2284,7 @@ pub fn load_folder_messages_since_from_sqlite(
                 }]
             } else if has_attachments {
                 vec![AttachmentInfo {
-                    filename: "Anhang".to_string(),
+                    filename: "Attachment".to_string(),
                     size_formatted: String::new(),
                     mime_type: "application/octet-stream".to_string(),
                     content_id: None,

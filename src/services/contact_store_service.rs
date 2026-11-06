@@ -154,7 +154,7 @@ impl ContactStoreService {
         let vcard = ensure_vcard_uid(vcard, None);
         validate_vcard(&vcard)?;
         let uid = vcard_uid(&vcard).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "vCard enthält keine UID")
+            io::Error::new(io::ErrorKind::InvalidInput, "vCard does not contain a UID")
         })?;
         let path = self.contact_file_path();
         let mut contents = read_contact_file(&path)?;
@@ -167,7 +167,7 @@ impl ContactStoreService {
             {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
-                    format!("Eine vCard mit der UID existiert bereits: {uid}"),
+                    format!("A vCard with this UID already exists: {uid}"),
                 ));
             }
         }
@@ -181,18 +181,18 @@ impl ContactStoreService {
         if uid.trim().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Ändern benötigt eine Kontakt-UID",
+                "Modifying requires a contact UID",
             ));
         }
         let vcard = ensure_vcard_uid(vcard, Some(uid));
         validate_vcard(&vcard)?;
         let replacement_uid = vcard_uid(&vcard).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "vCard enthält keine UID")
+            io::Error::new(io::ErrorKind::InvalidInput, "vCard does not contain a UID")
         })?;
         if replacement_uid != uid {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "vCard-UID stimmt nicht mit dem Ziel überein",
+                "vCard UID does not match target",
             ));
         }
         for path in self.mutable_vcard_files() {
@@ -213,7 +213,7 @@ impl ContactStoreService {
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("vCard nicht gefunden: {uid}"),
+            format!("vCard not found: {uid}"),
         ))
     }
 
@@ -237,7 +237,7 @@ impl ContactStoreService {
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("vCard nicht gefunden: {uid}"),
+            format!("vCard not found: {uid}"),
         ))
     }
 
@@ -257,13 +257,13 @@ impl ContactStoreService {
         if primary_uid.trim().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Zusammenführung benötigt eine Primär-UID",
+                "Merge requires a primary UID",
             ));
         }
         if duplicate_uids.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Zusammenführung benötigt mindestens ein Duplikat",
+                "Merge requires at least one duplicate",
             ));
         }
         if duplicate_uids
@@ -272,7 +272,7 @@ impl ContactStoreService {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Primär- und Duplikat-UIDs müssen verschieden und nicht leer sein",
+                "Primary and duplicate UIDs must be distinct and non-empty",
             ));
         }
         let merged_vcard = ensure_vcard_uid(merged_vcard, Some(primary_uid));
@@ -280,13 +280,13 @@ impl ContactStoreService {
         let merged_uid = vcard_uid(&merged_vcard).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Die zusammengeführte vCard enthält keine UID",
+                "Merged vCard does not contain a UID",
             )
         })?;
         if merged_uid != primary_uid {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Die zusammengeführte vCard hat nicht die Primär-UID",
+                "Merged vCard does not match the primary UID",
             ));
         }
 
@@ -308,7 +308,7 @@ impl ContactStoreService {
                 } else {
                     io::ErrorKind::InvalidData
                 },
-                format!("Primärkontakt {primary_uid} wurde nicht genau einmal gefunden"),
+                format!("Primary contact {primary_uid} was not found exactly once"),
             ));
         }
 
@@ -320,7 +320,7 @@ impl ContactStoreService {
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("Duplikat-UID mehrfach angegeben: {uid}"),
+                    format!("Duplicate UID specified multiple times: {uid}"),
                 ));
             }
             let locations = contact_locations(&files, uid);
@@ -331,7 +331,7 @@ impl ContactStoreService {
                     } else {
                         io::ErrorKind::InvalidData
                     },
-                    format!("Duplikat {uid} wurde nicht genau einmal gefunden"),
+                    format!("Duplicate {uid} was not found exactly once"),
                 ));
             }
             duplicate_locations.push((uid.clone(), locations[0]));
@@ -370,13 +370,13 @@ impl ContactStoreService {
                     write_atomic(written_path, contents.as_bytes()).is_err()
                 });
                 let rollback_note = if rollback_failed {
-                    "; Wiederherstellung mindestens einer Datei fehlgeschlagen"
+                    "; restoring at least one file failed"
                 } else {
-                    "; vorherige Änderungen wurden wiederhergestellt"
+                    "; previous changes were rolled back"
                 };
                 return Err(io::Error::new(
                     error.kind(),
-                    format!("Kontaktzusammenführung fehlgeschlagen{rollback_note}: {error}"),
+                    format!("Contact merge failed{rollback_note}: {error}"),
                 ));
             }
             written.push((path.clone(), original.clone()));
@@ -391,7 +391,7 @@ impl ContactStoreService {
         } else {
             Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "Das ausgewählte vCard-Verzeichnis ist schreibgeschützt",
+                "Selected vCard directory is read-only",
             ))
         }
     }
@@ -584,7 +584,7 @@ fn insert_vcard(contents: &mut String, vcard: &str) -> io::Result<()> {
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "Ungültige vCard-Komponente",
+            "Invalid vCard component",
         ));
     }
     let mut cards = split_vcards(contents);
@@ -598,7 +598,7 @@ fn replace_vcard(contents: &str, index: usize, replacement: &str) -> io::Result<
     if index >= cards.len() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "vCard-Index nicht gefunden",
+            "vCard index not found",
         ));
     }
     cards[index] = replacement.trim().to_string();
@@ -610,7 +610,7 @@ fn remove_vcard(contents: &str, index: usize) -> io::Result<String> {
     if index >= cards.len() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "vCard-Index nicht gefunden",
+            "vCard index not found",
         ));
     }
     cards.remove(index);
@@ -661,13 +661,13 @@ fn validate_vcard(vcard: &str) -> io::Result<VCardContact> {
     if split_vcards(vcard).len() != 1 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "Eine Mutation benötigt genau eine vCard",
+            "Mutation requires exactly one vCard",
         ));
     }
     let Some(contact) = VCardContact::parse_vcard_string(vcard) else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "Ungültige vCard",
+            "Invalid vCard",
         ));
     };
     if let Some(error) = contact.list_validation_error() {

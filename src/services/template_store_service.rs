@@ -75,7 +75,7 @@ impl TemplateStore {
         if template.id.trim().is_empty() || template.name.trim().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Vorlage benötigt eine ID und einen Namen",
+                "Template requires an ID and a name",
             ));
         }
         let mut templates = self.load();

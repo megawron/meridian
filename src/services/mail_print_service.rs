@@ -108,10 +108,10 @@ pub enum MailPrintDocumentError {
 impl fmt::Display for MailPrintDocumentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Cancelled => formatter.write_str("Druckvorbereitung abgebrochen"),
-            Self::EmptyMessageKey => formatter.write_str("Nachricht hat keine stabile Identität"),
+            Self::Cancelled => formatter.write_str("Print preparation cancelled"),
+            Self::EmptyMessageKey => formatter.write_str("Message has no stable identity"),
             Self::WorkerDisconnected => {
-                formatter.write_str("Druckvorbereitung konnte nicht abgeschlossen werden")
+                formatter.write_str("Could not complete print preparation")
             }
         }
     }
@@ -145,7 +145,7 @@ pub fn prepare_print_document(
     let body_text = sanitized_html_to_plain_text(&sanitized_body);
     let body_fragment = if sanitized_body.trim().is_empty() {
         let fallback = if snapshot.fallback_text.trim().is_empty() {
-            "Keine lesbare Textdarstellung verfügbar."
+            "No readable text representation available."
         } else {
             snapshot.fallback_text.trim()
         };
@@ -158,7 +158,7 @@ pub fn prepare_print_document(
     };
 
     let title = if snapshot.subject.trim().is_empty() {
-        "(Ohne Betreff)"
+        "(No subject)"
     } else {
         snapshot.subject.trim()
     };
@@ -175,17 +175,17 @@ pub fn prepare_print_document(
     html.push_str("</style></head><body><header><h1>");
     html.push_str(&escape_html(title));
     html.push_str("</h1><dl>");
-    push_html_field(&mut html, "Von", &snapshot.sender);
+    push_html_field(&mut html, "From", &snapshot.sender);
     push_html_field(&mut html, "Reply-To", &snapshot.reply_to);
-    push_html_field(&mut html, "An", &snapshot.to);
+    push_html_field(&mut html, "To", &snapshot.to);
     push_html_field(&mut html, "Cc", &snapshot.cc);
     push_html_field(&mut html, "Bcc", &snapshot.bcc);
-    push_html_field(&mut html, "Datum", &snapshot.date);
+    push_html_field(&mut html, "Date", &snapshot.date);
     html.push_str("</dl></header><main class=\"mail-print-body\">");
     html.push_str(&body_fragment);
     html.push_str("</main>");
     if !snapshot.attachments.is_empty() {
-        html.push_str("<section class=\"mail-print-attachments\"><h2>Anhänge</h2><ul>");
+        html.push_str("<section class=\"mail-print-attachments\"><h2>Attachments</h2><ul>");
         for attachment in &snapshot.attachments {
             ensure_not_cancelled(cancellation)?;
             html.push_str("<li>");
@@ -202,19 +202,19 @@ pub fn prepare_print_document(
     html.push_str("</body></html>");
 
     let mut plain_text = String::with_capacity(body_text.len().saturating_add(512));
-    plain_text.push_str("Betreff: ");
+    plain_text.push_str("Subject: ");
     plain_text.push_str(title);
     plain_text.push('\n');
-    push_plain_field(&mut plain_text, "Von", &snapshot.sender);
+    push_plain_field(&mut plain_text, "From", &snapshot.sender);
     push_plain_field(&mut plain_text, "Reply-To", &snapshot.reply_to);
-    push_plain_field(&mut plain_text, "An", &snapshot.to);
+    push_plain_field(&mut plain_text, "To", &snapshot.to);
     push_plain_field(&mut plain_text, "Cc", &snapshot.cc);
     push_plain_field(&mut plain_text, "Bcc", &snapshot.bcc);
-    push_plain_field(&mut plain_text, "Datum", &snapshot.date);
+    push_plain_field(&mut plain_text, "Date", &snapshot.date);
     plain_text.push('\n');
     if body_text.trim().is_empty() {
         plain_text.push_str(if snapshot.fallback_text.trim().is_empty() {
-            "Keine lesbare Textdarstellung verfügbar."
+            "No readable text representation available."
         } else {
             snapshot.fallback_text.trim()
         });
@@ -222,7 +222,7 @@ pub fn prepare_print_document(
         plain_text.push_str(body_text.trim());
     }
     if !snapshot.attachments.is_empty() {
-        plain_text.push_str("\n\nAnhänge:\n");
+        plain_text.push_str("\n\nAttachments:\n");
         for attachment in &snapshot.attachments {
             ensure_not_cancelled(cancellation)?;
             plain_text.push_str("- ");
@@ -451,7 +451,7 @@ fn suggested_filename(subject: &str) -> String {
         })
         .collect::<String>();
     let stem = stem.trim().trim_matches('.');
-    let stem = if stem.is_empty() { "nachricht" } else { stem };
+    let stem = if stem.is_empty() { "message" } else { stem };
     format!("{}.pdf", stem.chars().take(80).collect::<String>())
 }
 
@@ -511,7 +511,7 @@ mod tests {
         assert!(!first.html.contains("remote.example"));
         assert!(first.html.contains("script-src 'none'"));
         assert!(first.html.contains("img-src data:"));
-        assert!(first.plain_text.contains("Betreff: Quarterly report"));
+        assert!(first.plain_text.contains("Subject: Quarterly report"));
         assert!(first.plain_text.contains("- report.pdf (12 KB)"));
         assert_eq!(first.suggested_filename, "Quarterly report.pdf");
     }

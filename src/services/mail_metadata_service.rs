@@ -183,9 +183,9 @@ pub fn parse_follow_up_due_input(value: &str) -> Result<Option<String>, String> 
     }
     let parsed = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M")
         .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M"))
-        .map_err(|_| "Fälligkeit muss YYYY-MM-DD HH:MM entsprechen".to_string())?;
+        .map_err(|_| "Due date must match YYYY-MM-DD HH:MM".to_string())?;
     let Some(local) = Local.from_local_datetime(&parsed).single() else {
-        return Err("Fälligkeit ist wegen der Zeitzone nicht eindeutig".to_string());
+        return Err("Due date is ambiguous in the local time zone".to_string());
     };
     Ok(Some(local.to_rfc2822()))
 }

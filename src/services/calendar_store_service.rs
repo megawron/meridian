@@ -186,7 +186,7 @@ impl MemoEditorDraft {
 
     pub fn from_component(component: &str) -> Result<Self, String> {
         if component_kind(component) != Some("VJOURNAL") {
-            return Err("Die Komponente ist kein VJOURNAL".to_string());
+            return Err("Component is not a VJOURNAL".to_string());
         }
 
         let properties = top_level_properties(component);
@@ -244,7 +244,7 @@ impl MemoEditorDraft {
 
     pub fn validate(&self) -> Result<(), String> {
         if self.summary.trim().is_empty() {
-            return Err("Eine Notiz benötigt einen Titel".to_string());
+            return Err("A memo requires a title".to_string());
         }
         validate_single_line("Summary", &self.summary)?;
         for (label, value) in [
@@ -261,31 +261,31 @@ impl MemoEditorDraft {
             }
         }
         for category in &self.categories {
-            validate_single_line("Kategorie", category)?;
+            validate_single_line("Category", category)?;
         }
         for attachment in &self.attachments {
             if attachment.uri.is_some() == attachment.inline_content.is_some() {
                 return Err(
-                    "Jeder Anhang muss genau eine URI oder einen Inline-Inhalt besitzen"
+                    "Each attachment must have either a URI or inline content"
                         .to_string(),
                 );
             }
             if let Some(uri) = attachment.uri.as_deref() {
-                validate_single_line("Anhang-URI", uri)?;
+                validate_single_line("Attachment URI", uri)?;
             }
             if let Some(content) = attachment.inline_content.as_deref() {
-                validate_single_line("Inline-Anhang", content)?;
+                validate_single_line("Inline attachment", content)?;
             }
             if let Some(filename) = attachment.filename.as_deref() {
-                validate_single_line("Anhang-Dateiname", filename)?;
+                validate_single_line("Attachment filename", filename)?;
             }
             if let Some(fmttype) = attachment.fmttype.as_deref() {
-                validate_single_line("Anhang-FMTTYPE", fmttype)?;
+                validate_single_line("Attachment FMTTYPE", fmttype)?;
             }
             for parameter in &attachment.unknown_parameters {
-                validate_ical_token("Anhang-Parametername", &parameter.name)?;
+                validate_ical_token("Attachment parameter name", &parameter.name)?;
                 if let Some(value) = parameter.value.as_deref() {
-                    validate_single_line("Anhang-Parameterwert", value)?;
+                    validate_single_line("Attachment parameter value", value)?;
                 }
             }
         }
@@ -334,12 +334,12 @@ impl MemoEditorDraft {
                     .is_some_and(|prefix| property_has_parameter(prefix, "VALUE", "DATE"));
                 if original_is_date != is_ical_date(dtstart) {
                     return Err(
-                        "DTSTART darf beim Bearbeiten nicht zwischen DATE und Datum/Zeit wechseln"
+                        "DTSTART must not switch between DATE and date-time when editing"
                             .to_string(),
                     );
                 }
                 if !original_is_date && !is_ical_date_time(dtstart) {
-                    return Err("DTSTART benötigt einen Datum/Zeit-Wert".to_string());
+                    return Err("DTSTART requires a date-time value".to_string());
                 }
             }
             component = update_ical_property(&component, "DTSTART", dtstart.as_deref());
@@ -544,7 +544,7 @@ impl CalendarStoreService {
     pub fn parse_ical_file(path: &Path) -> CalendarSnapshot {
         let mut snapshot = CalendarSnapshot::default();
         if let Ok(raw) = fs::read_to_string(path) {
-            parse_ical(&raw, path, "local-calendar", "Lokaler Kalender", &mut snapshot);
+            parse_ical(&raw, path, "local-calendar", "Local Calendar", &mut snapshot);
             sort_snapshot(&mut snapshot);
         }
         snapshot
@@ -617,7 +617,7 @@ impl CalendarStoreService {
                 &path,
                 if self.writable { "local-calendar" } else { "" },
                 if self.writable {
-                    "Lokaler Kalender"
+                    "Local Calendar"
                 } else {
                     ""
                 },
@@ -634,7 +634,7 @@ impl CalendarStoreService {
         let kind = component_kind(component).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Ungültige iCalendar-Komponente",
+                "Invalid iCalendar component",
             )
         })?;
         let (uid, component) = ensure_component_uid(component, kind, None);
@@ -652,14 +652,14 @@ impl CalendarStoreService {
         let kind = component_kind(component).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Ungültige iCalendar-Komponente",
+                "Invalid iCalendar component",
             )
         })?;
         let (component_uid, component) = ensure_component_uid(component, kind, Some(uid));
         if component_uid != uid {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Komponenten-UID stimmt nicht mit dem Ziel überein",
+                "Component UID does not match target",
             ));
         }
         for path in self.mutable_calendar_files() {
@@ -676,7 +676,7 @@ impl CalendarStoreService {
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("iCalendar-Komponente nicht gefunden: {uid}"),
+            format!("iCalendar component not found: {uid}"),
         ))
     }
 
@@ -698,7 +698,7 @@ impl CalendarStoreService {
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("iCalendar-Komponente nicht gefunden: {uid}"),
+            format!("iCalendar component not found: {uid}"),
         ))
     }
 
@@ -753,7 +753,7 @@ impl CalendarStoreService {
                 &calendar,
                 &path,
                 "local-calendar",
-                "Lokaler Kalender",
+                "Local Calendar",
                 &mut snapshot,
             );
             for event in &snapshot.events {
@@ -822,7 +822,7 @@ impl CalendarStoreService {
         } else {
             Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "Der ausgewählte iCalendar-Ordner ist schreibgeschützt",
+                "The selected iCalendar folder is read-only",
             ))
         }
     }
@@ -849,7 +849,7 @@ fn calendar_purge_cancelled(confirmed: CalendarPurgeResult) -> CalendarPurgeFail
         confirmed,
         error: io::Error::new(
             io::ErrorKind::Interrupted,
-            "Kalenderbereinigung abgebrochen",
+            "Calendar purge cancelled",
         ),
     }
 }
@@ -1168,7 +1168,7 @@ fn insert_calendar_component(calendar: &mut String, component: &str) -> io::Resu
     else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "iCalendar-Datei enthält kein END:VCALENDAR",
+            "iCalendar file does not contain END:VCALENDAR",
         ));
     };
     let comp_stripped = first_primary_component(component).unwrap_or_else(|| component.to_string());
@@ -1193,7 +1193,7 @@ fn replace_calendar_component(
     else {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("iCalendar-Komponente nicht gefunden: {uid}"),
+            format!("iCalendar component not found: {uid}"),
         ));
     };
     let comp_stripped =
@@ -1211,7 +1211,7 @@ fn remove_calendar_component(calendar: &str, path: &Path, uid: &str) -> io::Resu
     else {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("iCalendar-Komponente nicht gefunden: {uid}"),
+            format!("iCalendar component not found: {uid}"),
         ));
     };
     lines.drain(start..=end);
@@ -1344,7 +1344,7 @@ impl CalendarFileLock {
         Err(io::Error::new(
             io::ErrorKind::TimedOut,
             format!(
-                "iCalendar-Datei wird bereits bearbeitet: {}",
+                "iCalendar file is already being modified: {}",
                 path.display()
             ),
         ))
@@ -1360,7 +1360,7 @@ impl Drop for CalendarFileLock {
 fn lock_calendar_mutations() -> io::Result<MutexGuard<'static, ()>> {
     CALENDAR_MUTATION_LOCK
         .lock()
-        .map_err(|_| io::Error::other("Kalender-Mutationssperre ist vergiftet"))
+        .map_err(|_| io::Error::other("Calendar mutation lock is poisoned"))
 }
 
 #[cfg(test)]
@@ -1409,7 +1409,7 @@ fn write_atomic_locked(path: &Path, contents: &[u8]) -> io::Result<()> {
     let Some(temporary) = temporary else {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            "Kein eindeutiger temporärer iCalendar-Pfad verfügbar",
+            "No unique temporary iCalendar path available",
         ));
     };
     let mut temporary_file = Some(temporary_file.expect("temporary file exists with its path"));
@@ -1686,13 +1686,16 @@ fn append_component(
         .unwrap_or_else(|| format!("local:{}#{index}", path.to_string_lossy()));
     let summary = component
         .summary
-        .unwrap_or_else(|| "(Ohne Titel)".to_string());
+        .unwrap_or_else(|| "(No Title)".to_string());
 
     let resolved_source_name = component
         .x_source_name
         .as_ref()
         .or_else(|| {
-            if source_display_name == "Lokaler Kalender" || source_display_name.is_empty() {
+            if source_display_name == "Local Calendar"
+                || source_display_name == "Lokaler Kalender"
+                || source_display_name.is_empty()
+            {
                 component.categories.as_ref()
             } else {
                 None
@@ -1708,6 +1711,7 @@ fn append_component(
         .unwrap_or_else(|| {
             if (source_uid == "local-calendar" || source_uid.is_empty())
                 && !resolved_source_name.is_empty()
+                && resolved_source_name != "Local Calendar"
                 && resolved_source_name != "Lokaler Kalender"
             {
                 format!("calendar-{}", resolved_source_name)
@@ -1950,7 +1954,7 @@ fn strip_line_breaks(value: &str) -> String {
 
 fn validate_single_line(label: &str, value: &str) -> Result<(), String> {
     if value.contains('\r') || value.contains('\n') {
-        Err(format!("{label} darf keine Zeilenumbrüche enthalten"))
+        Err(format!("{label} must not contain line breaks"))
     } else {
         Ok(())
     }
@@ -1961,7 +1965,7 @@ fn validate_dtstart_value(value: &str) -> Result<(), String> {
     if is_ical_date(value) || is_ical_date_time(value) {
         Ok(())
     } else {
-        Err("DTSTART muss ein iCalendar-Datum oder ein Datum/Zeit-Wert sein".to_string())
+        Err("DTSTART must be an iCalendar date or date-time value".to_string())
     }
 }
 
@@ -1999,7 +2003,7 @@ fn validate_ical_token(label: &str, value: &str) -> Result<(), String> {
     {
         Ok(())
     } else {
-        Err(format!("{label} enthält einen ungültigen iCalendar-Namen"))
+        Err(format!("{label} contains an invalid iCalendar name"))
     }
 }
 
@@ -4655,7 +4659,7 @@ END:VTODO\r\n\
 END:VCALENDAR\r\n";
 
         let mut snapshot = CalendarSnapshot::default();
-        parse_ical(ics, Path::new("test.ics"), "local-calendar", "Lokaler Kalender", &mut snapshot);
+        parse_ical(ics, Path::new("test.ics"), "local-calendar", "Local Calendar", &mut snapshot);
 
         assert_eq!(snapshot.events.len(), 2);
         assert_eq!(snapshot.events[0].source_display_name, "Arbeit");

@@ -124,35 +124,35 @@ pub enum FilterAction {
 impl FilterAction {
     pub fn description(&self) -> String {
         match self {
-            Self::MoveToFolder(folder) => format!("In Ordner »{folder}« verschieben"),
-            Self::CopyToFolder(folder) => format!("In Ordner »{folder}« kopieren"),
-            Self::MarkRead => "Als gelesen markieren".to_string(),
-            Self::MarkUnread => "Als ungelesen markieren".to_string(),
-            Self::SetFlagged => "Stern-/Markierungsstatus setzen".to_string(),
-            Self::ClearFlagged => "Stern-/Markierungsstatus entfernen".to_string(),
-            Self::SetImportant => "Wichtigkeit setzen".to_string(),
-            Self::ClearImportant => "Wichtigkeit entfernen".to_string(),
-            Self::Delete => "Löschen".to_string(),
-            Self::StopProcessing => "Weitere Filterregeln nicht ausführen".to_string(),
-            Self::SetJunk => "Als unerwünscht einstufen".to_string(),
-            Self::ClearJunk => "Unerwünscht-Status aufheben".to_string(),
-            Self::SetLabel(label) => format!("Farbetikett »{label}« zuweisen"),
+            Self::MoveToFolder(folder) => format!("Move to folder \"{folder}\""),
+            Self::CopyToFolder(folder) => format!("Copy to folder \"{folder}\""),
+            Self::MarkRead => "Mark as read".to_string(),
+            Self::MarkUnread => "Mark as unread".to_string(),
+            Self::SetFlagged => "Set star/flag status".to_string(),
+            Self::ClearFlagged => "Clear star/flag status".to_string(),
+            Self::SetImportant => "Mark as important".to_string(),
+            Self::ClearImportant => "Clear importance".to_string(),
+            Self::Delete => "Delete".to_string(),
+            Self::StopProcessing => "Stop processing more filter rules".to_string(),
+            Self::SetJunk => "Mark as junk".to_string(),
+            Self::ClearJunk => "Clear junk status".to_string(),
+            Self::SetLabel(label) => format!("Assign label \"{label}\""),
             Self::ClearLabel(label) => {
                 if label.is_empty() {
-                    "Alle Farbetiketten entfernen".to_string()
+                    "Clear all labels".to_string()
                 } else {
-                    format!("Farbetikett »{label}« entfernen")
+                    format!("Clear label \"{label}\"")
                 }
             }
-            Self::AssignColor(color) => format!("Farbe »{color}« zuweisen"),
-            Self::UnsetColor => "Farbe zurücksetzen".to_string(),
-            Self::AssignScore(score) => format!("Bewertung auf {score} setzen"),
-            Self::AdjustScore(score) => format!("Bewertung um {score} anpassen"),
-            Self::Beep => "Signalton abspielen".to_string(),
-            Self::PlaySound(file) => format!("Klangdatei »{file}« abspielen"),
-            Self::RunProgram(cmd) => format!("Befehl ausführen: »{cmd}«"),
-            Self::PipeToProgram(cmd) => format!("An Befehl weiterleiten: »{cmd}«"),
-            Self::ForwardTo(addr) => format!("Weiterleiten an »{addr}«"),
+            Self::AssignColor(color) => format!("Assign color \"{color}\""),
+            Self::UnsetColor => "Unset color".to_string(),
+            Self::AssignScore(score) => format!("Set score to {score}"),
+            Self::AdjustScore(score) => format!("Adjust score by {score}"),
+            Self::Beep => "Beep".to_string(),
+            Self::PlaySound(file) => format!("Play sound file \"{file}\""),
+            Self::RunProgram(cmd) => format!("Run program: \"{cmd}\""),
+            Self::PipeToProgram(cmd) => format!("Pipe to program: \"{cmd}\""),
+            Self::ForwardTo(addr) => format!("Forward to \"{addr}\""),
         }
     }
 
@@ -221,27 +221,27 @@ impl MailFilterRule {
     /// compatibility accessors used by matching and execution.
     pub fn validate(&self) -> Result<(), String> {
         if self.id.trim().is_empty() {
-            return Err("Die Filterregel benötigt eine ID".to_string());
+            return Err("Filter rule requires an ID".to_string());
         }
         if self.name.trim().is_empty() {
-            return Err("Die Filterregel benötigt einen Namen".to_string());
+            return Err("Filter rule requires a name".to_string());
         }
 
         let conditions = self.effective_conditions();
         if conditions.is_empty() {
-            return Err("Die Filterregel benötigt mindestens eine Bedingung".to_string());
+            return Err("Filter rule requires at least one condition".to_string());
         }
         for (index, condition) in conditions.into_iter().enumerate() {
             if condition.value.trim().is_empty()
                 && !condition.operator.allows_empty_value(condition.field)
             {
-                return Err(format!("Bedingung {} benötigt einen Suchwert", index + 1));
+                return Err(format!("Condition {} requires a search value", index + 1));
             }
         }
 
         let actions = self.effective_actions();
         if actions.is_empty() {
-            return Err("Die Filterregel benötigt mindestens eine Aktion".to_string());
+            return Err("Filter rule requires at least one action".to_string());
         }
         for (index, action) in actions.into_iter().enumerate() {
             let target = match action {
@@ -258,7 +258,7 @@ impl MailFilterRule {
             };
             if target.is_some_and(|target| target.trim().is_empty()) {
                 return Err(format!(
-                    "Aktion {} benötigt einen Zielordner oder ein Label",
+                    "Action {} requires a target folder or label",
                     index + 1
                 ));
             }

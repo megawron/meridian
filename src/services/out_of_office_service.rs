@@ -45,18 +45,18 @@ impl Default for OutOfOfficeSettings {
 
 impl OutOfOfficeSettings {
     pub fn validate(&self) -> Result<(), String> {
-        let start = parse_optional_date(&self.start_date, "Das Startdatum")?;
-        let end = parse_optional_date(&self.end_date, "Das Enddatum")?;
+        let start = parse_optional_date(&self.start_date, "Start date")?;
+        let end = parse_optional_date(&self.end_date, "End date")?;
         if let (Some(start), Some(end)) = (start, end) {
             if end < start {
-                return Err("Das Enddatum muss am oder nach dem Startdatum liegen".to_string());
+                return Err("End date must be on or after the start date".to_string());
             }
         }
         if self.internal_message.chars().count() > 100_000
             || self.external_message.chars().count() > 100_000
         {
             return Err(
-                "Die Abwesenheitsnachricht darf höchstens 100.000 Zeichen enthalten".to_string(),
+                "Out-of-office message may contain at most 100,000 characters".to_string(),
             );
         }
         Ok(())
@@ -74,7 +74,7 @@ fn parse_optional_date(value: &str, label: &str) -> Result<Option<NaiveDate>, St
     }
     NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .map(Some)
-        .map_err(|_| format!("{label} muss dem Format YYYY-MM-DD entsprechen"))
+        .map_err(|_| format!("{label} must match the format YYYY-MM-DD"))
 }
 
 #[derive(Debug, Clone)]

@@ -186,7 +186,7 @@ impl SignatureStore {
         if signature.id.trim().is_empty() || signature.text.trim().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Eine Signatur benötigt ID und Inhalt",
+                "A signature requires an ID and content",
             ));
         }
         let norm_name = signature.name.trim().to_lowercase();

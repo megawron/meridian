@@ -78,13 +78,13 @@ impl SnippetStore {
         if snippet.id.trim().is_empty() || snippet.name.trim().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Textbaustein benötigt eine ID und einen Namen",
+                "Snippet requires an ID and a name",
             ));
         }
         if snippet.name.chars().count() > 160 || snippet.trigger.chars().count() > 80 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Name oder Kürzel des Textbausteins ist zu lang",
+                "Snippet name or trigger shortcut is too long",
             ));
         }
         let mut snippets = self.load();

@@ -42,7 +42,7 @@ pub(crate) enum EBookServiceError {
 impl std::fmt::Display for EBookServiceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unsupported => write!(formatter, "Der Adressbuchdienst ist nicht verfügbar"),
+            Self::Unsupported => write!(formatter, "Address book service is unavailable"),
             Self::Backend(message) => write!(formatter, "{message}"),
         }
     }
@@ -61,8 +61,8 @@ pub(crate) enum EBookMutationError {
 impl std::fmt::Display for EBookMutationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unsupported => write!(formatter, "Der Adressbuchdienst ist nicht verfügbar"),
-            Self::Conflict(message) => write!(formatter, "Adressbuchkonflikt: {message}"),
+            Self::Unsupported => write!(formatter, "Address book service is unavailable"),
+            Self::Conflict(message) => write!(formatter, "Address book conflict: {message}"),
             Self::Backend(message) => write!(formatter, "{message}"),
         }
     }
@@ -280,12 +280,12 @@ impl EBookService {
     ) -> Result<EBookMutationResult, EBookMutationError> {
         if duplicates.is_empty() {
             return Err(EBookMutationError::Backend(
-                "Zusammenführung benötigt mindestens ein Duplikat".to_string(),
+                "Merging requires at least one duplicate".to_string(),
             ));
         }
         if primary.source_uid.trim().is_empty() {
             return Err(EBookMutationError::Backend(
-                "Der Kontakt stammt aus einer schreibgeschützten importierten Quelle".to_string(),
+                "Contact comes from a read-only imported source".to_string(),
             ));
         }
         if duplicates.iter().any(|duplicate| {
@@ -294,7 +294,7 @@ impl EBookService {
                 || duplicate.uid.trim().is_empty()
         }) {
             return Err(EBookMutationError::Backend(
-                "Primärkontakt und Duplikate müssen aus derselben Quelle stammen".to_string(),
+                "Primary contact and duplicates must come from the same source".to_string(),
             ));
         }
 
@@ -350,7 +350,7 @@ impl EBookService {
         for duplicate in duplicates {
             if let Err(error) = self.remove_contact(&duplicate.source_uid, &duplicate.uid) {
                 return Err(EBookMutationError::Backend(format!(
-                    "Kontakt wurde aktualisiert, aber Duplikat {} konnte nicht entfernt werden: {}",
+                    "Contact was updated, but duplicate {} could not be removed: {}",
                     duplicate.uid, error
                 )));
             }
@@ -424,7 +424,7 @@ impl EBookService {
                 .map(|uid| (uid, String::new())),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Unbekannte lokale EBook-Operation",
+                "Unknown local EBook operation",
             )),
         };
         result
@@ -448,7 +448,7 @@ impl EBookService {
             })?;
         let contact = || {
             VCardContact::parse_vcard_string(vcard).ok_or_else(|| {
-                EBookMutationError::Backend("Die vCard ist ungültig oder ohne FN-Feld".to_string())
+                EBookMutationError::Backend("vCard is invalid or missing an FN field".to_string())
             })
         };
         let result = match operation {
@@ -467,7 +467,7 @@ impl EBookService {
                 let uid = contact_uid.unwrap_or_default();
                 if uid.trim().is_empty() {
                     Err(EBookMutationError::Backend(
-                        "Zum Ändern eines Graph-Kontakts fehlt die UID".to_string(),
+                        "Missing UID for modifying Graph contact".to_string(),
                     ))
                 } else {
                     contact().and_then(|parsed| {
@@ -487,7 +487,7 @@ impl EBookService {
                 let uid = contact_uid.unwrap_or_default();
                 if uid.trim().is_empty() {
                     Err(EBookMutationError::Backend(
-                        "Zum Löschen eines Graph-Kontakts fehlt die UID".to_string(),
+                        "Missing UID for deleting Graph contact".to_string(),
                     ))
                 } else {
                     service
@@ -500,7 +500,7 @@ impl EBookService {
                 }
             }
             _ => Err(EBookMutationError::Backend(
-                "Unbekannte Graph-EBook-Operation".to_string(),
+                "Unknown Graph EBook operation".to_string(),
             )),
         };
         Some(result)
@@ -518,13 +518,13 @@ impl EBookService {
         use std::ptr;
 
         let source_uid = CString::new(source_uid)
-            .map_err(|_| EBookMutationError::Backend("Quell-UID enthält NUL".to_string()))?;
+            .map_err(|_| EBookMutationError::Backend("Source UID contains NUL".to_string()))?;
         let vcard = CString::new(vcard)
-            .map_err(|_| EBookMutationError::Backend("vCard enthält NUL".to_string()))?;
+            .map_err(|_| EBookMutationError::Backend("vCard contains NUL".to_string()))?;
         let contact_uid = contact_uid
             .map(CString::new)
             .transpose()
-            .map_err(|_| EBookMutationError::Backend("Kontakt-UID enthält NUL".to_string()))?;
+            .map_err(|_| EBookMutationError::Backend("Contact UID contains NUL".to_string()))?;
         let contact_uid_pointer = contact_uid
             .as_ref()
             .map_or(ptr::null(), |value| value.as_ptr());
@@ -553,12 +553,12 @@ impl EBookService {
             }),
             2 => {
                 Err(EBookMutationError::Conflict(error.unwrap_or_else(|| {
-                    "Backend meldet einen Konflikt".to_string()
+                    "Backend reported a conflict".to_string()
                 })))
             }
             _ => {
                 Err(EBookMutationError::Backend(error.unwrap_or_else(|| {
-                    "EBook-Mutation fehlgeschlagen".to_string()
+                    "EBook mutation failed".to_string()
                 })))
             }
         }
@@ -612,7 +612,7 @@ impl EBookWatcher {
         }
         if result == 0 || raw.is_null() {
             return Err(EBookServiceError::Backend(warning.unwrap_or_else(|| {
-                "EDS/EBook-Signalmonitor konnte nicht gestartet werden".to_string()
+                "Could not start EDS/EBook signal monitor".to_string()
             })));
         }
 
@@ -649,7 +649,7 @@ impl EBookWatcher {
         };
         if result < 0 {
             return Err(EBookServiceError::Backend(
-                "EDS/EBook-Signalmonitor wurde beendet".to_string(),
+                "EDS/EBook signal monitor terminated".to_string(),
             ));
         }
         if result == 0 {
@@ -671,7 +671,7 @@ impl EBookWatcher {
                     ffi::meridian_eds_ebook_free_watcher_event(&mut raw_event);
                 }
                 return Err(EBookServiceError::Backend(error.unwrap_or_else(|| {
-                    "EDS/EBook-Signalmonitor meldete einen Fehler".to_string()
+                    "EDS/EBook signal monitor reported an error".to_string()
                 })));
             }
             _ => {
@@ -679,7 +679,7 @@ impl EBookWatcher {
                     ffi::meridian_eds_ebook_free_watcher_event(&mut raw_event);
                 }
                 return Err(EBookServiceError::Backend(
-                    "EDS/EBook-Signalmonitor lieferte einen unbekannten Ereignistyp".to_string(),
+                    "EDS/EBook signal monitor returned an unknown event type".to_string(),
                 ));
             }
         };
@@ -1312,7 +1312,7 @@ fn load_contacts_prefer_eds_fresh() -> EBookLoadResult {
         contacts.extend(local_service.load_contacts().into_iter().map(|record| {
             EBookContactRecord {
                 source_uid: "local-addressbook".to_string(),
-                source_display_name: "Lokales Adressbuch".to_string(),
+                source_display_name: "Local Address Book".to_string(),
                 uid: record.id,
                 vcard: record.vcard,
                 contact: record.contact,
@@ -1343,7 +1343,7 @@ fn load_contacts_from_graph() -> Option<EBookLoadResult> {
     let (source_uid, service) = graph_service_for_configured_account()?;
     let contacts = service.list_contacts_sync("", 5_000).ok()?;
     let source_display_name = if service.username.trim().is_empty() {
-        "Microsoft 365 Kontakte".to_string()
+        "Microsoft 365 Contacts".to_string()
     } else {
         format!("Microsoft 365 ({})", service.username)
     };
@@ -1368,7 +1368,7 @@ fn load_contacts_from_graph() -> Option<EBookLoadResult> {
         records.extend(local_service.load_contacts().into_iter().map(|record| {
             EBookContactRecord {
                 source_uid: "local-addressbook".to_string(),
-                source_display_name: "Lokales Adressbuch".to_string(),
+                source_display_name: "Local Address Book".to_string(),
                 uid: record.id,
                 vcard: record.vcard,
                 contact: record.contact,
@@ -1460,7 +1460,7 @@ mod merge_tests {
         assert!(matches!(
             result,
             Err(EBookMutationError::Backend(message))
-                if message.contains("derselben Quelle")
+                if message.contains("same source")
         ));
     }
 }
@@ -1559,7 +1559,7 @@ fn load_contacts_native() -> Result<(Vec<EBookContactRecord>, Option<String>), E
     let error = take_c_string(error_pointer);
     if result == 0 {
         return Err(EBookServiceError::Backend(error.unwrap_or_else(|| {
-            "EBook-Daten konnten nicht geladen werden".to_string()
+            "Could not load EBook data".to_string()
         })));
     }
 
@@ -1593,7 +1593,7 @@ fn load_contacts_native() -> Result<(Vec<EBookContactRecord>, Option<String>), E
     let warning = error.or_else(|| {
         (failed_sources > 0).then(|| {
             format!(
-                "{failed_sources} von {configured_sources} EDS-Adressbuchquelle(n) konnten nicht geladen werden"
+                "{failed_sources} of {configured_sources} EDS address book source(s) could not be loaded"
             )
         })
     });

@@ -53,7 +53,7 @@ fn extract_date_key(raw: &str) -> String {
     if raw.len() >= 8 && raw[..8].chars().all(|c| c.is_ascii_digit()) {
         format!("{}-{}-{}", &raw[..4], &raw[4..6], &raw[6..8])
     } else {
-        "Ohne Datum".to_string()
+        "Undated".to_string()
     }
 }
 
@@ -62,13 +62,13 @@ pub fn build_event_print_document(
     event: &CalendarEventRecord,
 ) -> Result<CalendarPrintDocument, String> {
     if event.summary.trim().is_empty() && event.component.trim().is_empty() {
-        return Err("Leerer Termin kann nicht gedruckt werden".to_string());
+        return Err("Cannot print an empty event".to_string());
     }
 
     let summary = if !event.summary.trim().is_empty() {
         event.summary.trim()
     } else {
-        "Termin ohne Titel"
+        "Untitled Event"
     };
 
     let start_fmt = format_date_readable(&event.start);
@@ -78,7 +78,7 @@ pub fn build_event_print_document(
     let source_name = if !event.source_display_name.trim().is_empty() {
         event.source_display_name.trim()
     } else {
-        "Lokaler Kalender"
+        "Local Calendar"
     };
 
     // Build HTML
@@ -109,27 +109,27 @@ pub fn build_event_print_document(
         escape_html(source_name)
     ));
     if event.all_day {
-        html.push_str("    <div class=\"badge\" style=\"background:#fef3c7;color:#b45309;\">Ganztägig</div>\n");
+        html.push_str("    <div class=\"badge\" style=\"background:#fef3c7;color:#b45309;\">All-day</div>\n");
     }
     html.push_str("  </div>\n");
 
     html.push_str("  <div class=\"grid\">\n");
     if !start_fmt.is_empty() {
-        html.push_str("    <div class=\"label\">Beginn:</div>\n");
+        html.push_str("    <div class=\"label\">Start:</div>\n");
         html.push_str(&format!(
             "    <div class=\"value\">{}</div>\n",
             escape_html(&start_fmt)
         ));
     }
     if !end_fmt.is_empty() {
-        html.push_str("    <div class=\"label\">Ende:</div>\n");
+        html.push_str("    <div class=\"label\">End:</div>\n");
         html.push_str(&format!(
             "    <div class=\"value\">{}</div>\n",
             escape_html(&end_fmt)
         ));
     }
     if !location.is_empty() {
-        html.push_str("    <div class=\"label\">Ort:</div>\n");
+        html.push_str("    <div class=\"label\">Location:</div>\n");
         html.push_str(&format!(
             "    <div class=\"value\">{}</div>\n",
             escape_html(location)
@@ -138,7 +138,7 @@ pub fn build_event_print_document(
     html.push_str("  </div>\n");
 
     if !description.is_empty() {
-        html.push_str("  <div class=\"label\">Beschreibung:</div>\n");
+        html.push_str("  <div class=\"label\">Description:</div>\n");
         html.push_str(&format!(
             "  <div class=\"description-box\">{}</div>\n",
             escape_html(description)
@@ -150,21 +150,21 @@ pub fn build_event_print_document(
     // Build plain text
     let mut plain = String::new();
     plain.push_str(&format!("=== {} ===\n", summary));
-    plain.push_str(&format!("Kalender: {}\n", source_name));
+    plain.push_str(&format!("Calendar: {}\n", source_name));
     if event.all_day {
-        plain.push_str("Art: Ganztägiger Termin\n");
+        plain.push_str("Type: All-day Event\n");
     }
     if !start_fmt.is_empty() {
-        plain.push_str(&format!("Beginn:   {}\n", start_fmt));
+        plain.push_str(&format!("Start:    {}\n", start_fmt));
     }
     if !end_fmt.is_empty() {
-        plain.push_str(&format!("Ende:     {}\n", end_fmt));
+        plain.push_str(&format!("End:      {}\n", end_fmt));
     }
     if !location.is_empty() {
-        plain.push_str(&format!("Ort:      {}\n", location));
+        plain.push_str(&format!("Location: {}\n", location));
     }
     if !description.is_empty() {
-        plain.push_str("\nBeschreibung:\n");
+        plain.push_str("\nDescription:\n");
         plain.push_str(description);
         plain.push('\n');
     }
@@ -182,10 +182,10 @@ pub fn build_calendar_list_print_document(
     title: Option<&str>,
 ) -> Result<CalendarPrintDocument, String> {
     if events.is_empty() {
-        return Err("Keine Termine zum Drucken vorhanden".to_string());
+        return Err("No events available to print".to_string());
     }
 
-    let page_title = title.unwrap_or("Terminübersicht");
+    let page_title = title.unwrap_or("Schedule Overview");
 
     // Sort events chronologically by start, then summary
     let mut sorted = events.to_vec();
@@ -236,7 +236,7 @@ pub fn build_calendar_list_print_document(
         escape_html(page_title)
     ));
     html.push_str(&format!(
-        "  <div class=\"agenda-count\">{} Termin(e)</div>\n",
+        "  <div class=\"agenda-count\">{} event(s)</div>\n",
         sorted.len()
     ));
     html.push_str("</div>\n");
@@ -244,7 +244,7 @@ pub fn build_calendar_list_print_document(
     // Build plain text
     let mut plain = String::new();
     plain.push_str(&format!("=== {} ===\n", page_title));
-    plain.push_str(&format!("Gesamt: {} Termin(e)\n\n", sorted.len()));
+    plain.push_str(&format!("Total: {} event(s)\n\n", sorted.len()));
 
     for (day_key, day_events) in grouped {
         html.push_str("<div class=\"day-group\">\n");
@@ -253,7 +253,7 @@ pub fn build_calendar_list_print_document(
             escape_html(&day_key)
         ));
         html.push_str("  <table>\n");
-        html.push_str("    <thead><tr><th class=\"time-col\">Zeit</th><th>Termin</th><th>Ort</th></tr></thead>\n");
+        html.push_str("    <thead><tr><th class=\"time-col\">Time</th><th>Event</th><th>Location</th></tr></thead>\n");
         html.push_str("    <tbody>\n");
 
         plain.push_str(&format!("--- {} ---\n", day_key));
@@ -262,13 +262,13 @@ pub fn build_calendar_list_print_document(
             let start = format_date_readable(&event.start);
             let end = format_date_readable(&event.end);
             let time_str = if event.all_day {
-                "Ganztägig".to_string()
+                "All-day".to_string()
             } else if !start.is_empty() && !end.is_empty() {
                 format!("{start} – {end}")
             } else if !start.is_empty() {
                 start.clone()
             } else {
-                "Keine Zeit".to_string()
+                "No time".to_string()
             };
 
             let loc = event.location.trim();
@@ -299,10 +299,10 @@ pub fn build_calendar_list_print_document(
 
             plain.push_str(&format!("  [{}] {}\n", time_str, event.summary.trim()));
             if !loc.is_empty() {
-                plain.push_str(&format!("      Ort: {}\n", loc));
+                plain.push_str(&format!("      Location: {}\n", loc));
             }
             if !desc.is_empty() {
-                plain.push_str(&format!("      Notiz: {}\n", desc));
+                plain.push_str(&format!("      Note: {}\n", desc));
             }
         }
 
@@ -380,7 +380,7 @@ mod tests {
 
         assert_eq!(doc.event_count, 2);
         assert!(doc.html.contains("Wochenplan"));
-        assert!(doc.html.contains("2 Termin(e)"));
+        assert!(doc.html.contains("2 event(s)"));
         assert!(doc.html.contains("2026-09-15"));
         assert!(doc.html.contains("Zahnarzt"));
         assert!(doc.html.contains("Praxis Dr. Müller"));

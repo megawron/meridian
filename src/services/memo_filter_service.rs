@@ -41,7 +41,7 @@ impl MemoSearchMode {
             "any" | "any-field" => Ok(Self::Any),
             "advanced" => Ok(Self::Advanced),
             _ => Err(
-                "Ungültiger Memo-Suchmodus; erwartet summary, description, any-field oder advanced"
+                "Invalid memo search mode; expected summary, description, any-field, or advanced"
                     .to_string(),
             ),
         }
@@ -100,25 +100,25 @@ impl MemoCategoryFilter {
 pub fn validate_category_name(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err("Eine benannte Kategorie darf nicht leer sein".to_string());
+        return Err("A named category must not be empty".to_string());
     }
     if value.len() > MAX_MEMO_CATEGORY_FILTER_BYTES {
         return Err(format!(
-            "Eine Memo-Kategorie darf höchstens {MAX_MEMO_CATEGORY_FILTER_BYTES} Bytes lang sein"
+            "A memo category may be at most {MAX_MEMO_CATEGORY_FILTER_BYTES} bytes long"
         ));
     }
     if value.eq_ignore_ascii_case(ANY_CATEGORY_SETTING)
         || value.eq_ignore_ascii_case(WITHOUT_CATEGORY_SETTING)
         || value.eq_ignore_ascii_case("without-category")
     {
-        return Err("Reservierter Memo-Kategoriefilter".to_string());
+        return Err("Reserved memo category filter".to_string());
     }
     if value
         .chars()
         .any(|character| character.is_control() || character == '\'' || character == '"')
     {
         return Err(
-            "Memo-Kategorien dürfen keine Steuerzeichen oder Anführungszeichen enthalten"
+            "Memo categories must not contain control characters or quotation marks"
                 .to_string(),
         );
     }
@@ -135,14 +135,14 @@ pub fn validate_source_filter(value: &str) -> Result<String, String> {
     }
     if value.len() > MAX_MEMO_SOURCE_FILTER_BYTES {
         return Err(format!(
-            "Eine Memo-Quelle darf höchstens {MAX_MEMO_SOURCE_FILTER_BYTES} Bytes lang sein"
+            "A memo source may be at most {MAX_MEMO_SOURCE_FILTER_BYTES} bytes long"
         ));
     }
     if value.chars().any(|character| {
         character.is_control() || character.is_whitespace() || matches!(character, '\'' | '"')
     }) {
         return Err(
-            "Memo-Quellen dürfen keine Leer-, Steuerzeichen oder Anführungszeichen enthalten"
+            "Memo sources must not contain whitespace, control characters, or quotation marks"
                 .to_string(),
         );
     }
@@ -186,11 +186,11 @@ pub struct MemoAdvancedTerm {
 pub fn parse_advanced_query(value: &str) -> Result<Vec<MemoAdvancedTerm>, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err("Die erweiterte Memo-Suche darf nicht leer sein".to_string());
+        return Err("Advanced memo search must not be empty".to_string());
     }
     if value.len() > MAX_MEMO_ADVANCED_QUERY_BYTES {
         return Err(format!(
-            "Die erweiterte Memo-Suche darf höchstens {MAX_MEMO_ADVANCED_QUERY_BYTES} Bytes lang sein"
+            "Advanced memo search may be at most {MAX_MEMO_ADVANCED_QUERY_BYTES} bytes long"
         ));
     }
     if value
@@ -198,7 +198,7 @@ pub fn parse_advanced_query(value: &str) -> Result<Vec<MemoAdvancedTerm>, String
         .any(|character| character == '\'' || character == '"' || character.is_control())
     {
         return Err(
-            "Die erweiterte Memo-Suche erlaubt keine Anführungszeichen oder Steuerzeichen"
+            "Advanced memo search does not allow quotation marks or control characters"
                 .to_string(),
         );
     }
@@ -206,7 +206,7 @@ pub fn parse_advanced_query(value: &str) -> Result<Vec<MemoAdvancedTerm>, String
     let tokens = value.split_whitespace().collect::<Vec<_>>();
     if tokens.is_empty() || tokens.len() % 2 == 0 {
         return Err(
-            "Erwartet werden ein oder mehrere Feld:Wert-Paare mit AND dazwischen".to_string(),
+            "Expected one or more field:value pairs separated by AND".to_string(),
         );
     }
 
@@ -214,23 +214,23 @@ pub fn parse_advanced_query(value: &str) -> Result<Vec<MemoAdvancedTerm>, String
     for (index, token) in tokens.iter().enumerate() {
         if index % 2 == 1 {
             if *token != "AND" {
-                return Err("Die erweiterte Memo-Suche verwendet ausschließlich AND".to_string());
+                return Err("Advanced memo search only supports AND".to_string());
             }
             continue;
         }
 
         let Some((field, raw_term)) = token.split_once(':') else {
-            return Err(format!("Ungültiges erweitertes Memo-Feld „{token}“"));
+            return Err(format!("Invalid advanced memo field \"{token}\""));
         };
         let Some(field) = MemoAdvancedField::parse(field) else {
-            return Err(format!("Unbekanntes erweitertes Memo-Feld „{field}“"));
+            return Err(format!("Unknown advanced memo field \"{field}\""));
         };
         let raw_term = raw_term.trim();
         if raw_term.is_empty() {
-            return Err("Ein erweitertes Memo-Feld darf keinen leeren Wert haben".to_string());
+            return Err("An advanced memo field must not have an empty value".to_string());
         }
         if raw_term.chars().any(char::is_control) {
-            return Err("Ein erweiterter Memo-Wert darf keine Steuerzeichen enthalten".to_string());
+            return Err("An advanced memo value must not contain control characters".to_string());
         }
         terms.push(MemoAdvancedTerm {
             field,

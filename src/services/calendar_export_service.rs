@@ -36,7 +36,7 @@ impl CalendarExportFormat {
     pub fn display_label(&self) -> &'static str {
         match self {
             Self::ICalendar => "iCalendar (.ics)",
-            Self::Csv => "Kommagetrennte Werte (.csv)",
+            Self::Csv => "Comma-Separated Values (.csv)",
             Self::Rdf => "RDF / RSS 1.0 (.rdf)",
         }
     }
@@ -243,7 +243,7 @@ pub fn export_calendar_events(
     options: Option<CalendarCsvOptions>,
 ) -> Result<String, String> {
     if events.is_empty() {
-        return Err("Keine Kalendereinträge zum Exportieren vorhanden".to_string());
+        return Err("No calendar entries available to export".to_string());
     }
 
     match format {
@@ -422,9 +422,9 @@ fn export_to_rdf(events: &[CalendarEventRecord]) -> Result<String, String> {
 
     // Channel metadata
     out.push_str("  <channel rdf:about=\"https://www.gnome.org/projects/evolution/\">\n");
-    out.push_str("    <title>Kalendertermine</title>\n");
+    out.push_str("    <title>Calendar Events</title>\n");
     out.push_str("    <link>https://www.gnome.org/projects/evolution/</link>\n");
-    out.push_str("    <description>Meridian Kalender-Export</description>\n");
+    out.push_str("    <description>Meridian Calendar Export</description>\n");
     out.push_str("    <items>\n");
     out.push_str("      <rdf:Seq>\n");
     for event in events {

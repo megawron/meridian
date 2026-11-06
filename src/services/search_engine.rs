@@ -670,7 +670,7 @@ impl GlobalSearchEngine {
                 }
                 let title = task.summary;
                 let snippet = format!(
-                    "Aufgabe {} Priorität {} {} {}",
+                    "Task {} Priority {} {} {}",
                     task.source_display_name, task.priority, task.due, task.component
                 );
                 let date = task.due;
@@ -1720,28 +1720,28 @@ pub(crate) enum SearchQueryParseError {
 impl fmt::Display for SearchQueryParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyTerm => formatter.write_str("Suchbegriff darf nicht leer sein"),
+            Self::EmptyTerm => formatter.write_str("Search term must not be empty"),
             Self::UnterminatedQuote => {
-                formatter.write_str("Suchanfrage enthält ein ungeschlossenes Anführungszeichen")
+                formatter.write_str("Search query contains an unterminated quote")
             }
             Self::DanglingEscape => {
-                formatter.write_str("Suchanfrage enthält einen unvollständigen Escape")
+                formatter.write_str("Search query contains a trailing escape")
             }
             Self::UnexpectedClosingParenthesis => {
-                formatter.write_str("Suchanfrage enthält eine unerwartete schließende Klammer")
+                formatter.write_str("Search query contains an unexpected closing parenthesis")
             }
             Self::MissingClosingParenthesis => {
-                formatter.write_str("Suchanfrage enthält eine nicht geschlossene Klammer")
+                formatter.write_str("Search query contains an unclosed parenthesis")
             }
-            Self::EmptyGroup => formatter.write_str("Suchanfrage enthält eine leere Gruppe"),
-            Self::InvalidSyntax(message) => write!(formatter, "Ungültige Suchsyntax: {message}"),
+            Self::EmptyGroup => formatter.write_str("Search query contains an empty group"),
+            Self::InvalidSyntax(message) => write!(formatter, "Invalid search syntax: {message}"),
             Self::UnknownOperator(operator) => {
-                write!(formatter, "Unbekannter Suchoperator „{operator}“")
+                write!(formatter, "Unknown search operator \"{operator}\"")
             }
             Self::UnsupportedOperator(operator) => {
-                write!(formatter, "Nicht unterstützter Suchoperator „{operator}“")
+                write!(formatter, "Unsupported search operator \"{operator}\"")
             }
-            Self::InvalidValue(value) => write!(formatter, "Ungültiger Suchwert „{value}“"),
+            Self::InvalidValue(value) => write!(formatter, "Invalid search value \"{value}\""),
         }
     }
 }
@@ -3721,7 +3721,7 @@ mod tests {
             validate_search_syntax("   ")
                 .expect_err("empty search input must fail")
                 .to_string(),
-            "Suchbegriff darf nicht leer sein"
+            "Search term must not be empty"
         );
     }
 
@@ -4523,7 +4523,7 @@ mod tests {
         assert!(
             results
                 .iter()
-                .any(|result| result.snippet.contains("Lokaler Kalender"))
+                .any(|result| result.snippet.contains("Local Calendar"))
         );
         let contact_references = results
             .iter()
@@ -4599,7 +4599,7 @@ mod tests {
                 component_uid: "external-event".to_string(),
             })
         );
-        assert!(!results[0].snippet.contains("Lokaler Kalender"));
+        assert!(!results[0].snippet.contains("Local Calendar"));
         assert!(!calendar.is_writable());
         assert_eq!(calendar.calendar_dir(), root.as_path());
 

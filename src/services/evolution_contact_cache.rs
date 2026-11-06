@@ -503,9 +503,9 @@ pub fn discover_address_book_dbs() -> Vec<AddressBookDbTarget> {
             .and_then(|i| i.display_name.clone().or_else(|| i.identity.clone()))
             .unwrap_or_else(|| {
                 if source_uid == "system" || source_uid == "system-address-book" {
-                    "Persönlich".to_string()
+                    "Personal".to_string()
                 } else {
-                    "Kontakte".to_string()
+                    "Contacts".to_string()
                 }
             });
 

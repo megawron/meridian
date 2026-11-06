@@ -16,11 +16,11 @@ pub enum PluginCategory {
 impl PluginCategory {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Mail => "E-Mail &amp; Verfassen",
-            Self::Security => "Sicherheit &amp; Krypto",
-            Self::Junk => "Junk &amp; Spamfilter",
-            Self::Utilities => "Hilfsprogramme &amp; Editoren",
-            Self::Calendar => "Kalender &amp; iTIP",
+            Self::Mail => "Mail &amp; Composer",
+            Self::Security => "Security &amp; Crypto",
+            Self::Junk => "Junk &amp; Spam Filtering",
+            Self::Utilities => "Utilities &amp; Editors",
+            Self::Calendar => "Calendar &amp; iTIP",
         }
     }
 
@@ -49,8 +49,8 @@ pub struct PluginDescriptor {
 pub const STANDARD_PLUGINS: &[PluginDescriptor] = &[
     PluginDescriptor {
         id: "org.gnome.evolution.plugin.attachment-reminder",
-        name: "Anhang-Erinnerung",
-        description: "Überprüft E-Mails vor dem Absenden auf vergessene Anhänge anhand von Schlüsselwörtern wie „Anhang“, „angehängt“, „attached“ etc.",
+        name: "Attachment Reminder",
+        description: "Checks outgoing emails for forgotten attachments based on keywords such as \"attachment\", \"attached\", \"enclosed\", etc.",
         category: PluginCategory::Mail,
         author: "Evolution Team",
         version: "4.0.0",
@@ -58,8 +58,8 @@ pub const STANDARD_PLUGINS: &[PluginDescriptor] = &[
     },
     PluginDescriptor {
         id: "org.gnome.evolution.plugin.mail-notification",
-        name: "E-Mail-Benachrichtigungen",
-        description: "Zeigt Desktop-Benachrichtigungen, Status-Icons und optionale Klänge bei neu eingehenden Nachrichten an.",
+        name: "Mail Notifications",
+        description: "Shows desktop notifications, status icons, and optional sounds when new messages arrive.",
         category: PluginCategory::Mail,
         author: "Evolution Team",
         version: "4.0.0",
@@ -67,8 +67,8 @@ pub const STANDARD_PLUGINS: &[PluginDescriptor] = &[
     },
     PluginDescriptor {
         id: "org.gnome.evolution.plugin.spamassassin",
-        name: "SpamAssassin Junk-Filter",
-        description: "Filtert unerwünschte Werbemails mit dem lokalen SpamAssassin-Daemon (spamd) oder der SpamAssassin-Headeranalyse (X-Spam-Status).",
+        name: "SpamAssassin Junk Filter",
+        description: "Filters unsolicited bulk mail using the local SpamAssassin daemon (spamd) or SpamAssassin header analysis (X-Spam-Status).",
         category: PluginCategory::Junk,
         author: "Evolution Team",
         version: "4.0.0",
@@ -76,8 +76,8 @@ pub const STANDARD_PLUGINS: &[PluginDescriptor] = &[
     },
     PluginDescriptor {
         id: "org.gnome.evolution.plugin.bogofilter",
-        name: "Bogofilter Junk-Filter",
-        description: "Bayesscher Spamfilter zur präzisen Klassifizierung unerwünschter E-Mails mittels Bogofilter und Headerprüfung (X-Bogosity).",
+        name: "Bogofilter Junk Filter",
+        description: "Bayesian spam filter for accurate classification of unwanted emails using Bogofilter and header inspection (X-Bogosity).",
         category: PluginCategory::Junk,
         author: "Evolution Team",
         version: "4.0.0",
@@ -85,8 +85,8 @@ pub const STANDARD_PLUGINS: &[PluginDescriptor] = &[
     },
     PluginDescriptor {
         id: "org.gnome.evolution.plugin.itip-formatter",
-        name: "vCalendar / iTIP Einladungs-Formatierer",
-        description: "Erkennt Kalendereinladungen in Nachrichten und erlaubt die direkte Zusage, Absage oder Aktualisierung von Terminen mit einem Klick.",
+        name: "vCalendar / iTIP Invitation Formatter",
+        description: "Detects calendar invitations in messages and allows one-click acceptance, declination, or updating of events.",
         category: PluginCategory::Calendar,
         author: "Evolution Team",
         version: "4.0.0",
@@ -94,8 +94,8 @@ pub const STANDARD_PLUGINS: &[PluginDescriptor] = &[
     },
     PluginDescriptor {
         id: "org.gnome.evolution.plugin.external-editor",
-        name: "Externer Texteditor",
-        description: "Ermöglicht das Verfassen von E-Mails in einem frei wählbaren externen Editor (z.B. GNOME Text Editor, Gedit, Vim, VS Code).",
+        name: "External Text Editor",
+        description: "Allows composing emails in an external editor of your choice (e.g. GNOME Text Editor, Gedit, Vim, VS Code).",
         category: PluginCategory::Utilities,
         author: "Evolution Team",
         version: "4.0.0",
@@ -103,8 +103,8 @@ pub const STANDARD_PLUGINS: &[PluginDescriptor] = &[
     },
     PluginDescriptor {
         id: "org.gnome.evolution.plugin.templates",
-        name: "E-Mail-Vorlagen &amp; Textbausteine",
-        description: "Verwaltet wiederverwendbare Vorlagen und Textbausteine für schnelles Antworten und standardisierte Anschreiben.",
+        name: "Mail Templates &amp; Snippets",
+        description: "Manages reusable templates and text snippets for quick replies and standardized messages.",
         category: PluginCategory::Mail,
         author: "Evolution Team",
         version: "4.0.0",
@@ -112,8 +112,8 @@ pub const STANDARD_PLUGINS: &[PluginDescriptor] = &[
     },
     PluginDescriptor {
         id: "org.gnome.evolution.plugin.face",
-        name: "Face / Gravatar Header-Icons",
-        description: "Liest X-Face-, Face- und Gravatar-Avatar-Header aus und stellt sie im Nachrichtenkopf dar.",
+        name: "Face / Gravatar Header Icons",
+        description: "Reads X-Face, Face, and Gravatar avatar headers and displays them in the message header.",
         category: PluginCategory::Mail,
         author: "Evolution Team",
         version: "4.0.0",
@@ -185,7 +185,7 @@ impl PluginManager {
         };
 
         matched_keyword.map(|kw| {
-            format!("Die Nachricht enthält das Wort „{}“, aber es wurde kein Anhang hinzugefügt. Trotzdem senden?", kw)
+            format!("The message contains the word \"{}\", but no attachment was added. Send anyway?", kw)
         })
     }
 
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(plugins.len(), 8);
 
         let reminder = PluginManager::find_plugin("org.gnome.evolution.plugin.attachment-reminder").unwrap();
-        assert_eq!(reminder.name, "Anhang-Erinnerung");
+        assert_eq!(reminder.name, "Attachment Reminder");
         assert_eq!(reminder.category, PluginCategory::Mail);
         assert!(reminder.is_configurable);
 

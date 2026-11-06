@@ -196,25 +196,25 @@ impl NetworkMonitorService {
     /// Returns human-readable status description for UI status bars and tooltips.
     pub fn status_description(&self, settings: &AppSettings) -> String {
         if settings.offline_mode() || self.is_manual_offline() {
-            return "Offline-Modus aktiv".to_string();
+            return "Offline mode active".to_string();
         }
 
         match self.connectivity() {
-            NetworkConnectivity::Offline => "Keine Netzwerkverbindung (Offline)".to_string(),
+            NetworkConnectivity::Offline => "No network connection (Offline)".to_string(),
             NetworkConnectivity::Metered => {
                 if settings.network_offline_on_metered() {
-                    "Getaktete Verbindung — Synchronisation pausiert".to_string()
+                    "Metered connection — synchronization paused".to_string()
                 } else {
-                    "Getaktete Verbindung (Mobilfunk / Hotspot)".to_string()
+                    "Metered connection (Cellular / Hotspot)".to_string()
                 }
             }
             NetworkConnectivity::Online => {
                 if self.power_state() != PowerSaverState::Normal
                     && settings.network_power_saver_sync_pause()
                 {
-                    "Online — Energiesparmodus aktiv (Sync pausiert)".to_string()
+                    "Online — Power Saver active (sync paused)".to_string()
                 } else {
-                    "Online (Verbunden)".to_string()
+                    "Online (Connected)".to_string()
                 }
             }
         }

@@ -60,7 +60,7 @@ struct PageWindow {
 impl PageWindow {
     fn normalized(offset: usize, requested_limit: i32) -> Result<Self, String> {
         if offset > MAX_MAIL_PAGE_OFFSET {
-            return Err("Der angeforderte Nachrichtenbereich ist zu groß".to_string());
+            return Err("Requested message range is too large".to_string());
         }
         let requested_limit = usize::try_from(requested_limit)
             .ok()
@@ -75,7 +75,7 @@ impl PageWindow {
 
 fn cancellation_error(cancelled: &AtomicBool, operation: &str) -> Result<(), String> {
     if cancelled.load(Ordering::Relaxed) {
-        Err(format!("{operation} wurde abgebrochen"))
+        Err(format!("{operation} was cancelled"))
     } else {
         Ok(())
     }
@@ -119,7 +119,7 @@ fn deduplicate_messages(messages: &mut Vec<ParsedMail>) -> Result<(), String> {
     });
     if malformed_backend_identity {
         Err(
-            "Mailbackend lieferte eine Nachricht ohne vollständige Konto-/Ordner-/UID-Identität"
+            "Mail backend returned a message without a complete account/folder/UID identity"
                 .to_string(),
         )
     } else {
@@ -245,12 +245,12 @@ fn normalize_folder_mutation_capabilities(
     let folder_name = folder_name.trim();
     if source_uid.is_empty() || folder_name.is_empty() {
         return Err(
-            "Camel-Ordneraktionen benötigen eine genaue Quelle und einen Ordnernamen".to_string(),
+            "Camel folder actions require an exact source and folder name".to_string(),
         );
     }
     if can_copy || can_move {
         return Err(
-            "Die Camel-Bridge darf keine nicht-atomare Ordner-Kopier- oder Verschiebefähigkeit behaupten"
+            "The Camel bridge must not claim non-atomic folder copy or move capabilities"
                 .to_string(),
         );
     }
@@ -274,12 +274,12 @@ fn normalize_subscription_snapshot(
 ) -> Result<CamelSubscriptionSnapshot, String> {
     let source_uid = source_uid.trim();
     if source_uid.is_empty() {
-        return Err("Camel-Abonnements benötigen eine genaue EDS-Quellen-ID".to_string());
+        return Err("Camel subscriptions require an exact EDS source ID".to_string());
     }
     if !is_subscribable {
         if !folders.is_empty() {
             return Err(
-                "Eine nicht abonnierbare Camel-Quelle lieferte Abonnementordner".to_string(),
+                "A non-subscribable Camel source returned subscription folders".to_string(),
             );
         }
         return Ok(CamelSubscriptionSnapshot {
@@ -297,14 +297,14 @@ fn normalize_subscription_snapshot(
             || !seen.insert(folder.folder_name.clone())
         {
             return Err(
-                "Camel-Abonnementsliste enthält keine eindeutigen genauen Ordneridentitäten"
+                "Camel subscription list does not contain unique exact folder identities"
                     .to_string(),
             );
         }
         if let Some(parent) = folder.parent_folder_name.as_deref() {
             if parent.trim().is_empty() || parent == folder.folder_name {
                 return Err(
-                    "Camel-Abonnementsliste enthält eine ungültige Ordnerhierarchie".to_string(),
+                    "Camel subscription list contains an invalid folder hierarchy".to_string(),
                 );
             }
         }
@@ -418,19 +418,19 @@ pub(crate) fn load_messages_graph(
     let window = PageWindow::normalized(offset, max_messages_per_folder)?;
     let Some((configured_source_uid, service)) = graph_service_for_configured_account_worker()
     else {
-        return Err("Kein aktiviertes Exchange-Profil mit Graph-Zugriff verfügbar".to_string());
+        return Err("No enabled Exchange profile with Graph access available".to_string());
     };
     let service = service.with_cancellation_flag(cancelled.clone());
     if let Some(source_uid) = source_uid {
         if source_uid != configured_source_uid {
-            return Err("Das angeforderte Konto ist kein Graph-Exchange-Konto".to_string());
+            return Err("The requested account is not a Graph Exchange account".to_string());
         }
     }
-    cancellation_error(cancelled, "Graph-Mail-Laden")?;
+    cancellation_error(cancelled, "Graph mail load")?;
     let graph_folders = service
         .list_mail_folders_sync()
         .map_err(|error| error.to_string())?;
-    cancellation_error(cancelled, "Graph-Mail-Laden")?;
+    cancellation_error(cancelled, "Graph mail load")?;
     let folders = graph_folders
         .iter()
         .map(|folder| CamelFolderSummary {
@@ -455,7 +455,7 @@ pub(crate) fn load_messages_graph(
         .cloned()
         .collect::<Vec<_>>();
     if folder_name.is_some() && selected.is_empty() {
-        return Err("Der angeforderte Graph-Mailordner wurde nicht gefunden".to_string());
+        return Err("The requested Graph mail folder was not found".to_string());
     }
 
     let mut messages = Vec::new();
@@ -468,7 +468,7 @@ pub(crate) fn load_messages_graph(
         if window.offset > 0 && cursor.is_none() {
             continue;
         }
-        cancellation_error(cancelled, "Graph-Mail-Laden")?;
+        cancellation_error(cancelled, "Graph mail load")?;
         let page = service
             .list_messages_cursor_sync(&folder.id, cursor, window.limit)
             .map(|(page, next_link)| {
@@ -493,20 +493,20 @@ pub(crate) fn load_messages_graph(
                 failed_folders.push(format!("{}: {error}", folder.display_name));
             }
         }
-        cancellation_error(cancelled, "Graph-Mail-Laden")?;
+        cancellation_error(cancelled, "Graph mail load")?;
     }
     if messages.is_empty() && !failed_folders.is_empty() {
         return Err(format!(
-            "Graph-Mailordner konnten nicht geladen werden: {}",
+            "Could not load Graph mail folders: {}",
             failed_folders.join("; ")
         ));
     }
     deduplicate_messages(&mut messages)?;
-    cancellation_error(cancelled, "Graph-Mail-Laden")?;
+    cancellation_error(cancelled, "Graph mail load")?;
     worker_mail_store_service().apply_backend_filters(&mut messages);
-    cancellation_error(cancelled, "Graph-Mail-Laden")?;
+    cancellation_error(cancelled, "Graph mail load")?;
     assign_thread_metadata(&mut messages);
-    cancellation_error(cancelled, "Graph-Mail-Laden")?;
+    cancellation_error(cancelled, "Graph mail load")?;
     Ok(CamelMailLoad {
         messages,
         folders,
@@ -551,27 +551,27 @@ pub(crate) fn search_messages_graph_page(
     let window = PageWindow::normalized(0, max_items)?;
     let Some((configured_source_uid, service)) = graph_service_for_configured_account_worker()
     else {
-        return Err("Kein aktiviertes Exchange-Profil mit Graph-Zugriff verfügbar".to_string());
+        return Err("No enabled Exchange profile with Graph access available".to_string());
     };
     let service = service.with_cancellation_flag(cancelled.clone());
     if let Some(source_uid) = source_uid {
         if source_uid != configured_source_uid {
-            return Err("Das angeforderte Konto ist kein Graph-Exchange-Konto".to_string());
+            return Err("The requested account is not a Graph Exchange account".to_string());
         }
     }
-    cancellation_error(cancelled, "Graph-Mail-Suche")?;
+    cancellation_error(cancelled, "Graph mail search")?;
 
     let graph_folders = service
         .list_mail_folders_sync()
         .map_err(|error| error.to_string())?;
-    cancellation_error(cancelled, "Graph-Mail-Suche")?;
+    cancellation_error(cancelled, "Graph mail search")?;
     let selected_folder = folder_name.and_then(|wanted| {
         graph_folders
             .iter()
             .find(|folder| folder_matches_name(&folder.display_name, wanted))
     });
     if cursor.is_none() && folder_name.is_some() && selected_folder.is_none() {
-        return Err("Der angeforderte Graph-Mailordner wurde nicht gefunden".to_string());
+        return Err("The requested Graph mail folder was not found".to_string());
     }
     let search_result = service
         .search_messages_cursor_sync(
@@ -583,7 +583,7 @@ pub(crate) fn search_messages_graph_page(
         )
         .map_err(|error| error.to_string())?;
     let is_complete = search_result.is_complete;
-    cancellation_error(cancelled, "Graph-Mail-Suche")?;
+    cancellation_error(cancelled, "Graph mail search")?;
     let mut messages = search_result
         .messages
         .into_iter()
@@ -596,16 +596,16 @@ pub(crate) fn search_messages_graph_page(
                         .find(|folder| folder.id == message.folder_id)
                         .map(|folder| folder.display_name.clone())
                 })
-                .unwrap_or_else(|| "Alle Nachrichten".to_string());
+                .unwrap_or_else(|| "All Messages".to_string());
             message.into_parsed_mail(&configured_source_uid, &display_folder)
         })
         .collect::<Vec<_>>();
     deduplicate_messages(&mut messages)?;
-    cancellation_error(cancelled, "Graph-Mail-Suche")?;
+    cancellation_error(cancelled, "Graph mail search")?;
     worker_mail_store_service().apply_backend_filters(&mut messages);
-    cancellation_error(cancelled, "Graph-Mail-Suche")?;
+    cancellation_error(cancelled, "Graph mail search")?;
     assign_thread_metadata(&mut messages);
-    cancellation_error(cancelled, "Graph-Mail-Suche")?;
+    cancellation_error(cancelled, "Graph mail search")?;
     let folders = graph_folders
         .iter()
         .map(|folder| CamelFolderSummary {
@@ -635,7 +635,7 @@ pub(crate) fn search_messages_graph_page(
 
 fn graph_search_warning(is_complete: bool) -> Option<String> {
     (!is_complete).then(|| {
-        "Graph-Suche ist unvollständig: Das Ergebnislimit wurde erreicht; weitere Treffer sind möglich."
+        "Graph search is incomplete: the result limit was reached; more matches may exist."
             .to_string()
     })
 }
@@ -824,7 +824,7 @@ pub(crate) fn parse_folder_tree_content(
 /// Load Evolution's cached mail folders from disk for a given source_uid.
 /// If folder-tree exists in `~/.cache/evolution/mail/<source_uid>`, it parses that.
 /// If not, it inspects `folders/` subdirectories.
-/// If neither exists, it provides standard mailbox folders (Posteingang, Gesendet, etc.)
+/// If neither exists, it provides standard mailbox folders (Inbox, Sent, etc.)
 /// so the account always presents a proper folder tree in the UI.
 pub(crate) fn load_evolution_cached_folders(
     source_uid: &str,
@@ -912,8 +912,8 @@ pub(crate) fn load_evolution_cached_folders(
             source_uid: source_uid.to_string(),
             source_display_name: source_display_name.to_string(),
             folder_id: "inbox".to_string(),
-            folder_name: "Posteingang".to_string(),
-            display_name: "Posteingang".to_string(),
+            folder_name: "Inbox".to_string(),
+            display_name: "Inbox".to_string(),
             unread_count: 0,
             total_count: 0,
             is_selectable: true,
@@ -922,8 +922,8 @@ pub(crate) fn load_evolution_cached_folders(
             source_uid: source_uid.to_string(),
             source_display_name: source_display_name.to_string(),
             folder_id: "drafts".to_string(),
-            folder_name: "Entwürfe".to_string(),
-            display_name: "Entwürfe".to_string(),
+            folder_name: "Drafts".to_string(),
+            display_name: "Drafts".to_string(),
             unread_count: 0,
             total_count: 0,
             is_selectable: true,
@@ -932,8 +932,8 @@ pub(crate) fn load_evolution_cached_folders(
             source_uid: source_uid.to_string(),
             source_display_name: source_display_name.to_string(),
             folder_id: "sent".to_string(),
-            folder_name: "Gesendete Elemente".to_string(),
-            display_name: "Gesendete Elemente".to_string(),
+            folder_name: "Sent".to_string(),
+            display_name: "Sent".to_string(),
             unread_count: 0,
             total_count: 0,
             is_selectable: true,
@@ -942,8 +942,8 @@ pub(crate) fn load_evolution_cached_folders(
             source_uid: source_uid.to_string(),
             source_display_name: source_display_name.to_string(),
             folder_id: "trash".to_string(),
-            folder_name: "Gelöschte Elemente".to_string(),
-            display_name: "Gelöschte Elemente".to_string(),
+            folder_name: "Trash".to_string(),
+            display_name: "Trash".to_string(),
             unread_count: 0,
             total_count: 0,
             is_selectable: true,
@@ -952,8 +952,8 @@ pub(crate) fn load_evolution_cached_folders(
             source_uid: source_uid.to_string(),
             source_display_name: source_display_name.to_string(),
             folder_id: "junk".to_string(),
-            folder_name: "Junk-E-Mail".to_string(),
-            display_name: "Junk-E-Mail".to_string(),
+            folder_name: "Junk".to_string(),
+            display_name: "Junk".to_string(),
             unread_count: 0,
             total_count: 0,
             is_selectable: true,
@@ -962,8 +962,8 @@ pub(crate) fn load_evolution_cached_folders(
             source_uid: source_uid.to_string(),
             source_display_name: source_display_name.to_string(),
             folder_id: "archive".to_string(),
-            folder_name: "Archiv".to_string(),
-            display_name: "Archiv".to_string(),
+            folder_name: "Archive".to_string(),
+            display_name: "Archive".to_string(),
             unread_count: 0,
             total_count: 0,
             is_selectable: true,
@@ -1089,7 +1089,7 @@ impl CamelChangeNormalizer {
                 | CamelChangeKind::SourceChanged
         ) {
             if event.source_uid.is_empty() {
-                return Err("Camel-Kontoänderung ohne Quell-UID".to_string());
+                return Err("Camel account change without source UID".to_string());
             }
             return Ok(event);
         }
@@ -1101,13 +1101,13 @@ impl CamelChangeNormalizer {
             .map(|name| name.trim().to_string())
             .filter(|name| !name.is_empty());
         if event.source_uid.is_empty() || event.folder_name.is_empty() {
-            return Err("Camel-Änderung ohne Konto- oder Ordnerkennung".to_string());
+            return Err("Camel change without account or folder identifier".to_string());
         }
 
         match event.kind {
             CamelChangeKind::FolderRenamed => {
                 let old_folder = event.old_folder_name.clone().ok_or_else(|| {
-                    "Camel-Ordnerumbenennung ohne vorherigen Ordnernamen".to_string()
+                    "Camel folder rename without previous folder name".to_string()
                 })?;
                 let old_folder = self.resolve_folder(&event.source_uid, &old_folder);
                 // The new name comes from Camel's current folder object and
@@ -1703,9 +1703,9 @@ pub fn store_source_password(source_uid: &str, password: &str) -> Result<(), Str
     {
         use std::ffi::CString;
         let source_uid_c = CString::new(source_uid)
-            .map_err(|_| "Quell-UID enthält ungültige Nullbytes".to_string())?;
+            .map_err(|_| "Source UID contains invalid NUL bytes".to_string())?;
         let password_c = CString::new(password)
-            .map_err(|_| "Passwort enthält ungültige Nullbytes".to_string())?;
+            .map_err(|_| "Password contains invalid NUL bytes".to_string())?;
         let mut out_error: *mut std::os::raw::c_char = std::ptr::null_mut();
 
         let ok = unsafe {
@@ -1726,7 +1726,7 @@ pub fn store_source_password(source_uid: &str, password: &str) -> Result<(), Str
                 unsafe { ffi::meridian_eds_camel_free_error(out_error) };
                 err_str
             } else {
-                "Passwort konnte nicht im Schlüsselbund hinterlegt werden".to_string()
+                "Password could not be stored in the keyring".to_string()
             };
             return Err(msg);
         }
@@ -1793,7 +1793,7 @@ pub(crate) fn load_messages_page_with_progress_and_cancellation(
 
         for attempt in 1..=MAX_ATTEMPTS {
             if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-                return Err("Mail-Ladevorgang wurde abgebrochen.".to_string());
+                return Err("Mail loading was cancelled.".to_string());
             }
 
             let result = load_messages_native(
@@ -1839,7 +1839,7 @@ pub(crate) fn load_messages_page_with_progress_and_cancellation(
             let mut waited = 0;
             while waited < delay_milliseconds {
                 if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-                    return Err("Mail-Ladevorgang wurde abgebrochen.".to_string());
+                    return Err("Mail loading was cancelled.".to_string());
                 }
                 let slice = (delay_milliseconds - waited).min(25);
                 std::thread::sleep(std::time::Duration::from_millis(slice));
@@ -1994,7 +1994,7 @@ pub(crate) fn sync_background_folders_with_cancellation(
         }
 
         let Ok(_native_lock) = CAMEL_NATIVE_LOCK.try_lock() else {
-            return Err("Camel-Hintergrundabgleich übersprungen (Vordergrundaktion aktiv)".to_string());
+            return Err("Camel background sync skipped (foreground operation active)".to_string());
         };
 
         let mut folders = std::ptr::null_mut();
@@ -2026,7 +2026,7 @@ pub(crate) fn sync_background_folders_with_cancellation(
             if !folders.is_null() {
                 unsafe { ffi::meridian_eds_camel_free_folders(folders, folder_count) };
             }
-            return Err(warning.unwrap_or_else(|| "Camel-Hintergrundabgleich fehlgeschlagen".to_string()));
+            return Err(warning.unwrap_or_else(|| "Camel background sync failed".to_string()));
         }
 
         let shared_profiles = crate::services::account_config_service::AccountConfigStore::default()
@@ -2294,10 +2294,10 @@ pub(crate) fn load_subscription_folders_with_cancellation(
 ) -> Result<CamelSubscriptionSnapshot, String> {
     let source_uid = source_uid.trim();
     if source_uid.is_empty() {
-        return Err("Camel-Abonnements benötigen eine genaue EDS-Quellen-ID".to_string());
+        return Err("Camel subscriptions require an exact EDS source ID".to_string());
     }
     if let Some(cancelled) = cancelled {
-        cancellation_error(cancelled, "Camel-Abonnementsliste")?;
+        cancellation_error(cancelled, "Camel subscription list")?;
     }
 
     #[cfg(eds_camel_bridge)]
@@ -2313,7 +2313,7 @@ pub(crate) fn load_subscription_folders_with_cancellation(
         }
 
         let source_uid_c = CString::new(source_uid)
-            .map_err(|_| "EDS-Quellen-ID enthält ein ungültiges NUL-Byte".to_string())?;
+            .map_err(|_| "EDS source ID contains an invalid NUL byte".to_string())?;
         let mut records = std::ptr::null_mut();
         let mut record_count = 0usize;
         let mut is_subscribable = 0;
@@ -2350,7 +2350,7 @@ pub(crate) fn load_subscription_folders_with_cancellation(
                 };
             }
             return Err(error.unwrap_or_else(|| {
-                "Camel-Abonnementsliste konnte nicht geladen werden".to_string()
+                "Could not load Camel subscription list".to_string()
             }));
         }
 
@@ -2373,7 +2373,7 @@ pub(crate) fn load_subscription_folders_with_cancellation(
             unsafe { ffi::meridian_eds_camel_free_subscription_folders(records, record_count) };
         }
         if let Some(cancelled) = cancelled {
-            cancellation_error(cancelled, "Camel-Abonnementsliste")?;
+            cancellation_error(cancelled, "Camel subscription list")?;
         }
         normalize_subscription_snapshot(source_uid, is_subscribable != 0, folders)
     }
@@ -2403,11 +2403,11 @@ pub(crate) fn set_folder_subscription_with_cancellation(
     let folder_name = resolved_folder_name.trim();
     if source_uid.is_empty() || folder_name.is_empty() {
         return Err(
-            "Camel-Abonnements benötigen eine genaue Quelle und einen Ordnernamen".to_string(),
+            "Camel subscriptions require an exact source and folder name".to_string(),
         );
     }
     if let Some(cancelled) = cancelled {
-        cancellation_error(cancelled, "Camel-Abonnementänderung")?;
+        cancellation_error(cancelled, "Camel subscription change")?;
     }
 
     #[cfg(eds_camel_bridge)]
@@ -2423,9 +2423,9 @@ pub(crate) fn set_folder_subscription_with_cancellation(
         }
 
         let source_uid = CString::new(source_uid)
-            .map_err(|_| "EDS-Quellen-ID enthält ein ungültiges NUL-Byte".to_string())?;
+            .map_err(|_| "EDS source ID contains an invalid NUL byte".to_string())?;
         let folder_name = CString::new(folder_name)
-            .map_err(|_| "Camel-Ordnername enthält ein ungültiges NUL-Byte".to_string())?;
+            .map_err(|_| "Camel folder name contains an invalid NUL byte".to_string())?;
         let mut error_message: *mut c_char = std::ptr::null_mut();
         let cancellation_user_data = cancelled.map_or(std::ptr::null_mut(), |cancelled| {
             cancelled as *const AtomicBool as *mut c_void
@@ -2454,7 +2454,7 @@ pub(crate) fn set_folder_subscription_with_cancellation(
             Ok(())
         } else {
             Err(error.unwrap_or_else(|| {
-                "Camel-Abonnementänderung konnte nicht bestätigt werden".to_string()
+                "Camel subscription change could not be confirmed".to_string()
             }))
         }
     }
@@ -2482,11 +2482,11 @@ pub(crate) fn folder_mutation_capabilities_with_cancellation(
     let folder_name = resolved_folder_name.trim();
     if source_uid.is_empty() || folder_name.is_empty() {
         return Err(
-            "Camel-Ordneraktionen benötigen eine genaue Quelle und einen Ordnernamen".to_string(),
+            "Camel folder actions require an exact source and folder name".to_string(),
         );
     }
     if let Some(cancelled) = cancelled {
-        cancellation_error(cancelled, "Camel-Ordneraktionen")?;
+        cancellation_error(cancelled, "Camel folder actions")?;
     }
 
     #[cfg(eds_camel_bridge)]
@@ -2502,9 +2502,9 @@ pub(crate) fn folder_mutation_capabilities_with_cancellation(
         }
 
         let source_uid = CString::new(source_uid)
-            .map_err(|_| "EDS-Quellen-ID enthält ein ungültiges NUL-Byte".to_string())?;
+            .map_err(|_| "EDS source ID contains an invalid NUL byte".to_string())?;
         let folder_name = CString::new(folder_name)
-            .map_err(|_| "Camel-Ordnername enthält ein ungültiges NUL-Byte".to_string())?;
+            .map_err(|_| "Camel folder name contains an invalid NUL byte".to_string())?;
         let mut capabilities = ffi::MeridianEdsCamelFolderMutationCapabilities {
             can_create_child: 0,
             can_rename: 0,
@@ -2539,11 +2539,11 @@ pub(crate) fn folder_mutation_capabilities_with_cancellation(
         });
         if !success {
             return Err(error.unwrap_or_else(|| {
-                "Camel-Ordneraktionen konnten nicht geprüft werden".to_string()
+                "Could not check Camel folder actions".to_string()
             }));
         }
         if let Some(cancelled) = cancelled {
-            cancellation_error(cancelled, "Camel-Ordneraktionen")?;
+            cancellation_error(cancelled, "Camel folder actions")?;
         }
         normalize_folder_mutation_capabilities(
             source_uid.to_str().unwrap_or_default(),
@@ -2583,20 +2583,20 @@ pub(crate) fn apply_folder_mutation_with_cancellation(
     let target_name = target_name.map(str::trim).filter(|name| !name.is_empty());
     if source_uid.is_empty() || folder_name.is_empty() {
         return Err(
-            "Camel-Ordneraktionen benötigen eine genaue Quelle und einen Ordnernamen".to_string(),
+            "Camel folder actions require an exact source and folder name".to_string(),
         );
     }
     if kind.requires_target_name() != target_name.is_some() {
         return Err(
-            "Diese Camel-Ordneraktion benötigt genau dann einen neuen Namen, wenn sie erstellt oder umbenennt"
+            "This Camel folder action requires a new name if and only if it creates or renames a folder"
                 .to_string(),
         );
     }
     if target_name.is_some_and(|name| name.contains('/')) {
-        return Err("Camel-Ordnernamen dürfen kein '/' enthalten".to_string());
+        return Err("Camel folder names must not contain '/'".to_string());
     }
     if let Some(cancelled) = cancelled {
-        cancellation_error(cancelled, "Camel-Ordneraktion")?;
+        cancellation_error(cancelled, "Camel folder action")?;
     }
 
     #[cfg(eds_camel_bridge)]
@@ -2612,13 +2612,13 @@ pub(crate) fn apply_folder_mutation_with_cancellation(
         }
 
         let source_uid = CString::new(source_uid)
-            .map_err(|_| "EDS-Quellen-ID enthält ein ungültiges NUL-Byte".to_string())?;
+            .map_err(|_| "EDS source ID contains an invalid NUL byte".to_string())?;
         let folder_name = CString::new(folder_name)
-            .map_err(|_| "Camel-Ordnername enthält ein ungültiges NUL-Byte".to_string())?;
+            .map_err(|_| "Camel folder name contains an invalid NUL byte".to_string())?;
         let target_name = target_name
             .map(CString::new)
             .transpose()
-            .map_err(|_| "Neuer Camel-Ordnername enthält ein ungültiges NUL-Byte".to_string())?;
+            .map_err(|_| "New Camel folder name contains an invalid NUL byte".to_string())?;
         let mut error_message: *mut c_char = std::ptr::null_mut();
         let cancellation_user_data = cancelled.map_or(std::ptr::null_mut(), |cancelled| {
             cancelled as *const AtomicBool as *mut c_void
@@ -2648,12 +2648,12 @@ pub(crate) fn apply_folder_mutation_with_cancellation(
         });
         if success {
             if let Some(cancelled) = cancelled {
-                cancellation_error(cancelled, "Camel-Ordneraktion")?;
+                cancellation_error(cancelled, "Camel folder action")?;
             }
             Ok(())
         } else {
             Err(error
-                .unwrap_or_else(|| "Camel-Ordneraktion konnte nicht bestätigt werden".to_string()))
+                .unwrap_or_else(|| "Camel folder action could not be confirmed".to_string()))
         }
     }
 
@@ -2719,7 +2719,7 @@ fn parse_native_messages(
     let records_slice = unsafe { slice::from_raw_parts(records, record_count) };
     for record in records_slice {
         if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Relaxed)) {
-            return Err("Camel-Mail-Verarbeitung wurde abgebrochen".to_string());
+            return Err("Camel mail processing was cancelled".to_string());
         }
         if record.raw_message.is_null() || record.raw_message_len == 0 {
             continue;
@@ -2766,11 +2766,11 @@ fn parse_native_messages(
 
     deduplicate_messages(&mut messages)?;
     if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Relaxed)) {
-        return Err("Camel-Mail-Verarbeitung wurde abgebrochen".to_string());
+        return Err("Camel mail processing was cancelled".to_string());
     }
     worker_mail_store_service().apply_backend_filters(&mut messages);
     if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Relaxed)) {
-        return Err("Camel-Mail-Verarbeitung wurde abgebrochen".to_string());
+        return Err("Camel mail processing was cancelled".to_string());
     }
     assign_thread_metadata(&mut messages);
     Ok(messages)
@@ -2867,7 +2867,7 @@ pub(crate) fn load_raw_message(
         location.message_uid.clone(),
     );
     if let Some(cached) = get_cached_raw_message(&cache_key) {
-        cancellation_error(cancelled, "Nachrichtenquelle laden")?;
+        cancellation_error(cancelled, "Loading message source")?;
         return Ok(cached);
     }
 
@@ -2883,12 +2883,12 @@ fn load_raw_message_uncached(
     if let Some(service) =
         super::exchange_service::graph_service_for_source_worker(&location.source_uid)
     {
-        cancellation_error(cancelled, "Graph-Nachrichtenquelle laden")?;
+        cancellation_error(cancelled, "Loading Graph message source")?;
         let service = service.with_cancellation_flag(cancelled.clone());
         let source = service
             .message_mime_sync(&location.message_uid)
             .map_err(|error| error.to_string())?;
-        cancellation_error(cancelled, "Graph-Nachrichtenquelle laden")?;
+        cancellation_error(cancelled, "Loading Graph message source")?;
         return Ok(source);
     }
 
@@ -2901,7 +2901,7 @@ fn load_raw_message_uncached(
             &resolved_folder_name,
             &location.message_uid,
         ) {
-            cancellation_error(cancelled, "Nachrichtenquelle laden")?;
+            cancellation_error(cancelled, "Loading message source")?;
             return Ok(raw);
         }
         if resolved_folder_name != location.folder_name {
@@ -2910,7 +2910,7 @@ fn load_raw_message_uncached(
                 &location.folder_name,
                 &location.message_uid,
             ) {
-                cancellation_error(cancelled, "Nachrichtenquelle laden")?;
+                cancellation_error(cancelled, "Loading message source")?;
                 return Ok(raw);
             }
         }
@@ -2944,7 +2944,7 @@ fn load_raw_message_native(
         cancelled.load(Ordering::Relaxed) as i32
     }
 
-    cancellation_error(cancelled, "Nachrichtenquelle laden")?;
+    cancellation_error(cancelled, "Loading message source")?;
     let (resolved_source_uid, resolved_folder_name) =
         resolve_shared_mailbox_target(&location.source_uid, &location.folder_name);
     let source_uid = CString::new(resolved_source_uid.as_str())
@@ -2962,7 +2962,7 @@ fn load_raw_message_native(
         .unwrap_or_else(|poison| poison.into_inner());
     // Selection may have changed while waiting for another Camel operation.
     // Do not make the obsolete request connect or touch the provider.
-    cancellation_error(cancelled, "Nachrichtenquelle laden")?;
+    cancellation_error(cancelled, "Loading message source")?;
     let success = unsafe {
         ffi::meridian_eds_camel_load_messages_by_uid(
             source_uid.as_ptr(),
@@ -2986,7 +2986,7 @@ fn load_raw_message_native(
             unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
         }
         return Err(warning.unwrap_or_else(|| {
-            "Die originale EDS/Camel-Nachrichtenquelle konnte nicht geladen werden".to_string()
+            "Could not load original EDS/Camel message source".to_string()
         }));
     }
 
@@ -3003,8 +3003,8 @@ fn load_raw_message_native(
     if !records.is_null() {
         unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
     }
-    cancellation_error(cancelled, "Nachrichtenquelle laden")?;
-    raw.ok_or_else(|| "EDS/Camel lieferte keine originale Nachrichtenquelle".to_string())
+    cancellation_error(cancelled, "Loading message source")?;
+    raw.ok_or_else(|| "EDS/Camel did not return an original message source".to_string())
 }
 
 #[cfg(eds_camel_bridge)]
@@ -3029,7 +3029,7 @@ fn load_messages_for_uids_native(
         .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
     let folder_name = CString::new(folder_name)
         .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())?;
-    cancellation_error(cancelled, "Inkrementelles Camel-Laden")?;
+    cancellation_error(cancelled, "Incremental Camel load")?;
     let message_uids = normalized_uids(message_uids.iter().cloned())
         .into_iter()
         .map(|uid| {
@@ -3075,7 +3075,7 @@ fn load_messages_for_uids_native(
             unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
         }
         return Err(warning
-            .unwrap_or_else(|| "Inkrementelles EDS/Camel-Laden ist fehlgeschlagen".to_string()));
+            .unwrap_or_else(|| "Incremental EDS/Camel load failed".to_string()));
     }
 
     let messages = parse_native_messages(records, record_count, false, Some(cancelled));
@@ -3083,7 +3083,7 @@ fn load_messages_for_uids_native(
         unsafe { ffi::meridian_eds_camel_free_messages(records, record_count) };
     }
     let messages = messages?;
-    cancellation_error(cancelled, "Inkrementelles Camel-Laden")?;
+    cancellation_error(cancelled, "Incremental Camel load")?;
     Ok(messages)
 }
 
@@ -3147,7 +3147,7 @@ pub(crate) fn search_folder_sync(
         });
 
         if !success {
-            return Err(warning.unwrap_or_else(|| "Camel-Ordnersuche fehlgeschlagen".to_string()));
+            return Err(warning.unwrap_or_else(|| "Camel folder search failed".to_string()));
         }
 
         let mut uids = Vec::with_capacity(out_count);
@@ -3189,7 +3189,7 @@ fn send_watcher_event(
             Err(async_channel::TrySendError::Full(event)) => {
                 if !overflowed {
                     pending = CamelSyncEvent::ResyncRequired(
-                        "Camel-Änderungswarteschlange war ausgelastet".to_string(),
+                        "Camel change queue was full".to_string(),
                     );
                     overflowed = true;
                 } else {
@@ -3239,7 +3239,7 @@ pub(crate) fn start_change_monitor()
                     &sender,
                     &cancellation,
                     CamelSyncEvent::Error(warning.unwrap_or_else(|| {
-                        "EDS/Camel-Signalmonitor konnte nicht gestartet werden".to_string()
+                        "Could not start EDS/Camel signal monitor".to_string()
                     })),
                 );
                 return;
@@ -3289,7 +3289,7 @@ pub(crate) fn start_change_monitor()
                         &sender,
                         &cancellation,
                         CamelSyncEvent::Error(
-                            "EDS/Camel-Signalmonitor wurde unerwartet beendet".to_string(),
+                            "EDS/Camel signal monitor terminated unexpectedly".to_string(),
                         ),
                     );
                     break;
@@ -3315,7 +3315,7 @@ pub(crate) fn start_change_monitor()
                         &sender,
                         &cancellation,
                         CamelSyncEvent::ResyncRequired(format!(
-                            "Unbekanntes Camel-Änderungsereignis {}",
+                            "Unknown Camel change event {}",
                             unknown_kind
                         )),
                     ) {
@@ -3678,8 +3678,8 @@ mod tests {
     fn incomplete_graph_search_is_exposed_as_a_clear_warning() {
         assert!(graph_search_warning(true).is_none());
         let warning = graph_search_warning(false).expect("incomplete search needs a warning");
-        assert!(warning.contains("unvollständig"));
-        assert!(warning.contains("Ergebnislimit"));
+        assert!(warning.contains("incomplete"));
+        assert!(warning.contains("result limit"));
     }
 
     #[test]
@@ -3751,11 +3751,11 @@ ParentFolderId=folder-sync-id
     #[test]
     fn cancellation_wins_before_a_late_backend_result_is_applied() {
         let cancelled = AtomicBool::new(false);
-        assert!(cancellation_error(&cancelled, "Testladen").is_ok());
+        assert!(cancellation_error(&cancelled, "Test load").is_ok());
         cancelled.store(true, Ordering::Relaxed);
         assert_eq!(
-            cancellation_error(&cancelled, "Testladen").unwrap_err(),
-            "Testladen wurde abgebrochen"
+            cancellation_error(&cancelled, "Test load").unwrap_err(),
+            "Test load was cancelled"
         );
     }
 
@@ -4086,7 +4086,7 @@ fn apply_operation_with_cancellation(
     cancelled: Option<&AtomicBool>,
 ) -> Result<(), String> {
     if let Some(cancelled) = cancelled {
-        cancellation_error(cancelled, "EDS/Camel-Änderung")?;
+        cancellation_error(cancelled, "EDS/Camel operation")?;
     }
     if let Some(result) = apply_graph_operation(&operation) {
         return result;
@@ -4155,7 +4155,7 @@ fn apply_operation_with_cancellation(
             ),
             CamelMailOperation::Copy { .. } | CamelMailOperation::RemoveCopy { .. } => {
                 return Err(
-                    "EDS/Camel-Kopieren ist in diesem Backend noch nicht implementiert".to_string(),
+                    "EDS/Camel copy is not yet implemented in this backend".to_string(),
                 );
             }
             CamelMailOperation::Archive { location } => {
@@ -4180,7 +4180,7 @@ fn apply_operation_with_cancellation(
             ),
             CamelMailOperation::SetLabel { .. } => {
                 return Err(
-                    "EDS/Camel-Kategorien werden in diesem Backend noch nicht unterstützt"
+                    "EDS/Camel categories are not yet supported in this backend"
                         .to_string(),
                 );
             }
@@ -4270,7 +4270,7 @@ fn apply_operation_with_cancellation(
             Ok(())
         } else if result == 2 {
             let message =
-                error.unwrap_or_else(|| "Der Serverzustand hat sich geändert".to_string());
+                error.unwrap_or_else(|| "Server state has changed".to_string());
             Err(
                 if message
                     .trim_start()
@@ -4318,7 +4318,7 @@ pub(crate) fn apply_follow_up_state_with_cancellation(
         super::exchange_service::graph_service_for_source_worker(&location.source_uid)
     {
         if !graph_follow_up_due_is_supported(due_by.as_deref()) {
-            return Err("Microsoft Graph unterstützt keine Follow-up-Fälligkeit".to_string());
+            return Err("Microsoft Graph does not support follow-up due dates".to_string());
         }
         return service
             .with_cancellation_flag(cancelled)
@@ -4363,7 +4363,7 @@ pub(crate) fn apply_operation_with_result(
                 super::exchange_service::graph_service_for_source_worker(&location.source_uid)
             else {
                 return Err(
-                    "EDS/Camel-Kopieren ist in diesem Backend noch nicht implementiert".to_string(),
+                    "EDS/Camel copy is not yet implemented in this backend".to_string(),
                 );
             };
             let destination_id = service
@@ -4384,7 +4384,7 @@ pub(crate) fn apply_operation_with_result(
                 super::exchange_service::graph_service_for_source_worker(&location.source_uid)
             else {
                 return Err(
-                    "EDS/Camel-Kopieren ist in diesem Backend noch nicht implementiert".to_string(),
+                    "EDS/Camel copy is not yet implemented in this backend".to_string(),
                 );
             };
             // This location is created by the successful Copy operation above,
@@ -4420,7 +4420,7 @@ fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), St
         CamelMailOperation::Copy { .. } | CamelMailOperation::RemoveCopy { .. }
     ) {
         return Some(Err(
-            "Graph-Kopieren benötigt den rückgabefähigen Operationspfad".to_string(),
+            "Graph copy requires the result-returning operation path".to_string(),
         ));
     }
     let result = match operation {
@@ -4431,7 +4431,7 @@ fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), St
         } => {
             if !graph_follow_up_due_is_supported(due_by.as_deref()) {
                 return Some(Err(
-                    "Microsoft Graph unterstützt keine Follow-up-Fälligkeit".to_string(),
+                    "Microsoft Graph does not support follow-up due dates".to_string(),
                 ));
             }
             service.set_message_follow_up_state_sync(&location.message_uid, *status)
@@ -4504,7 +4504,7 @@ pub(crate) fn send_message_with_cancellation(
         .as_ref()
         .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
     {
-        return Err("Mail-Versand wurde abgebrochen".to_string());
+        return Err("Mail sending was cancelled".to_string());
     }
 
     // Offline sending is an explicit local queue operation.  Read the
@@ -4519,10 +4519,10 @@ pub(crate) fn send_message_with_cancellation(
         transport
             .enqueue_message(&queue_id, source_uid, raw_message)
             .map_err(|error| {
-                format!("Offline-Nachricht konnte nicht vorgemerkt werden: {error}")
+                format!("Offline message could not be queued: {error}")
             })?;
         return Err(
-            "Offline-Modus: Nachricht wurde in die lokale Transportwarteschlange gelegt"
+            "Offline mode: message was placed in the local transport queue"
                 .to_string(),
         );
     }
@@ -4541,9 +4541,9 @@ pub(crate) fn send_message_with_cancellation(
         use std::ffi::{CStr, CString, c_char};
 
         let source_uid = CString::new(source_uid)
-            .map_err(|_| "EDS source UID enthält ein ungültiges NUL-Byte".to_string())?;
+            .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
         if raw_message.is_empty() {
-            return Err("Die RFC822-Nachricht ist leer".to_string());
+            return Err("The RFC822 message is empty".to_string());
         }
 
         let mut sent_message_saved = 0;
@@ -4569,7 +4569,7 @@ pub(crate) fn send_message_with_cancellation(
         if result == 1 {
             Ok(sent_message_saved != 0)
         } else {
-            Err(error.unwrap_or_else(|| "EDS/Camel-Versand fehlgeschlagen".to_string()))
+            Err(error.unwrap_or_else(|| "EDS/Camel send failed".to_string()))
         }
     }
 
@@ -4605,9 +4605,9 @@ pub(crate) fn save_message(
             use std::ffi::{CStr, CString, c_char};
 
             let source_uid = CString::new(source_uid)
-                .map_err(|_| "EDS source UID enthält ein ungültiges NUL-Byte".to_string())?;
+                .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
             if raw_message.is_empty() {
-                return Err("Die RFC822-Nachricht ist leer".to_string());
+                return Err("The RFC822 message is empty".to_string());
             }
             let folder = match folder {
                 CamelSaveFolder::Drafts => 1,
@@ -4635,7 +4635,7 @@ pub(crate) fn save_message(
             if result == 1 {
                 Ok(())
             } else {
-                Err(error.unwrap_or_else(|| "EDS-Draft-Speicherung fehlgeschlagen".to_string()))
+                Err(error.unwrap_or_else(|| "EDS draft save failed".to_string()))
             }
         }
 

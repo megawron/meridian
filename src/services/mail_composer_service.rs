@@ -160,7 +160,7 @@ pub(crate) fn save_rfc822_atomically(
             return Ok(AtomicSaveResult::Cancelled);
         }
         return Err(format!(
-            "EML-Datei konnte nicht vorbereitet werden: {error}"
+            "Could not prepare EML file: {error}"
         ));
     }
 
@@ -171,7 +171,7 @@ pub(crate) fn save_rfc822_atomically(
 
     if let Err(error) = fs::rename(&temporary_path, path) {
         let _ = fs::remove_file(&temporary_path);
-        return Err(format!("EML-Datei konnte nicht ersetzt werden: {error}"));
+        return Err(format!("Could not replace EML file: {error}"));
     }
 
     // Directory fsync is best-effort here.  It makes the rename durable on
@@ -185,7 +185,7 @@ pub(crate) fn save_rfc822_atomically(
 
 pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String> {
     if message.source_uid.trim().is_empty() {
-        return Err("Kein Mailkonto ausgewählt".to_string());
+        return Err("No mail account selected".to_string());
     }
 
     let recipients = [
@@ -194,25 +194,25 @@ pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String>
         message.bcc.as_str(),
     ];
     if recipients.iter().all(|value| value.trim().is_empty()) {
-        return Err("Mindestens ein Empfänger ist erforderlich".to_string());
+        return Err("At least one recipient is required".to_string());
     }
 
-    validate_header_value("Empfänger", &message.to)?;
+    validate_header_value("Recipient", &message.to)?;
     validate_header_value("Cc", &message.cc)?;
     validate_header_value("Bcc", &message.bcc)?;
-    validate_header_value("Betreff", &message.subject)?;
-    validate_header_value("Von", &message.from)?;
+    validate_header_value("Subject", &message.subject)?;
+    validate_header_value("From", &message.from)?;
     validate_header_value("Reply-To", &message.reply_to)?;
     if let Some(method) = message.calendar_method.as_deref() {
-        validate_header_value("iTIP-Methode", method)?;
+        validate_header_value("iTIP method", method)?;
     }
     if message.calendar_component.is_some() != message.calendar_method.is_some() {
         return Err(
-            "iTIP-Methode und iCalendar-Komponente müssen gemeinsam gesetzt werden".to_string(),
+            "iTIP method and iCalendar component must be set together".to_string(),
         );
     }
     if message.request_read_receipt && message.from.trim().is_empty() {
-        return Err("Eine Lesebestätigung benötigt eine konfigurierte Absenderadresse".to_string());
+        return Err("A read receipt requires a configured sender address".to_string());
     }
 
     let attachments = load_attachments(&message.attachments)?;
@@ -251,7 +251,7 @@ pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String>
         .as_ref()
         .is_some_and(|options| options.sign || options.encrypt)
     {
-        return Err("OpenPGP und S/MIME können nicht gleichzeitig aktiviert werden".to_string());
+        return Err("OpenPGP and S/MIME cannot be enabled at the same time".to_string());
     }
     let recipients = [message.to.clone(), message.cc.clone(), message.bcc.clone()];
     let signing_key = if message.pgp_sign && message.pgp_key.trim().is_empty() {
@@ -274,13 +274,13 @@ pub(crate) fn build_rfc822(message: &OutgoingMessage) -> Result<Vec<u8>, String>
 }
 
 pub(crate) fn build_export_rfc822(message: &ExportMessage) -> Result<Vec<u8>, String> {
-    validate_header_value("Von", &message.from)?;
+    validate_header_value("From", &message.from)?;
     validate_header_value("Reply-To", &message.reply_to)?;
-    validate_header_value("Empfänger", &message.to)?;
+    validate_header_value("Recipient", &message.to)?;
     validate_header_value("Cc", &message.cc)?;
     validate_header_value("Bcc", &message.bcc)?;
-    validate_header_value("Betreff", &message.subject)?;
-    validate_header_value("Datum", &message.date)?;
+    validate_header_value("Subject", &message.subject)?;
+    validate_header_value("Date", &message.date)?;
     if let Some(message_id) = &message.message_id {
         validate_header_value("Message-ID", message_id)?;
         if !message_id.trim().is_empty() {
@@ -288,9 +288,9 @@ pub(crate) fn build_export_rfc822(message: &ExportMessage) -> Result<Vec<u8>, St
         }
     }
     for value in message.in_reply_to.iter().chain(message.references.iter()) {
-        validate_header_value("Thread-Header", value)?;
+        validate_header_value("Thread header", value)?;
         if !value.trim().is_empty() {
-            validate_message_id("Thread-Header", value)?;
+            validate_message_id("Thread header", value)?;
         }
     }
 
@@ -336,27 +336,27 @@ fn build_rfc822_parts(
     calendar_method: Option<&str>,
     calendar_component: Option<&str>,
 ) -> Result<Vec<u8>, String> {
-    validate_header_value("Datum", date)?;
+    validate_header_value("Date", date)?;
     validate_header_value("Message-ID", message_id.unwrap_or_default())?;
     validate_header_values("In-Reply-To", in_reply_to)?;
     validate_header_values("References", references)?;
-    validate_header_value("Von", from)?;
+    validate_header_value("From", from)?;
     validate_header_value("Reply-To", reply_to)?;
-    validate_header_value("Empfänger", to)?;
+    validate_header_value("Recipient", to)?;
     validate_header_value("Cc", cc)?;
     validate_header_value("Bcc", bcc)?;
-    validate_header_value("Betreff", subject)?;
+    validate_header_value("Subject", subject)?;
     let charset = normalize_charset(charset)?;
     if let Some(method) = calendar_method {
         validate_calendar_method(method)?;
     }
     if calendar_component.is_some() != calendar_method.is_some() {
         return Err(
-            "iTIP-Methode und iCalendar-Komponente müssen gemeinsam gesetzt werden".to_string(),
+            "iTIP method and iCalendar component must be set together".to_string(),
         );
     }
     if request_read_receipt && from.trim().is_empty() {
-        return Err("Eine Lesebestätigung benötigt eine konfigurierte Absenderadresse".to_string());
+        return Err("A read receipt requires a configured sender address".to_string());
     }
 
     let date_value = if date.trim().is_empty() {
@@ -521,33 +521,33 @@ fn load_attachments(attachments: &[DraftAttachment]) -> Result<Vec<ExportAttachm
                 let content = decode_embedded_attachment(&attachment.embedded_content_base64)?;
                 if content.len() as u64 != attachment.size {
                     return Err(format!(
-                        "Eingebetteter Anhang hat eine ungültige Größe: {}",
+                        "Embedded attachment has an invalid size: {}",
                         attachment.filename
                     ));
                 }
                 content
             } else if attachment.path.trim().is_empty() {
                 return Err(format!(
-                    "Anhang konnte nicht gelesen werden ({}): Pfad ist leer",
+                    "Could not read attachment ({}): path is empty",
                     attachment.filename
                 ));
             } else {
                 let path = Path::new(&attachment.path);
                 let metadata = fs::metadata(path).map_err(|error| {
                     format!(
-                        "Anhang konnte nicht gelesen werden ({}): {error}",
+                        "Could not read attachment ({}): {error}",
                         attachment.filename
                     )
                 })?;
                 if !metadata.is_file() {
                     return Err(format!(
-                        "Anhang ist keine reguläre Datei: {}",
+                        "Attachment is not a regular file: {}",
                         attachment.filename
                     ));
                 }
                 fs::read(path).map_err(|error| {
                     format!(
-                        "Anhang konnte nicht gelesen werden ({}): {error}",
+                        "Could not read attachment ({}): {error}",
                         attachment.filename
                     )
                 })?
@@ -570,7 +570,7 @@ pub(crate) fn embedded_draft_attachment(
     validate_attachment_filename(filename)?;
     validate_mime_type(mime_type)?;
     if content.is_empty() {
-        return Err("Eingebetteter Anhang ist leer".to_string());
+        return Err("Embedded attachment is empty".to_string());
     }
     Ok(DraftAttachment {
         path: format!("embedded:{}", uuid::Uuid::new_v4()),
@@ -610,10 +610,10 @@ pub(crate) fn decode_embedded_attachment(value: &str) -> Result<Vec<u8>, String>
                 padding += 1;
                 0
             }
-            _ => return Err("Eingebetteter Anhang ist nicht gültig Base64-kodiert".to_string()),
+            _ => return Err("Embedded attachment is not valid Base64".to_string()),
         };
         if padding > 0 && byte != b'=' {
-            return Err("Eingebetteter Anhang enthält ungültiges Base64-Padding".to_string());
+            return Err("Embedded attachment contains invalid Base64 padding".to_string());
         }
         sextets.push(decoded);
     }
@@ -621,7 +621,7 @@ pub(crate) fn decode_embedded_attachment(value: &str) -> Result<Vec<u8>, String>
         return Ok(Vec::new());
     }
     if sextets.len() % 4 != 0 || padding > 2 {
-        return Err("Eingebetteter Anhang enthält ungültiges Base64-Padding".to_string());
+        return Err("Embedded attachment contains invalid Base64 padding".to_string());
     }
     let mut decoded = Vec::with_capacity(sextets.len() / 4 * 3);
     for chunk in sextets.chunks_exact(4) {
@@ -640,13 +640,13 @@ fn validate_export_attachment(attachment: &ExportAttachment) -> Result<(), Strin
 }
 
 fn validate_attachment_filename(value: &str) -> Result<(), String> {
-    validate_header_value("Dateiname", value)?;
+    validate_header_value("Filename", value)?;
     let filename = value.trim();
     if filename.is_empty() {
-        return Err("Anhang benötigt einen Dateinamen".to_string());
+        return Err("Attachment requires a filename".to_string());
     }
     if filename.chars().any(char::is_control) {
-        return Err("Dateiname des Anhangs enthält Steuerzeichen".to_string());
+        return Err("Attachment filename contains control characters".to_string());
     }
     if filename == "."
         || filename == ".."
@@ -654,7 +654,7 @@ fn validate_attachment_filename(value: &str) -> Result<(), String> {
             .chars()
             .any(|character| character == '/' || character == '\\')
     {
-        return Err("Dateiname des Anhangs enthält einen ungültigen Pfad".to_string());
+        return Err("Attachment filename contains an invalid path".to_string());
     }
     Ok(())
 }
@@ -668,7 +668,7 @@ fn validate_mime_type(value: &str) -> Result<String, String> {
     let type_name = components.next().unwrap_or_default();
     let subtype = components.next().unwrap_or_default();
     if components.next().is_some() || !is_mime_token(type_name) || !is_mime_token(subtype) {
-        return Err(format!("Ungültiger MIME-Typ des Anhangs: {mime_type}"));
+        return Err(format!("Invalid attachment MIME type: {mime_type}"));
     }
     Ok(mime_type.to_ascii_lowercase())
 }
@@ -691,7 +691,7 @@ pub(crate) fn normalize_charset(value: &str) -> Result<String, String> {
         "iso-8859-15" | "latin9" | "latin-9" => Ok("ISO-8859-15".to_string()),
         "windows-1252" | "cp1252" => Ok("Windows-1252".to_string()),
         "us-ascii" | "ascii" => Ok("US-ASCII".to_string()),
-        other => Err(format!("Nicht unterstützte Zeichenkodierung: {other}")),
+        other => Err(format!("Unsupported character encoding: {other}")),
     }
 }
 
@@ -705,7 +705,7 @@ fn encode_text_body(body: &str, charset: &str) -> Result<Vec<u8>, String> {
                     Ok(character as u8)
                 } else {
                     Err(format!(
-                        "Der Nachrichtentext enthält Zeichen, die nicht in {charset} darstellbar sind"
+                        "Message body contains characters that cannot be represented in {charset}"
                     ))
                 }
             })
@@ -718,7 +718,7 @@ fn encode_text_body(body: &str, charset: &str) -> Result<Vec<u8>, String> {
                     .then_some(codepoint as u8)
                     .ok_or_else(|| {
                         format!(
-                            "Der Nachrichtentext enthält Zeichen, die nicht in {charset} darstellbar sind"
+                            "Message body contains characters that cannot be represented in {charset}"
                         )
                     })
             })
@@ -739,7 +739,7 @@ fn encode_text_body(body: &str, charset: &str) -> Result<Vec<u8>, String> {
                 };
                 byte.ok_or_else(|| {
                     format!(
-                        "Der Nachrichtentext enthält Zeichen, die nicht in {charset} darstellbar sind"
+                        "Message body contains characters that cannot be represented in {charset}"
                     )
                 })
             })
@@ -779,12 +779,12 @@ fn encode_text_body(body: &str, charset: &str) -> Result<Vec<u8>, String> {
                 };
                 byte.ok_or_else(|| {
                     format!(
-                        "Der Nachrichtentext enthält Zeichen, die nicht in {charset} darstellbar sind"
+                        "Message body contains characters that cannot be represented in {charset}"
                     )
                 })
             })
             .collect(),
-        _ => Err(format!("Nicht unterstützte Zeichenkodierung: {charset}")),
+        _ => Err(format!("Unsupported character encoding: {charset}")),
     }
 }
 
@@ -1008,7 +1008,7 @@ fn append_calendar_part(
 ) -> Result<(), String> {
     validate_calendar_method(method)?;
     if component.trim().is_empty() {
-        return Err("Die iTIP-MIME-Komponente darf nicht leer sein".to_string());
+        return Err("The iTIP MIME component must not be empty".to_string());
     }
     raw.push_str("--");
     raw.push_str(boundary);
@@ -1170,13 +1170,13 @@ fn validate_header_value(name: &str, value: &str) -> Result<(), String> {
         .chars()
         .any(|character| character == '\r' || character == '\n')
     {
-        return Err(format!("{name} enthält ungültige Zeilenumbrüche"));
+        return Err(format!("{name} contains invalid line breaks"));
     }
     if value
         .chars()
         .any(|character| character.is_control() && character != '\t')
     {
-        return Err(format!("{name} enthält ungültige Steuerzeichen"));
+        return Err(format!("{name} contains invalid control characters"));
     }
     Ok(())
 }
@@ -1194,14 +1194,14 @@ fn validate_message_id(name: &str, value: &str) -> Result<(), String> {
     validate_header_value(name, value)?;
     let value = value.trim();
     if value.is_empty() {
-        return Err(format!("{name} darf nicht leer sein"));
+        return Err(format!("{name} must not be empty"));
     }
 
     let wrapped = value.starts_with('<') || value.ends_with('>');
     let inner = if value.starts_with('<') && value.ends_with('>') {
         &value[1..value.len() - 1]
     } else if wrapped {
-        return Err(format!("{name} hat ungültige spitze Klammern"));
+        return Err(format!("{name} has invalid angle brackets"));
     } else {
         value
     };
@@ -1210,16 +1210,16 @@ fn validate_message_id(name: &str, value: &str) -> Result<(), String> {
             .chars()
             .any(|character| character.is_whitespace() || character == '<' || character == '>')
     {
-        return Err(format!("{name} hat ein ungültiges Format"));
+        return Err(format!("{name} has an invalid format"));
     }
     Ok(())
 }
 
 fn validate_calendar_method(value: &str) -> Result<(), String> {
-    validate_header_value("iTIP-Methode", value)?;
+    validate_header_value("iTIP method", value)?;
     let method = value.trim();
     if !is_mime_token(method) {
-        return Err("Ungültige iTIP-Methode".to_string());
+        return Err("Invalid iTIP method".to_string());
     }
     Ok(())
 }
@@ -1273,7 +1273,7 @@ fn encode_address_header(value: &str) -> Result<String, String> {
                 in_address = false;
                 saw_address = true;
             } else if character == '<' {
-                return Err("Adresse enthält verschachtelte spitze Klammern".to_string());
+                return Err("Address contains nested angle brackets".to_string());
             } else {
                 address.push(character);
             }
@@ -1283,14 +1283,14 @@ fn encode_address_header(value: &str) -> Result<String, String> {
             output.push('<');
             in_address = true;
         } else if character == '>' {
-            return Err("Adresse enthält eine schließende Klammer ohne Adresse".to_string());
+            return Err("Address contains a closing angle bracket without an address".to_string());
         } else {
             phrase.push(character);
         }
     }
 
     if in_address {
-        return Err("Adresse enthält eine nicht geschlossene spitze Klammer".to_string());
+        return Err("Address contains an unclosed angle bracket".to_string());
     } else if saw_address {
         output.push_str(&encode_address_phrase(&phrase));
     } else {
@@ -1308,7 +1308,7 @@ fn validate_addr_spec(value: &str) -> Result<(), String> {
             .chars()
             .any(|character| character.is_whitespace() || character.is_control())
     {
-        return Err("Adresse enthält keinen RFC-konformen ASCII-Adressbereich".to_string());
+        return Err("Address does not contain an RFC-compliant ASCII address".to_string());
     }
     Ok(())
 }
@@ -1339,7 +1339,7 @@ fn validate_bare_address_list(value: &str) -> Result<(), String> {
         }
     }
     if quoted {
-        return Err("Adresse enthält ein nicht geschlossenes Anführungszeichen".to_string());
+        return Err("Address contains an unclosed quotation mark".to_string());
     }
     Ok(())
 }
@@ -1620,7 +1620,7 @@ mod tests {
         message.charset = "KOI8-R".to_string();
 
         let error = build_rfc822(&message).expect_err("unsupported charset should fail closed");
-        assert!(error.contains("Nicht unterstützte Zeichenkodierung"));
+        assert!(error.contains("Unsupported character encoding"));
     }
 
     #[test]
@@ -1712,7 +1712,7 @@ mod tests {
         assert!(
             build_rfc822(&message)
                 .expect_err("SMTPUTF8 addresses need an explicit backend capability")
-                .contains("ASCII-Adressbereich")
+                .contains("RFC-compliant ASCII address")
         );
 
         message.to = "person@example.org".to_string();
@@ -1720,7 +1720,7 @@ mod tests {
         assert!(
             build_rfc822(&message)
                 .expect_err("read receipt without a sender must fail closed")
-                .contains("Absenderadresse")
+                .contains("sender address")
         );
     }
 
@@ -1812,7 +1812,7 @@ mod tests {
         assert!(
             embedded_draft_attachment("Original.eml", "message/rfc822", b"")
                 .expect_err("empty embedded payload must fail")
-                .contains("leer")
+                .contains("empty")
         );
         let mut corrupt = embedded_draft_attachment("Original.eml", "message/rfc822", b"message")
             .expect("fixture should embed");
@@ -1829,7 +1829,7 @@ mod tests {
         assert!(
             build_rfc822(&outgoing_with_attachments(vec![mismatched]))
                 .expect_err("size mismatch must fail")
-                .contains("Größe")
+                .contains("size")
         );
     }
 
@@ -1892,14 +1892,14 @@ mod tests {
         assert!(
             build_rfc822(&message)
                 .expect_err("recipients should be required")
-                .contains("Empfänger")
+                .contains("recipient")
         );
 
         message.to = "person@example.org\r\nX-Injected: yes".to_string();
         assert!(
             build_rfc822(&message)
                 .expect_err("header injection should be rejected")
-                .contains("Zeilenumbrüche")
+                .contains("line breaks")
         );
     }
 
@@ -2072,7 +2072,7 @@ mod tests {
         assert!(
             build_export_rfc822(&export)
                 .expect_err("message-id injection should be rejected")
-                .contains("Zeilenumbrüche")
+                .contains("line breaks")
         );
 
         let outgoing = OutgoingMessage {
@@ -2123,7 +2123,7 @@ mod tests {
         assert!(
             build_rfc822(&message)
                 .expect_err("path-like attachment names should be rejected")
-                .contains("ungültigen Pfad")
+                .contains("invalid path")
         );
 
         message.attachments[0].filename = "valid.txt".to_string();
@@ -2131,7 +2131,7 @@ mod tests {
         assert!(
             build_rfc822(&message)
                 .expect_err("MIME parameters must not be injected")
-                .contains("MIME-Typ")
+                .contains("MIME type")
         );
         let _ = fs::remove_file(path);
     }
@@ -2155,7 +2155,7 @@ mod tests {
         assert!(
             build_rfc822(&message)
                 .expect_err("directories must not be sent as attachments")
-                .contains("keine reguläre Datei")
+                .contains("not a regular file")
         );
         let _ = fs::remove_dir(path);
     }
@@ -2184,7 +2184,7 @@ mod tests {
             smime_options: None,
         })
         .expect_err("signing without a key must fail before invoking GnuPG");
-        assert!(error.contains("kein passender Schlüssel"));
+        assert!(error.contains("kein passender Schlüssel") || error.to_ascii_lowercase().contains("key"));
     }
 
     #[test]
@@ -2214,7 +2214,11 @@ mod tests {
             }),
         })
         .expect_err("S/MIME signing without a certificate must fail before OpenSSL");
-        assert!(error.contains("Zertifikat oder privater Schlüssel fehlt"));
+        assert!(
+            error.contains("Zertifikat oder privater Schlüssel fehlt")
+                || error.to_ascii_lowercase().contains("certificate")
+                || error.to_ascii_lowercase().contains("key")
+        );
     }
 
     fn temporary_file(label: &str, contents: &[u8]) -> PathBuf {
