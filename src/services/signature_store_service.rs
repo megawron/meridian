@@ -92,6 +92,34 @@ pub fn sanitize_signature_html(html: &str) -> String {
     s5.to_string()
 }
 
+/// Extracts a concise single-line plain-text preview from HTML or plain signature text.
+pub fn html_to_plain_preview(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_tag = false;
+    for ch in text.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                out.push(' ');
+            }
+            '>' => {
+                in_tag = false;
+            }
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    let decoded = out
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'");
+    let collapsed: String = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed
+}
+
 impl SignatureStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }

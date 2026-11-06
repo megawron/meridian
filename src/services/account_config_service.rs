@@ -379,6 +379,14 @@ static ACCOUNT_PROFILES_CACHE: std::sync::LazyLock<
     std::sync::RwLock<std::collections::HashMap<PathBuf, std::sync::Arc<[AccountProfile]>>>,
 > = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
 
+#[cfg(not(test))]
+static DEFAULT_ACCOUNT_FILE_PATH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
+    std::env::var_os("MERIDIAN_ACCOUNT_FILE")
+        .or_else(|| std::env::var_os("EVOLUTION_GTK4_ACCOUNT_FILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::services::app_data_dir().join("accounts.json"))
+});
+
 #[derive(Debug, Clone)]
 pub struct AccountConfigStore {
     path: PathBuf,
@@ -390,10 +398,18 @@ impl AccountConfigStore {
     }
 
     pub fn from_environment() -> Self {
-        let path = std::env::var_os("MERIDIAN_ACCOUNT_FILE").or_else(|| std::env::var_os("EVOLUTION_GTK4_ACCOUNT_FILE"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| crate::services::app_data_dir().join("accounts.json"));
-        Self::new(path)
+        #[cfg(not(test))]
+        {
+            return Self::new(DEFAULT_ACCOUNT_FILE_PATH.clone());
+        }
+        #[cfg(test)]
+        {
+            let path = std::env::var_os("MERIDIAN_ACCOUNT_FILE")
+                .or_else(|| std::env::var_os("EVOLUTION_GTK4_ACCOUNT_FILE"))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| crate::services::app_data_dir().join("accounts.json"));
+            Self::new(path)
+        }
     }
 
     #[allow(dead_code)]
@@ -428,6 +444,7 @@ impl AccountConfigStore {
         if let Ok(mut guard) = ACCOUNT_PROFILES_CACHE.write() {
             guard.clear();
         }
+        crate::services::eds_service::invalidate_account_collections_cache();
     }
 
     pub fn load(&self) -> Vec<AccountProfile> {
@@ -537,6 +554,7 @@ impl AccountConfigStore {
         if let Ok(mut guard) = ACCOUNT_PROFILES_CACHE.write() {
             guard.insert(self.path.clone(), std::sync::Arc::from(accounts.to_vec()));
         }
+        crate::services::eds_service::invalidate_account_collections_cache();
         Ok(())
     }
 }

@@ -927,6 +927,12 @@ static COLLECTIONS_CACHE: RwLock<Option<(std::time::Instant, Vec<EdsAccountColle
     RwLock::new(None);
 static PARENT_NAME_CACHE: RwLock<Option<(std::time::Instant, std::collections::HashMap<String, String>)>> =
     RwLock::new(None);
+static SOURCE_ENABLED_CACHE: RwLock<
+    Option<(
+        std::time::Instant,
+        std::collections::HashMap<(String, EdsSourceKind), bool>,
+    )>,
+> = RwLock::new(None);
 
 /// Invalidate cached collections and parent names so newly created or updated accounts are immediately visible.
 pub fn invalidate_account_collections_cache() {
@@ -934,6 +940,9 @@ pub fn invalidate_account_collections_cache() {
         *guard = None;
     }
     if let Ok(mut guard) = PARENT_NAME_CACHE.write() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = SOURCE_ENABLED_CACHE.write() {
         *guard = None;
     }
 }
@@ -1233,6 +1242,36 @@ pub fn is_parent_service_enabled(parent_uid: &str, kind: EdsSourceKind) -> bool 
 
 /// Check whether a source UID (standalone, child, or collection) is enabled for a specific service.
 pub fn is_source_enabled_for_service(source_uid: &str, kind: EdsSourceKind) -> bool {
+    let key = (source_uid.to_string(), kind);
+    if let Ok(guard) = SOURCE_ENABLED_CACHE.read() {
+        if let Some((instant, map)) = &*guard {
+            if instant.elapsed() < std::time::Duration::from_secs(10) {
+                if let Some(&enabled) = map.get(&key) {
+                    return enabled;
+                }
+            }
+        }
+    }
+    let enabled = is_source_enabled_for_service_uncached(source_uid, kind);
+    if let Ok(mut guard) = SOURCE_ENABLED_CACHE.write() {
+        if let Some((instant, map)) = guard.as_mut() {
+            if instant.elapsed() < std::time::Duration::from_secs(10) {
+                map.insert(key, enabled);
+            } else {
+                let mut new_map = std::collections::HashMap::new();
+                new_map.insert(key, enabled);
+                *guard = Some((std::time::Instant::now(), new_map));
+            }
+        } else {
+            let mut new_map = std::collections::HashMap::new();
+            new_map.insert(key, enabled);
+            *guard = Some((std::time::Instant::now(), new_map));
+        }
+    }
+    enabled
+}
+
+fn is_source_enabled_for_service_uncached(source_uid: &str, kind: EdsSourceKind) -> bool {
     let clean = source_uid
         .strip_suffix("-mail")
         .or_else(|| source_uid.strip_prefix("account-contacts-"))

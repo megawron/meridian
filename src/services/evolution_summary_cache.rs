@@ -166,7 +166,13 @@ pub fn discover_meridian_mail_caches() -> Vec<MeridianAccountCache> {
             if !cached_list.is_empty()
                 && *cached_env == custom_env
                 && ts.elapsed() < std::time::Duration::from_secs(5)
-                && cached_list.iter().all(|c| c.folders_db.is_file())
+                && cached_list.iter().all(|c| {
+                    c.folders_db.is_file()
+                        && crate::services::eds_service::is_source_enabled_for_service(
+                            &c.source_uid,
+                            crate::services::eds_service::EdsSourceKind::Mail,
+                        )
+                })
             {
                 return cached_list.clone();
             }
@@ -274,10 +280,11 @@ pub fn find_meridian_account_cache(source_uid_hint: Option<&str>) -> Option<Meri
     if let Some(hint) = source_uid_hint {
         let hint_clean = hint.trim();
         if !hint_clean.is_empty() {
-            // 1. Direct match by source_uid or stripped suffix
+            // 1. Direct match by source_uid, stripped suffix, or display_name
             if let Some(found) = caches.iter().find(|c| {
                 c.source_uid.eq_ignore_ascii_case(hint_clean)
                     || c.source_uid.strip_suffix("-mail").is_some_and(|s| s.eq_ignore_ascii_case(hint_clean))
+                    || c.display_name.eq_ignore_ascii_case(hint_clean)
             }) {
                 return Some(found.clone());
             }
@@ -298,6 +305,7 @@ pub fn find_meridian_account_cache(source_uid_hint: Option<&str>) -> Option<Meri
                 if let Some(found) = caches.iter().find(|c| {
                     c.source_uid.eq_ignore_ascii_case(clean_target)
                         || c.source_uid.strip_suffix("-mail").is_some_and(|s| s.eq_ignore_ascii_case(clean_target))
+                        || c.display_name.eq_ignore_ascii_case(&profile.email)
                 }) {
                     return Some(found.clone());
                 }
@@ -312,15 +320,20 @@ pub fn find_meridian_account_cache(source_uid_hint: Option<&str>) -> Option<Meri
                     if let Some(found) = caches.iter().find(|c| {
                         c.source_uid.eq_ignore_ascii_case(&parent_eds_uid)
                             || c.source_uid.strip_suffix("-mail").is_some_and(|s| s.eq_ignore_ascii_case(&parent_eds_uid))
+                            || c.display_name.eq_ignore_ascii_case(&parent_profile.email)
                     }) {
                         return Some(found.clone());
                     }
                 }
             }
+
+            // A specific account was requested, but it has no local Evolution SQLite cache yet.
+            // Do NOT fall back to a different account's cache.
+            return None;
         }
     }
 
-    // Default to the first discovered account cache
+    // Default to the first discovered account cache only when no specific source_uid_hint was given
     caches.into_iter().next()
 }
 

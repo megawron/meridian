@@ -830,6 +830,15 @@ pub(crate) fn load_evolution_cached_folders(
     source_uid: &str,
     source_display_name: &str,
 ) -> Vec<CamelFolderSummary> {
+    let is_shared_mailbox = crate::services::account_config_service::AccountConfigStore::default()
+        .load_cached()
+        .iter()
+        .any(|p| {
+            p.is_shared_mailbox
+                && (p.id.eq_ignore_ascii_case(source_uid)
+                    || p.email.eq_ignore_ascii_case(source_uid))
+        });
+
     if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(Some(source_uid)) {
         if let Ok(folders) = crate::services::evolution_summary_cache::load_folders_from_sqlite(
             &cache.folders_db,
@@ -838,7 +847,14 @@ pub(crate) fn load_evolution_cached_folders(
         ) {
             let matching: Vec<_> = folders
                 .into_iter()
-                .filter(|f| f.source_uid == source_uid || f.source_uid == cache.source_uid)
+                .filter(|f| {
+                    if is_shared_mailbox {
+                        f.source_uid.eq_ignore_ascii_case(source_uid)
+                    } else {
+                        f.source_uid.eq_ignore_ascii_case(source_uid)
+                            || f.source_uid.eq_ignore_ascii_case(&cache.source_uid)
+                    }
+                })
                 .collect();
             if !matching.is_empty() {
                 return matching;
