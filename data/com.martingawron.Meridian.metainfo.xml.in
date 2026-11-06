@@ -62,19 +62,19 @@
   <screenshots>
     <screenshot type="default">
       <caption>Unified mail workspace with threaded conversations, sandboxed HTML preview, and integrated agenda, tasks, and memos sidebar</caption>
-      <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/mail.png</image>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/mail.png</image>
     </screenshot>
     <screenshot>
       <caption>Calendar week view with multi-account schedules, event details, and integrated tasks</caption>
-      <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-week.png</image>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-week.png</image>
     </screenshot>
     <screenshot>
       <caption>Calendar month view with multi-day events and mini-calendar navigation</caption>
-      <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-month.png</image>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-month.png</image>
     </screenshot>
     <screenshot>
       <caption>Calendar year planner view with interactive day timeline preview</caption>
-      <image type="source" width="3840" height="2160">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-year.png</image>
+      <image type="source" width="1920" height="1080">https://raw.githubusercontent.com/megawron/meridian/main/data/screenshots/calendar-year.png</image>
     </screenshot>
   </screenshots>
 
