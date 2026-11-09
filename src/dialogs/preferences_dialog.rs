@@ -180,8 +180,34 @@ impl ManualFilterRunSnapshot {
             ));
         }
 
-        MailStoreService::new_worker_safe(store_config)
-            .run_filter_rule_with_store(&rule_id, &filter_store)
+        let store = MailStoreService::new_worker_safe(store_config);
+        let mut report = store.run_filter_rule_with_store(&rule_id, &filter_store)?;
+        if let Some(ref mut local_report) = report {
+            let has_remote_or_local_first_action = snapshot_rule.effective_actions().into_iter().any(|a| {
+                matches!(
+                    a,
+                    FilterAction::MoveToFolder(_)
+                        | FilterAction::CopyToFolder(_)
+                        | FilterAction::Delete
+                )
+            });
+            if has_remote_or_local_first_action {
+                if let Some(cached) = crate::services::camel_mail_service::load_mail_load_cache() {
+                    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let remote_report = store.apply_local_first_rules_to_remote_messages(
+                        std::slice::from_ref(&snapshot_rule),
+                        &cached.messages,
+                        &cancelled,
+                    );
+                    local_report.matched_messages += remote_report.matched_messages;
+                    local_report.changed_messages += remote_report.changed_messages;
+                    local_report.moved_messages += remote_report.moved_messages;
+                    local_report.copied_messages += remote_report.copied_messages;
+                    local_report.deleted_messages += remote_report.deleted_messages;
+                }
+            }
+        }
+        Ok(report)
     }
 }
 
@@ -258,8 +284,11 @@ impl PreferencesDialog {
         adw::prelude::AdwDialogExt::present(self, None::<&gtk::Widget>);
         if let Some(win) = self.root().and_downcast::<gtk::Window>() {
             win.set_title(Some(&gettext("Settings")));
+            win.set_transient_for(None::<&gtk::Window>);
             win.set_modal(false);
             win.set_resizable(true);
+            let group = gtk::WindowGroup::new();
+            group.add_window(&win);
         }
     }
 
@@ -281,7 +310,7 @@ impl PreferencesDialog {
                 }
             });
         });
-        dialog.present_non_modal();
+        dialog.present(Some(self));
     }
 
     fn reconcile_local_default(&self, affected_local_id: &str) {
@@ -2279,290 +2308,6 @@ impl PreferencesDialog {
         }
         exp_log_actions.add_row(&row_log_file);
 
-        let existing_filter_rules = MailFilterStore::default().load();
-        let mut filter_rule_rows = Vec::new();
-
-        for rule in existing_filter_rules {
-            let condition_text = rule
-                .effective_conditions()
-                .into_iter()
-                .map(|condition| {
-                    let field = filter_field_label(condition.field);
-                    let operator = filter_operator_label(condition.operator);
-                    if condition.value.is_empty() {
-                        format!("{field} {operator}")
-                    } else {
-                        format!("{field} {operator} “{}”", condition.value)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(if rule.match_all { " AND " } else { " OR " });
-            let action_text = rule
-                .effective_actions()
-                .into_iter()
-                .map(filter_action_label)
-                .collect::<Vec<_>>()
-                .join(", ");
-            let subtitle = format!("{condition_text} · {action_text}");
-            let row = adw::ActionRow::builder()
-                .title(&rule.name)
-                .subtitle(&subtitle)
-                .activatable(true)
-                .build();
-            let rule_for_edit = rule.clone();
-            row.connect_activated(glib::clone!(
-                #[weak(rename_to = page)]
-                self,
-                move |_| {
-                    let dialog = crate::dialogs::FilterEditorDialog::new_for_edit(&rule_for_edit);
-                    dialog.present(Some(&page));
-                }
-            ));
-            let enabled = gtk::Switch::builder()
-                .active(rule.enabled)
-                .valign(gtk::Align::Center)
-                .tooltip_text(gettext("Enable/disable filter rule"))
-                .build();
-            let rule_id = rule.id.clone();
-            enabled.connect_active_notify(move |switch| {
-                if let Err(error) =
-                    MailFilterStore::default().set_enabled(&rule_id, switch.is_active())
-                {
-                    tracing::warn!(%error, "Could not update mail filter state");
-                }
-            });
-            row.add_suffix(&enabled);
-
-            let move_up_button = gtk::Button::builder()
-                .icon_name("go-up-symbolic")
-                .tooltip_text(gettext("Move filter rule up"))
-                .css_classes(["flat"])
-                .valign(gtk::Align::Center)
-                .build();
-            let move_down_button = gtk::Button::builder()
-                .icon_name("go-down-symbolic")
-                .tooltip_text(gettext("Move filter rule down"))
-                .css_classes(["flat"])
-                .valign(gtk::Align::Center)
-                .build();
-            let rule_id_for_up = rule.id.clone();
-            let dialog_weak_for_up = self.downgrade();
-            move_up_button.connect_clicked(move |_| {
-                let Some(dialog) = dialog_weak_for_up.upgrade() else {
-                    return;
-                };
-                match MailFilterStore::default().move_rule(&rule_id_for_up, -1) {
-                    Ok(true) => dialog.show_toast(&gettext("Filter order saved")),
-                    Ok(false) => dialog.show_toast(&gettext("Filter rule is already at the top")),
-                    Err(error) => dialog.show_toast(&format!(
-                        "{}: {error}",
-                        gettext("Could not save filter order")
-                    )),
-                }
-            });
-            let rule_id_for_down = rule.id.clone();
-            let dialog_weak_for_down = self.downgrade();
-            move_down_button.connect_clicked(move |_| {
-                let Some(dialog) = dialog_weak_for_down.upgrade() else {
-                    return;
-                };
-                match MailFilterStore::default().move_rule(&rule_id_for_down, 1) {
-                    Ok(true) => dialog.show_toast(&gettext("Filter order saved")),
-                    Ok(false) => dialog.show_toast(&gettext("Filter rule is already at the bottom")),
-                    Err(error) => dialog.show_toast(&format!(
-                        "{}: {error}",
-                        gettext("Could not save filter order")
-                    )),
-                }
-            });
-            row.add_suffix(&move_up_button);
-            row.add_suffix(&move_down_button);
-
-            let run_button = gtk::Button::builder()
-                .icon_name("media-playback-start-symbolic")
-                .tooltip_text(gettext("Run rule now on local mail store"))
-                .css_classes(["flat"])
-                .valign(gtk::Align::Center)
-                .build();
-            let rule_id_for_run = rule.id.clone();
-            let rule_for_run = rule.clone();
-            let dialog_weak_for_run = self.downgrade();
-            let run_button_for_result = run_button.clone();
-            let settings_for_run = settings.clone();
-            run_button.connect_clicked(move |_| {
-                let Some(dialog) = dialog_weak_for_run.upgrade() else {
-                    return;
-                };
-                run_button_for_result.set_sensitive(false);
-                let (sender, receiver) = async_channel::bounded(1);
-                let local_mail_directory = settings_for_run
-                    .as_ref()
-                    .map(|settings| settings.local_mail_directory());
-                let snapshot = match ManualFilterRunSnapshot::capture(
-                    rule_id_for_run.clone(),
-                    rule_for_run.clone(),
-                    MailStoreWorkerConfig::capture(local_mail_directory),
-                    MailFilterStore::from_environment(),
-                ) {
-                    Ok(snapshot) => snapshot,
-                    Err(error) => {
-                        run_button_for_result.set_sensitive(true);
-                        dialog.show_toast(&error.toast_message());
-                        return;
-                    }
-                };
-                let snapshot_path = snapshot.filter_store.path().to_path_buf();
-                let completion_allowed = Rc::new(Cell::new(true));
-                let completion_allowed_for_close = Rc::clone(&completion_allowed);
-                dialog.connect_closed(move |_| {
-                    completion_allowed_for_close.set(false);
-                });
-                let worker_result = std::thread::Builder::new()
-                    .name("manual-mail-filter".to_string())
-                    .spawn(move || {
-                        let result = snapshot.run_on_worker();
-                        if let Err(error) = sender.send_blocking(result) {
-                            tracing::debug!(%error, "Manual filter result was dropped");
-                        }
-                    });
-                if let Err(error) = worker_result {
-                    cleanup_manual_filter_snapshot(&snapshot_path);
-                    run_button_for_result.set_sensitive(true);
-                    dialog.show_toast(&format!(
-                        "Local filter run failed: Worker could not be started: {error}"
-                    ));
-                    return;
-                }
-                let dialog_weak = dialog.downgrade();
-                let run_button = run_button_for_result.clone();
-                glib::spawn_future_local(async move {
-                    let result = receiver.recv().await;
-                    if !completion_allowed.get() {
-                        return;
-                    }
-                    let Some(dialog) = dialog_weak.upgrade() else {
-                        return;
-                    };
-                    run_button.set_sensitive(true);
-                    if matches!(&result, Ok(Ok(Some(_)))) {
-                        if let Some(window) = dialog
-                            .root()
-                            .and_downcast::<crate::window::MeridianWindow>()
-                        {
-                            window.refresh_mail_page();
-                        }
-                    }
-                    dialog.show_toast(&manual_filter_result_toast(&result));
-                });
-            });
-            row.add_suffix(&run_button);
-
-            let simulate_button = gtk::Button::builder()
-                .icon_name("system-search-symbolic")
-                .tooltip_text(gettext("Run dry run for this rule (without applying changes)"))
-                .css_classes(["flat"])
-                .valign(gtk::Align::Center)
-                .build();
-            let rule_id_for_sim = rule.id.clone();
-            let dialog_weak_for_sim = self.downgrade();
-            let simulate_button_for_result = simulate_button.clone();
-            let settings_for_sim = settings.clone();
-            simulate_button.connect_clicked(move |_| {
-                let Some(dialog) = dialog_weak_for_sim.upgrade() else {
-                    return;
-                };
-                simulate_button_for_result.set_sensitive(false);
-                let (sender, receiver) = async_channel::bounded(1);
-                let local_mail_directory = settings_for_sim
-                    .as_ref()
-                    .map(|settings| settings.local_mail_directory());
-                let rule_id = rule_id_for_sim.clone();
-                let worker_result = std::thread::Builder::new()
-                    .name("simulate-mail-filter".to_string())
-                    .spawn(move || {
-                        let store = match local_mail_directory.as_deref().filter(|path| !path.trim().is_empty()) {
-                            Some(dir) => MailStoreService::with_mail_dir(PathBuf::from(dir)),
-                            None => MailStoreService::new(),
-                        };
-                        let report = store.simulate_filter_rule(&rule_id);
-                        let _ = sender.send_blocking(report);
-                    });
-                if let Err(error) = worker_result {
-                    simulate_button_for_result.set_sensitive(true);
-                    dialog.show_toast(&format!(
-                        "{}: {error}",
-                        gettext("Dry run failed: Worker could not be started")
-                    ));
-                    return;
-                }
-                let dialog_weak = dialog.downgrade();
-                let simulate_button = simulate_button_for_result.clone();
-                glib::spawn_future_local(async move {
-                    let result = receiver.recv().await;
-                    let Some(dialog) = dialog_weak.upgrade() else {
-                        return;
-                    };
-                    simulate_button.set_sensitive(true);
-                    match result {
-                        Ok(Ok(Some(report))) => {
-                            dialog.show_toast(&format!(
-                                "Dry run completed: {} of {} message(s) match (no changes made)",
-                                report.matches.len(),
-                                report.total_messages_evaluated,
-                            ));
-                        }
-                        Ok(Ok(None)) => {
-                            dialog.show_toast(&gettext("Filter rule was not found for dry run"));
-                        }
-                        Ok(Err(error)) => {
-                            dialog.show_toast(&format!("{}: {error}", gettext("Dry run failed")));
-                        }
-                        Err(_) => {}
-                    }
-                });
-            });
-            row.add_suffix(&simulate_button);
-
-            let delete_button = gtk::Button::builder()
-                .icon_name("user-trash-symbolic")
-                .tooltip_text(gettext("Remove filter rule"))
-                .css_classes(["flat", "error"])
-                .valign(gtk::Align::Center)
-                .build();
-            row.add_suffix(&delete_button);
-            let dialog_weak_for_delete = self.downgrade();
-            let row_for_delete = row.clone();
-            let rule_id_for_delete = rule.id.clone();
-            delete_button.connect_clicked(move |_| {
-                let Some(dialog) = dialog_weak_for_delete.upgrade() else {
-                    return;
-                };
-                let row = row_for_delete.clone();
-                let rule_id = rule_id_for_delete.clone();
-                let dialog_for_action = dialog.clone();
-                crate::dialogs::run_destructive_action(
-                    &dialog,
-                    &gettext("Remove filter rule?"),
-                    &gettext("The rule will be removed from app filter rules."),
-                    &gettext("Remove"),
-                    move || match MailFilterStore::default().delete(&rule_id) {
-                        Ok(true) => {
-                            row.set_visible(false);
-                            dialog_for_action.show_toast(&gettext("Filter rule removed"));
-                        }
-                        Ok(false) => {
-                            dialog_for_action.show_toast(&gettext("Filter rule not found"))
-                        }
-                        Err(error) => dialog_for_action.show_toast(&format!(
-                            "{}: {error}",
-                            gettext("Filter rule could not be removed")
-                        )),
-                    },
-                );
-            });
-            filter_rule_rows.push(row);
-        }
-
         let page_filters = adw::PreferencesPage::builder()
             .title(gettext("Filters"))
             .icon_name("funnel-symbolic")
@@ -2570,32 +2315,381 @@ impl PreferencesDialog {
         let group_filter_rules = adw::PreferencesGroup::builder()
             .title(gettext("Filters"))
             .build();
+
+        let active_filter_rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::new(RefCell::new(Vec::new()));
+        let rebuild_trigger: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+
+        let rebuild_fn: Rc<dyn Fn()> = {
+            let group_filter_rules = group_filter_rules.clone();
+            let active_filter_rows = Rc::clone(&active_filter_rows);
+            let rebuild_trigger = Rc::clone(&rebuild_trigger);
+            let settings = settings.clone();
+            let dialog_weak = self.downgrade();
+            Rc::new(move || {
+                let Some(dialog) = dialog_weak.upgrade() else {
+                    return;
+                };
+                for old_row in active_filter_rows.borrow_mut().drain(..) {
+                    group_filter_rules.remove(&old_row);
+                }
+
+                let existing_filter_rules = MailFilterStore::default().load_or_init_presets();
+                if existing_filter_rules.is_empty() {
+                    let row_empty = adw::ActionRow::builder()
+                        .title(gettext("No Filters"))
+                        .use_markup(false)
+                        .build();
+                    group_filter_rules.add(&row_empty);
+                    active_filter_rows.borrow_mut().push(row_empty);
+                    return;
+                }
+
+                for (idx, rule) in existing_filter_rules.into_iter().enumerate() {
+                    let subtitle = format_filter_rule_subtitle(&rule);
+                    let row = adw::ActionRow::builder()
+                        .title(&rule.name)
+                        .subtitle(&subtitle)
+                        .use_markup(false)
+                        .activatable(true)
+                        .build();
+                    let order_badge = gtk::Label::builder()
+                        .label(format!("#{}", idx + 1))
+                        .css_classes(["dim-label", "caption", "numeric"])
+                        .valign(gtk::Align::Center)
+                        .width_chars(3)
+                        .xalign(0.5)
+                        .tooltip_text(gettext("Execution order (evaluated top to bottom)"))
+                        .build();
+                    row.add_prefix(&order_badge);
+                    let rule_for_edit = rule.clone();
+                    let rebuild_for_edit = Rc::clone(&rebuild_trigger);
+                    row.connect_activated(glib::clone!(
+                        #[weak(rename_to = page)]
+                        dialog,
+                        move |_| {
+                            let editor = crate::dialogs::FilterEditorDialog::new_for_edit(&rule_for_edit);
+                            let rebuild_after_edit = Rc::clone(&rebuild_for_edit);
+                            editor.connect_closed(move |_| {
+                                if let Some(ref f) = *rebuild_after_edit.borrow() {
+                                    f();
+                                }
+                            });
+                            editor.present(Some(&page));
+                        }
+                    ));
+                    let enabled = gtk::Switch::builder()
+                        .active(rule.enabled)
+                        .valign(gtk::Align::Center)
+                        .tooltip_text(gettext("Enable/disable filter rule"))
+                        .build();
+                    let rule_id = rule.id.clone();
+                    enabled.connect_active_notify(move |switch| {
+                        if let Err(error) =
+                            MailFilterStore::default().set_enabled(&rule_id, switch.is_active())
+                        {
+                            tracing::warn!(%error, "Could not update mail filter state");
+                        }
+                    });
+                    row.add_suffix(&enabled);
+
+                    let more_popover = gtk::Popover::new();
+                    let menu_box = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .spacing(2)
+                        .margin_top(4)
+                        .margin_bottom(4)
+                        .margin_start(4)
+                        .margin_end(4)
+                        .build();
+
+                    let run_button = gtk::Button::builder()
+                        .label(gettext("Run Rule Now"))
+                        .css_classes(["flat"])
+                        .halign(gtk::Align::Fill)
+                        .build();
+                    let simulate_button = gtk::Button::builder()
+                        .label(gettext("Test Rule (Dry Run)"))
+                        .css_classes(["flat"])
+                        .halign(gtk::Align::Fill)
+                        .build();
+                    let move_up_button = gtk::Button::builder()
+                        .label(gettext("Move Up"))
+                        .css_classes(["flat"])
+                        .halign(gtk::Align::Fill)
+                        .build();
+                    let move_down_button = gtk::Button::builder()
+                        .label(gettext("Move Down"))
+                        .css_classes(["flat"])
+                        .halign(gtk::Align::Fill)
+                        .build();
+                    let delete_button = gtk::Button::builder()
+                        .label(gettext("Remove Rule…"))
+                        .css_classes(["flat", "error"])
+                        .halign(gtk::Align::Fill)
+                        .build();
+
+                    menu_box.append(&run_button);
+                    menu_box.append(&simulate_button);
+                    menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+                    menu_box.append(&move_up_button);
+                    menu_box.append(&move_down_button);
+                    menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+                    menu_box.append(&delete_button);
+                    more_popover.set_child(Some(&menu_box));
+
+                    let more_button = gtk::MenuButton::builder()
+                        .icon_name("view-more-symbolic")
+                        .tooltip_text(gettext("More actions"))
+                        .css_classes(["flat"])
+                        .valign(gtk::Align::Center)
+                        .popover(&more_popover)
+                        .build();
+                    row.add_suffix(&more_button);
+
+                    let rule_id_for_up = rule.id.clone();
+                    let dialog_weak_for_up = dialog.downgrade();
+                    let rebuild_for_up = Rc::clone(&rebuild_trigger);
+                    let popover_for_up = more_popover.clone();
+                    move_up_button.connect_clicked(move |_| {
+                        popover_for_up.popdown();
+                        let Some(dialog) = dialog_weak_for_up.upgrade() else {
+                            return;
+                        };
+                        match MailFilterStore::default().move_rule(&rule_id_for_up, -1) {
+                            Ok(true) => {
+                                if let Some(ref f) = *rebuild_for_up.borrow() {
+                                    f();
+                                }
+                                dialog.show_toast(&gettext("Filter order saved"));
+                            }
+                            Ok(false) => dialog.show_toast(&gettext("Filter rule is already at the top")),
+                            Err(error) => dialog.show_toast(&format!(
+                                "{}: {error}",
+                                gettext("Could not save filter order")
+                            )),
+                        }
+                    });
+                    let rule_id_for_down = rule.id.clone();
+                    let dialog_weak_for_down = dialog.downgrade();
+                    let rebuild_for_down = Rc::clone(&rebuild_trigger);
+                    let popover_for_down = more_popover.clone();
+                    move_down_button.connect_clicked(move |_| {
+                        popover_for_down.popdown();
+                        let Some(dialog) = dialog_weak_for_down.upgrade() else {
+                            return;
+                        };
+                        match MailFilterStore::default().move_rule(&rule_id_for_down, 1) {
+                            Ok(true) => {
+                                if let Some(ref f) = *rebuild_for_down.borrow() {
+                                    f();
+                                }
+                                dialog.show_toast(&gettext("Filter order saved"));
+                            }
+                            Ok(false) => dialog.show_toast(&gettext("Filter rule is already at the bottom")),
+                            Err(error) => dialog.show_toast(&format!(
+                                "{}: {error}",
+                                gettext("Could not save filter order")
+                            )),
+                        }
+                    });
+
+                    let rule_id_for_run = rule.id.clone();
+                    let rule_for_run = rule.clone();
+                    let dialog_weak_for_run = dialog.downgrade();
+                    let run_button_for_result = run_button.clone();
+                    let settings_for_run = settings.clone();
+                    let popover_for_run = more_popover.clone();
+                    run_button.connect_clicked(move |_| {
+                        popover_for_run.popdown();
+                        let Some(dialog) = dialog_weak_for_run.upgrade() else {
+                            return;
+                        };
+                        run_button_for_result.set_sensitive(false);
+                        let (sender, receiver) = async_channel::bounded(1);
+                        let local_mail_directory = settings_for_run
+                            .as_ref()
+                            .map(|settings| settings.local_mail_directory());
+                        let snapshot = match ManualFilterRunSnapshot::capture(
+                            rule_id_for_run.clone(),
+                            rule_for_run.clone(),
+                            MailStoreWorkerConfig::capture(local_mail_directory),
+                            MailFilterStore::from_environment(),
+                        ) {
+                            Ok(snapshot) => snapshot,
+                            Err(error) => {
+                                run_button_for_result.set_sensitive(true);
+                                dialog.show_toast(&error.toast_message());
+                                return;
+                            }
+                        };
+                        let snapshot_path = snapshot.filter_store.path().to_path_buf();
+                        let completion_allowed = Rc::new(Cell::new(true));
+                        let completion_allowed_for_close = Rc::clone(&completion_allowed);
+                        dialog.connect_closed(move |_| {
+                            completion_allowed_for_close.set(false);
+                        });
+                        let worker_result = std::thread::Builder::new()
+                            .name("manual-mail-filter".to_string())
+                            .spawn(move || {
+                                let result = snapshot.run_on_worker();
+                                if let Err(error) = sender.send_blocking(result) {
+                                    tracing::debug!(%error, "Manual filter result was dropped");
+                                }
+                            });
+                        if let Err(error) = worker_result {
+                            cleanup_manual_filter_snapshot(&snapshot_path);
+                            run_button_for_result.set_sensitive(true);
+                            dialog.show_toast(&format!(
+                                "Local filter run failed: Worker could not be started: {error}"
+                            ));
+                            return;
+                        }
+                        let dialog_weak = dialog.downgrade();
+                        let run_button = run_button_for_result.clone();
+                        glib::spawn_future_local(async move {
+                            let result = receiver.recv().await;
+                            if !completion_allowed.get() {
+                                return;
+                            }
+                            let Some(dialog) = dialog_weak.upgrade() else {
+                                return;
+                            };
+                            run_button.set_sensitive(true);
+                            if matches!(&result, Ok(Ok(Some(_)))) {
+                                if let Some(window) = dialog
+                                    .root()
+                                    .and_downcast::<crate::window::MeridianWindow>()
+                                {
+                                    window.refresh_mail_page();
+                                }
+                            }
+                            dialog.show_toast(&manual_filter_result_toast(&result));
+                        });
+                    });
+
+                    let rule_id_for_sim = rule.id.clone();
+                    let dialog_weak_for_sim = dialog.downgrade();
+                    let simulate_button_for_result = simulate_button.clone();
+                    let settings_for_sim = settings.clone();
+                    let popover_for_sim = more_popover.clone();
+                    simulate_button.connect_clicked(move |_| {
+                        popover_for_sim.popdown();
+                        let Some(dialog) = dialog_weak_for_sim.upgrade() else {
+                            return;
+                        };
+                        simulate_button_for_result.set_sensitive(false);
+                        let (sender, receiver) = async_channel::bounded(1);
+                        let local_mail_directory = settings_for_sim
+                            .as_ref()
+                            .map(|settings| settings.local_mail_directory());
+                        let rule_id = rule_id_for_sim.clone();
+                        let worker_result = std::thread::Builder::new()
+                            .name("simulate-mail-filter".to_string())
+                            .spawn(move || {
+                                let store = match local_mail_directory.as_deref().filter(|path| !path.trim().is_empty()) {
+                                    Some(dir) => MailStoreService::with_mail_dir(PathBuf::from(dir)),
+                                    None => MailStoreService::new(),
+                                };
+                                let report = store.simulate_filter_rule(&rule_id);
+                                let _ = sender.send_blocking(report);
+                            });
+                        if let Err(error) = worker_result {
+                            simulate_button_for_result.set_sensitive(true);
+                            dialog.show_toast(&format!(
+                                "{}: {error}",
+                                gettext("Dry run failed: Worker could not be started")
+                            ));
+                            return;
+                        }
+                        let dialog_weak = dialog.downgrade();
+                        let simulate_button = simulate_button_for_result.clone();
+                        glib::spawn_future_local(async move {
+                            let result = receiver.recv().await;
+                            let Some(dialog) = dialog_weak.upgrade() else {
+                                return;
+                            };
+                            simulate_button.set_sensitive(true);
+                            match result {
+                                Ok(Ok(Some(report))) => {
+                                    dialog.show_toast(&format!(
+                                        "Dry run completed: {} of {} message(s) match (no changes made)",
+                                        report.matches.len(),
+                                        report.total_messages_evaluated,
+                                    ));
+                                }
+                                Ok(Ok(None)) => {
+                                    dialog.show_toast(&gettext("Filter rule was not found for dry run"));
+                                }
+                                Ok(Err(error)) => {
+                                    dialog.show_toast(&format!("{}: {error}", gettext("Dry run failed")));
+                                }
+                                Err(_) => {}
+                            }
+                        });
+                    });
+
+                    let dialog_weak_for_delete = dialog.downgrade();
+                    let row_for_delete = row.clone();
+                    let rule_id_for_delete = rule.id.clone();
+                    let popover_for_delete = more_popover.clone();
+                    delete_button.connect_clicked(move |_| {
+                        popover_for_delete.popdown();
+                        let Some(dialog) = dialog_weak_for_delete.upgrade() else {
+                            return;
+                        };
+                        let row = row_for_delete.clone();
+                        let rule_id = rule_id_for_delete.clone();
+                        let dialog_for_action = dialog.clone();
+                        crate::dialogs::run_destructive_action(
+                            &dialog,
+                            &gettext("Remove filter rule?"),
+                            &gettext("The rule will be removed from app filter rules."),
+                            &gettext("Remove"),
+                            move || match MailFilterStore::default().delete(&rule_id) {
+                                Ok(true) => {
+                                    row.set_visible(false);
+                                    dialog_for_action.show_toast(&gettext("Filter rule removed"));
+                                }
+                                Ok(false) => {
+                                    dialog_for_action.show_toast(&gettext("Filter rule not found"))
+                                }
+                                Err(error) => dialog_for_action.show_toast(&format!(
+                                    "{}: {error}",
+                                    gettext("Filter rule could not be removed")
+                                )),
+                            },
+                        );
+                    });
+                    group_filter_rules.add(&row);
+                    active_filter_rows.borrow_mut().push(row);
+                }
+            })
+        };
+        *rebuild_trigger.borrow_mut() = Some(Rc::clone(&rebuild_fn));
+        rebuild_fn();
+
         let btn_add_filter = gtk::Button::builder()
             .icon_name("list-add-symbolic")
             .tooltip_text(gettext("New Filter…"))
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
+        let rebuild_for_add = Rc::clone(&rebuild_trigger);
         btn_add_filter.connect_clicked(glib::clone!(
             #[weak(rename_to = page)]
             self,
             move |_| {
                 let dialog = crate::dialogs::FilterEditorDialog::new();
+                let rebuild_after_add = Rc::clone(&rebuild_for_add);
+                dialog.connect_closed(move |_| {
+                    if let Some(ref f) = *rebuild_after_add.borrow() {
+                        f();
+                    }
+                });
                 dialog.present(Some(&page));
             }
         ));
         group_filter_rules.set_header_suffix(Some(&btn_add_filter));
-
-        if filter_rule_rows.is_empty() {
-            let row_empty = adw::ActionRow::builder()
-                .title(gettext("No Filters"))
-                .build();
-            group_filter_rules.add(&row_empty);
-        } else {
-            for row in filter_rule_rows {
-                group_filter_rules.add(&row);
-            }
-        }
         page_filters.add(&group_filter_rules);
 
         let group_filter_diagnostics = adw::PreferencesGroup::builder().build();
@@ -2662,16 +2756,9 @@ impl PreferencesDialog {
             .build();
         if let Some(settings) = settings.clone() {
             row_offline_mode.set_active(settings.offline_mode());
-            let dialog_for_offline = self.downgrade();
             row_offline_mode.connect_active_notify(move |row| {
-                settings.set_offline_mode(row.is_active());
-                if let Some(dialog) = dialog_for_offline.upgrade() {
-                    if let Some(window) = dialog
-                        .root()
-                        .and_downcast::<crate::window::MeridianWindow>()
-                    {
-                        window.refresh_mail_page();
-                    }
+                if settings.offline_mode() != row.is_active() {
+                    settings.set_offline_mode(row.is_active());
                 }
             });
         }
@@ -13164,6 +13251,7 @@ fn filter_field_label(field: FilterField) -> &'static str {
         FilterField::Date => "Date",
         FilterField::Folder => "Folder",
         FilterField::Junk => "Spam/Junk",
+        FilterField::AllMessages => "All Messages",
     }
 }
 
@@ -13178,11 +13266,167 @@ fn filter_operator_label(operator: FilterOperator) -> &'static str {
         FilterOperator::Before => "before",
         FilterOperator::After => "after",
         FilterOperator::Exists => "exists",
+        FilterOperator::MatchesRegex => "matches regex",
+    }
+}
+
+pub(crate) fn format_filter_folder_target(folder: &str) -> String {
+    let trimmed = folder.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let local_prefixes = [
+        "local:",
+        "local/",
+        "custom:",
+        "on this computer:",
+        "on this computer/",
+        "auf diesem computer:",
+        "auf diesem computer/",
+    ];
+    for prefix in local_prefixes {
+        if lower.starts_with(prefix) {
+            let raw_rest = trimmed[prefix.len()..].trim();
+            let lower_rest = raw_rest.to_ascii_lowercase();
+            let leaf = match lower_rest.as_str() {
+                "inbox" => gettext("Inbox"),
+                "archive" => gettext("Archive"),
+                "trash" | "deleted" => gettext("Trash"),
+                "sent" => gettext("Sent"),
+                "drafts" => gettext("Drafts"),
+                "junk" | "spam" => gettext("Junk"),
+                _ => raw_rest.to_string(),
+            };
+            return format!("{} / {}", gettext("On This Computer"), leaf);
+        }
+    }
+    if let Some((raw_src, raw_folder)) = trimmed.split_once("::") {
+        let src_clean = raw_src.trim().strip_prefix("eds:").unwrap_or(raw_src.trim());
+        let profiles = AccountConfigStore::default().load_cached();
+        let acct_label = profiles
+            .iter()
+            .find(|p| {
+                let p_canon = p.id.strip_prefix("eds:").unwrap_or(&p.id);
+                let eds_uid =
+                    crate::services::account_config_service::eds_source_uid_for_email(&p.email);
+                let eds_canon = eds_uid.strip_prefix("eds:").unwrap_or(&eds_uid);
+                p_canon.eq_ignore_ascii_case(src_clean)
+                    || (!eds_canon.is_empty() && eds_canon.eq_ignore_ascii_case(src_clean))
+                    || p.email.eq_ignore_ascii_case(src_clean)
+            })
+            .map(|p| {
+                if !p.email.trim().is_empty() {
+                    p.email.trim().to_string()
+                } else {
+                    p.display_name.trim().to_string()
+                }
+            })
+            .or_else(|| {
+                crate::services::evolution_summary_cache::discover_meridian_mail_caches()
+                    .into_iter()
+                    .find(|c| {
+                        let c_canon = c.source_uid.strip_prefix("eds:").unwrap_or(&c.source_uid);
+                        c_canon.eq_ignore_ascii_case(src_clean)
+                            || c.source_uid.strip_suffix("-mail").is_some_and(|s| s.eq_ignore_ascii_case(src_clean))
+                    })
+                    .map(|c| c.display_name)
+            })
+            .unwrap_or_else(|| src_clean.to_string());
+        let clean_folder = raw_folder
+            .trim()
+            .strip_prefix("[Gmail]/")
+            .or_else(|| raw_folder.trim().strip_prefix("[Google Mail]/"))
+            .unwrap_or(raw_folder.trim());
+        let localized_folder = match clean_folder.to_ascii_lowercase().as_str() {
+            "inbox" => gettext("Inbox"),
+            "archive" => gettext("Archive"),
+            "trash" | "deleted" | "deleted items" => gettext("Trash"),
+            "sent" | "sent mail" | "sent items" => gettext("Sent"),
+            "drafts" => gettext("Drafts"),
+            "junk" | "spam" => gettext("Junk"),
+            _ => clean_folder.to_string(),
+        };
+        return format!("{acct_label} / {localized_folder}");
+    }
+    match lower.as_str() {
+        "inbox" => gettext("Inbox"),
+        "archive" => gettext("Archive"),
+        "trash" | "deleted" => gettext("Trash"),
+        "sent" => gettext("Sent"),
+        "drafts" => gettext("Drafts"),
+        "junk" | "spam" => gettext("Junk"),
+        _ => trimmed.to_string(),
     }
 }
 
 fn filter_action_label(action: &FilterAction) -> String {
-    action.description()
+    match action {
+        FilterAction::MoveToFolder(folder) => {
+            if crate::services::mail_filter_service::is_explicit_local_folder_target(folder) {
+                format!(
+                    "{} {} ({})",
+                    gettext("Move to"),
+                    format_filter_folder_target(folder),
+                    gettext("delete from server")
+                )
+            } else {
+                format!("{} {}", gettext("Move to"), format_filter_folder_target(folder))
+            }
+        }
+        FilterAction::CopyToFolder(folder) => {
+            format!("{} {}", gettext("Copy to"), format_filter_folder_target(folder))
+        }
+        other => other.description(),
+    }
+}
+
+fn format_filter_rule_subtitle(rule: &MailFilterRule) -> String {
+    let conditions = rule.effective_conditions();
+    let is_match_all_messages = conditions.len() == 1
+        && (conditions[0].field == FilterField::AllMessages
+            || (conditions[0].field == FilterField::Subject
+                && conditions[0].operator == FilterOperator::Exists
+                && conditions[0].value.trim().is_empty())
+            || (matches!(
+                conditions[0].operator,
+                FilterOperator::Contains | FilterOperator::Equals
+            ) && conditions[0].value.trim() == "*"));
+
+    let condition_text = if is_match_all_messages {
+        match rule.scope {
+            crate::services::mail_filter_service::FilterScope::Incoming => {
+                gettext("All incoming mail")
+            }
+            crate::services::mail_filter_service::FilterScope::Outgoing => {
+                gettext("All outgoing mail")
+            }
+            crate::services::mail_filter_service::FilterScope::Manual => gettext("All mail"),
+        }
+    } else {
+        conditions
+            .into_iter()
+            .map(|condition| {
+                if condition.field == FilterField::AllMessages {
+                    return gettext("All Messages");
+                }
+                let field = filter_field_label(condition.field);
+                let operator = filter_operator_label(condition.operator);
+                if condition.value.is_empty() {
+                    format!("{field} {operator}")
+                } else {
+                    format!("{field} {operator} “{}”", condition.value)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(if rule.match_all { " AND " } else { " OR " })
+    };
+
+    let action_text = rule
+        .effective_actions()
+        .into_iter()
+        .map(filter_action_label)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!("{condition_text} → {action_text}")
 }
 
 fn escape_html(input: &str) -> String {
