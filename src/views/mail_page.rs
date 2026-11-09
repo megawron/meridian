@@ -8,7 +8,6 @@ use chrono::{Datelike, NaiveDate, Utc};
 use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -16,6 +15,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 
 pub(crate) static SIDEBAR_HOVER_PREVIEW_ENABLED: AtomicBool = AtomicBool::new(true);
+
+thread_local! {
+    static FOLDER_DRAG_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
 
 use crate::dialogs::{
     FolderSortOrderDialog, FolderSortOrderItem, FolderSortOrderOutcome, FolderSubscriptionsDialog,
@@ -468,19 +471,19 @@ impl FolderSelection {
             (name.clone(), MailPage::folder_icon_name(name))
         } else {
             match self.folder_id.as_str() {
-                "all" => (crate::i18n::gettext("All Messages"), "mail-inbox-symbolic"),
-                "unified_inbox" => (crate::i18n::gettext("All Inboxes"), "mail-inbox-symbolic"),
-                "unified_unread" => (crate::i18n::gettext("All Unread"), "mail-unread-symbolic"),
-                "unified_flagged" => (crate::i18n::gettext("All Flagged"), "starred-symbolic"),
-                "unified_sent" => (crate::i18n::gettext("All Sent"), "mail-send-symbolic"),
-                "inbox" => (crate::i18n::gettext("Inbox"), "mail-inbox-symbolic"),
-                "sent" => (crate::i18n::gettext("Sent"), "mail-send-symbolic"),
-                "drafts" => (crate::i18n::gettext("Drafts"), "mail-drafts-symbolic"),
-                "trash" => (crate::i18n::gettext("Trash"), "user-trash-symbolic"),
-                "archive" => (crate::i18n::gettext("Archive"), "folder-symbolic"),
-                "spam" => (crate::i18n::gettext("Junk"), "mail-mark-junk-symbolic"),
-                "outbox" => (crate::i18n::gettext("Outbox"), "mail-outbox-symbolic"),
-                _ => (crate::i18n::gettext("Inbox"), "mail-inbox-symbolic"),
+                "all" => (gettext("All Messages"), "mail-inbox-symbolic"),
+                "unified_inbox" => (gettext("All Inboxes"), "mail-inbox-symbolic"),
+                "unified_unread" => (gettext("All Unread"), "mail-unread-symbolic"),
+                "unified_flagged" => (gettext("All Flagged"), "starred-symbolic"),
+                "unified_sent" => (gettext("All Sent"), "mail-send-symbolic"),
+                "inbox" => (gettext("Inbox"), "mail-inbox-symbolic"),
+                "sent" => (gettext("Sent"), "mail-send-symbolic"),
+                "drafts" => (gettext("Drafts"), "mail-drafts-symbolic"),
+                "trash" => (gettext("Trash"), "user-trash-symbolic"),
+                "archive" => (gettext("Archive"), "folder-symbolic"),
+                "spam" => (gettext("Junk"), "mail-mark-junk-symbolic"),
+                "outbox" => (gettext("Outbox"), "mail-outbox-symbolic"),
+                _ => (gettext("Inbox"), "mail-inbox-symbolic"),
             }
         }
     }
@@ -1092,18 +1095,18 @@ fn parse_message_timestamp(value: &str) -> i64 {
 
 fn format_month_short(month: u32) -> String {
     match month {
-        1 => crate::i18n::gettext("Jan"),
-        2 => crate::i18n::gettext("Feb"),
-        3 => crate::i18n::gettext("Mar"),
-        4 => crate::i18n::gettext("Apr"),
-        5 => crate::i18n::gettext("May"),
-        6 => crate::i18n::gettext("Jun"),
-        7 => crate::i18n::gettext("Jul"),
-        8 => crate::i18n::gettext("Aug"),
-        9 => crate::i18n::gettext("Sep"),
-        10 => crate::i18n::gettext("Oct"),
-        11 => crate::i18n::gettext("Nov"),
-        12 => crate::i18n::gettext("Dec"),
+        1 => gettext("Jan"),
+        2 => gettext("Feb"),
+        3 => gettext("Mar"),
+        4 => gettext("Apr"),
+        5 => gettext("May"),
+        6 => gettext("Jun"),
+        7 => gettext("Jul"),
+        8 => gettext("Aug"),
+        9 => gettext("Sep"),
+        10 => gettext("Oct"),
+        11 => gettext("Nov"),
+        12 => gettext("Dec"),
         _ => String::new(),
     }
 }
@@ -1402,13 +1405,13 @@ pub(crate) fn format_mail_table_date(
 
 fn format_weekday_short(date: chrono::NaiveDate) -> String {
     match date.weekday() {
-        chrono::Weekday::Mon => crate::i18n::gettext("Mon"),
-        chrono::Weekday::Tue => crate::i18n::gettext("Tue"),
-        chrono::Weekday::Wed => crate::i18n::gettext("Wed"),
-        chrono::Weekday::Thu => crate::i18n::gettext("Thu"),
-        chrono::Weekday::Fri => crate::i18n::gettext("Fri"),
-        chrono::Weekday::Sat => crate::i18n::gettext("Sat"),
-        chrono::Weekday::Sun => crate::i18n::gettext("Sun"),
+        chrono::Weekday::Mon => gettext("Mon"),
+        chrono::Weekday::Tue => gettext("Tue"),
+        chrono::Weekday::Wed => gettext("Wed"),
+        chrono::Weekday::Thu => gettext("Thu"),
+        chrono::Weekday::Fri => gettext("Fri"),
+        chrono::Weekday::Sat => gettext("Sat"),
+        chrono::Weekday::Sun => gettext("Sun"),
     }
 }
 
@@ -1558,7 +1561,7 @@ fn format_preview_header_date_with_now(value: &str, now_date: chrono::NaiveDate)
     if msg_date == now_date {
         local_dt.format(time_pattern).to_string()
     } else if days_diff == 1 {
-        format!("{}, {}", crate::i18n::gettext("Yesterday"), local_dt.format(time_pattern))
+        format!("{}, {}", gettext("Yesterday"), local_dt.format(time_pattern))
     } else if days_diff > 1 && days_diff < 7 {
         format!("{}, {}", format_weekday_short(msg_date), local_dt.format(time_pattern))
     } else if now_date.year() == msg_date.year() {
@@ -1789,8 +1792,8 @@ fn format_modern_recipient_summary(
     let total_count = to_list.len() + cc_list.len();
 
     let arrow = if expanded { "▴" } else { "▾" };
-    let to_prefix = crate::i18n::gettext("to");
-    let me_label = crate::i18n::gettext("me");
+    let to_prefix = gettext("to");
+    let me_label = gettext("me");
 
     if total_count == 0 {
         return format!("{to_prefix} {me_label} {arrow}");
@@ -4952,7 +4955,7 @@ pub(crate) fn replace_normal_header_rows(grid: &gtk::Grid, fields: &[(String, St
             .halign(gtk::Align::End)
             .valign(gtk::Align::Baseline)
             .xalign(1.0)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
         grid.attach(&name_label, 0, row as i32, 1, 1);
         if name == "Face" {
@@ -4969,9 +4972,9 @@ pub(crate) fn replace_normal_header_rows(grid: &gtk::Grid, fields: &[(String, St
                 grid.attach(&avatar, 1, row as i32, 1, 1);
             } else {
                 let invalid = gtk::Label::builder()
-                    .label(&gettext("Sender picture could not be displayed"))
+                    .label(gettext("Sender picture could not be displayed"))
                     .halign(gtk::Align::Start)
-                    .css_classes(vec!["caption", "dim-label"])
+                    .css_classes(["caption", "dim-label"])
                     .build();
                 grid.attach(&invalid, 1, row as i32, 1, 1);
             }
@@ -5064,7 +5067,7 @@ pub(crate) fn replace_formatted_header_rows(grid: &gtk::Grid, fields: &[(String,
             .single_line_mode(true)
             .tooltip_text(&full_name)
             .selectable(true)
-            .css_classes(vec!["caption", "dim-label", "mail-all-header-name"])
+            .css_classes(["caption", "dim-label", "mail-all-header-name"])
             .build();
         let value_lbl = gtk::Label::builder()
             .label(value)
@@ -5104,7 +5107,7 @@ pub(crate) fn replace_centered_header_rows(grid: &gtk::Grid, fields: &[(String, 
             .single_line_mode(true)
             .tooltip_text(&full_name)
             .selectable(true)
-            .css_classes(vec!["caption", "dim-label", "mail-all-header-name"])
+            .css_classes(["caption", "dim-label", "mail-all-header-name"])
             .build();
         let value_lbl = gtk::Label::builder()
             .label(value)
@@ -5131,7 +5134,7 @@ fn replace_formatted_header_status(grid: &gtk::Grid, status: &str) {
         .label(status)
         .halign(gtk::Align::Start)
         .xalign(0.0)
-        .css_classes(vec!["caption", "dim-label"])
+        .css_classes(["caption", "dim-label"])
         .build();
     grid.attach(&label, 0, 0, 2, 1);
 }
@@ -5185,6 +5188,7 @@ fn build_mail_drag_content_provider(messages: &[MailMessageObject]) -> Option<gt
     if messages.is_empty() {
         return None;
     }
+    FOLDER_DRAG_ACTIVE.with(|flag| flag.set(false));
     let ids: Vec<String> = messages.iter().map(|m| m.id()).collect();
     let provider_internal = gtk::gdk::ContentProvider::for_value(
         &format!("meridian-message:{}", ids.join(",")).to_value(),
@@ -5415,12 +5419,12 @@ fn folder_default_sort_bucket(folder_id: &str, label: &str) -> u32 {
     let matches_pattern =
         |pattern: &str| -> bool { clean_id.contains(pattern) || clean_label.contains(pattern) };
 
-    // 0: Posteingang / Inbox
+    // 0: Inbox
     if matches_pattern("inbox") || matches_pattern("posteingang") {
         return 0;
     }
 
-    // 2: Entwürfe / Drafts
+    // 2: Drafts
     if matches_pattern("draft")
         || matches_pattern("entwurf")
         || matches_pattern("entwürf")
@@ -5429,7 +5433,7 @@ fn folder_default_sort_bucket(folder_id: &str, label: &str) -> u32 {
         return 2;
     }
 
-    // 3: Gelöschte Elemente / Trash / Papierkorb
+    // 3: Trash / Deleted Items
     if matches_pattern("trash")
         || matches_pattern("mülleimer")
         || matches_pattern("muelleimer")
@@ -5441,12 +5445,12 @@ fn folder_default_sort_bucket(folder_id: &str, label: &str) -> u32 {
         return 3;
     }
 
-    // 4: Gesendete Elemente / Gesendet / Sent
+    // 4: Sent Items / Sent
     if matches_pattern("sent") || matches_pattern("gesendet") {
         return 4;
     }
 
-    // 5: Junk / Spam / Unerwünschte E-Mail
+    // 5: Junk / Spam
     if matches_pattern("junk")
         || matches_pattern("spam")
         || matches_pattern("unerwünscht")
@@ -5455,22 +5459,22 @@ fn folder_default_sort_bucket(folder_id: &str, label: &str) -> u32 {
         return 5;
     }
 
-    // 6: Postausgang / Outbox
+    // 6: Outbox
     if matches_pattern("outbox") || matches_pattern("postausgang") {
         return 6;
     }
 
-    // 7: RSS-Feeds / RSS
+    // 7: RSS Feeds / RSS
     if matches_pattern("rss") {
         return 7;
     }
 
-    // 8: Synchronisierungsprobleme / Sync Issues / Sync Problems
+    // 8: Sync Issues / Sync Problems
     if matches_pattern("sync") || matches_pattern("synchronisier") {
         return 8;
     }
 
-    // 1: Persönliche Ordner (default for custom / personal folders, e.g. Archiv, Projekte, etc.)
+    // 1: Personal Folders (default for custom / personal folders, e.g. Archive, Projects, etc.)
     1
 }
 
@@ -6593,6 +6597,55 @@ impl PendingMailApply {
     }
 }
 
+pub(crate) fn parsed_mail_belongs_to_disabled_account(mail: &ParsedMail) -> bool {
+    if let Some(ref loc) = mail.backend_location {
+        let canon = MailPage::canonical_account_uid(&loc.source_uid);
+        if !canon.is_empty() && canon != "local" {
+            return !eds_service::is_source_enabled_for_service(canon, EdsSourceKind::Mail);
+        }
+    }
+    if let Some(ref raw_headers) = mail.raw_headers {
+        let header_str = String::from_utf8_lossy(raw_headers);
+        for line in header_str.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed
+                .strip_prefix("X-Evolution-Source-Folder:")
+                .or_else(|| trimmed.strip_prefix("X-Evolution-Fcc:"))
+            {
+                if let Some(folder_uri) = rest.trim().strip_prefix("folder://") {
+                    if let Some((uid, _)) = folder_uri.split_once('/') {
+                        let uid = uid.trim();
+                        if !uid.is_empty()
+                            && uid != "local"
+                            && !eds_service::is_source_enabled_for_service(uid, EdsSourceKind::Mail)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            if let Some(delivered_to) = trimmed.strip_prefix("Delivered-To:") {
+                let addr = delivered_to.trim();
+                if eds_service::is_email_account_disabled_for_mail(addr) {
+                    return true;
+                }
+            }
+        }
+    }
+    for (_, email) in parse_email_recipients(&mail.recipient_to)
+        .into_iter()
+        .chain(parse_email_recipients(&mail.recipient_cc))
+    {
+        if eds_service::is_email_account_disabled_for_mail(&email) {
+            return true;
+        }
+    }
+    if eds_service::is_email_account_disabled_for_mail(&mail.sender_email) {
+        return true;
+    }
+    false
+}
+
 fn load_mail_backend(
     input: MailLoadWorkerInput,
     cancelled: &Arc<AtomicBool>,
@@ -6614,8 +6667,9 @@ fn load_mail_backend(
     );
     if offline_mode {
         let store = crate::services::MailStoreService::new_worker_safe(store_config.clone());
-        let (messages, local_deleted_ids) =
+        let (mut messages, local_deleted_ids) =
             store.load_local_records_with_deleted_cancelable(cancelled, show_deleted);
+        messages.retain(|m| !parsed_mail_belongs_to_disabled_account(m));
         let searchable_body_texts = match prepare_searchable_body_texts(&messages, cancelled) {
             Ok(texts) => texts,
             Err(error) => return MailPageLoadResult::Error(error),
@@ -6744,15 +6798,24 @@ fn load_mail_backend(
     }
 
     match camel_result {
-        Ok(camel)
+        Ok(mut camel)
             if camel.configured_sources > 0
                 || !camel.messages.is_empty()
                 || !camel.folders.is_empty() =>
         {
+            camel.folders.retain(|f| {
+                eds_service::is_source_enabled_for_service(&f.source_uid, EdsSourceKind::Mail)
+            });
+            camel
+                .messages
+                .retain(|m| !parsed_mail_belongs_to_disabled_account(m));
             let store = crate::services::MailStoreService::new_worker_safe(store_config.clone());
             let local_folders = store.local_folder_definitions();
-            let (local_messages, local_deleted_ids) =
+            let (mut local_messages, local_deleted_ids) =
                 store.load_local_records_with_deleted_cancelable(cancelled, show_deleted);
+            local_messages.retain(|m| {
+                local_folders.contains(&m.folder_id) && !parsed_mail_belongs_to_disabled_account(m)
+            });
             let mut searchable_body_texts =
                 match prepare_searchable_body_texts(&camel.messages, cancelled) {
                     Ok(texts) => texts,
@@ -6797,8 +6860,9 @@ fn load_mail_backend(
                 return cached_res;
             }
             let store = crate::services::MailStoreService::new_worker_safe(store_config.clone());
-            let (messages, local_deleted_ids) =
+            let (mut messages, local_deleted_ids) =
                 store.load_local_records_with_deleted_cancelable(cancelled, show_deleted);
+            messages.retain(|m| !parsed_mail_belongs_to_disabled_account(m));
             let searchable_body_texts = match prepare_searchable_body_texts(&messages, cancelled) {
                 Ok(texts) => texts,
                 Err(error) => return MailPageLoadResult::Error(error),
@@ -6826,8 +6890,9 @@ fn load_mail_backend(
                 return cached_res;
             }
             let store = crate::services::MailStoreService::new_worker_safe(store_config);
-            let (messages, local_deleted_ids) =
+            let (mut messages, local_deleted_ids) =
                 store.load_local_records_with_deleted_cancelable(cancelled, show_deleted);
+            messages.retain(|m| !parsed_mail_belongs_to_disabled_account(m));
             let searchable_body_texts = match prepare_searchable_body_texts(&messages, cancelled) {
                 Ok(texts) => texts,
                 Err(search_error) => {
@@ -7009,9 +7074,9 @@ impl MailSidebarPanelId {
 
     pub fn display_title(&self) -> String {
         match self {
-            Self::Agenda => crate::i18n::gettext("Agenda"),
-            Self::Tasks => crate::i18n::gettext("Tasks"),
-            Self::Memos => crate::i18n::gettext("Memos"),
+            Self::Agenda => gettext("Agenda"),
+            Self::Tasks => gettext("Tasks"),
+            Self::Memos => gettext("Memos"),
         }
     }
 }
@@ -8025,7 +8090,7 @@ impl MailPage {
                         .child(&icon)
                         .tooltip_text(&tip)
                         .action_name(act)
-                        .css_classes(vec!["flat", "mail-header-action-btn"])
+                        .css_classes(["flat", "mail-header-action-btn"])
                         .valign(gtk::Align::Center)
                         .build();
                     set_accessible_label(&btn, &tip);
@@ -8203,19 +8268,19 @@ impl MailPage {
 
     pub(crate) fn apply_toolbar_button_modes(&self, is_compact: bool) {
         let imp = self.imp();
-        let str_reply = crate::i18n::gettext("Reply");
-        let str_reply_all = crate::i18n::gettext("Reply All");
-        let str_forward = crate::i18n::gettext("Forward");
-        let str_print = crate::i18n::gettext("Print");
-        let str_source = crate::i18n::gettext("View Source");
-        let str_delete = crate::i18n::gettext("Delete");
-        let str_archive = crate::i18n::gettext("Archive");
-        let str_junk = crate::i18n::gettext("Junk");
-        let str_read = crate::i18n::gettext("Read");
-        let str_unread = crate::i18n::gettext("Unread");
-        let str_star = crate::i18n::gettext("Star");
-        let str_important = crate::i18n::gettext("Important");
-        let str_undo = crate::i18n::gettext("Undo");
+        let str_reply = gettext("Reply");
+        let str_reply_all = gettext("Reply All");
+        let str_forward = gettext("Forward");
+        let str_print = gettext("Print");
+        let str_source = gettext("View Source");
+        let str_delete = gettext("Delete");
+        let str_archive = gettext("Archive");
+        let str_junk = gettext("Junk");
+        let str_read = gettext("Read");
+        let str_unread = gettext("Unread");
+        let str_star = gettext("Star");
+        let str_important = gettext("Important");
+        let str_undo = gettext("Undo");
 
         let buttons: [(&RefCell<Option<gtk::Button>>, &str, &str); 13] = [
             (&imp.mail_reply_button, &str_reply, "mail-reply-sender-symbolic"),
@@ -8265,8 +8330,8 @@ impl MailPage {
             }
         }
 
-        let str_move = crate::i18n::gettext("Move");
-        let str_copy = crate::i18n::gettext("Copy");
+        let str_move = gettext("Move");
+        let str_copy = gettext("Copy");
         let menu_buttons: [(&RefCell<Option<gtk::MenuButton>>, &str, &str); 2] = [
             (&imp.mail_move_button, &str_move, "folder-symbolic"),
             (&imp.mail_copy_button, &str_copy, "edit-copy-symbolic"),
@@ -8320,7 +8385,7 @@ impl MailPage {
         let sel = self.active_folder_selection();
         sel.folder_name.clone().or_else(|| {
             if sel.folder_id == "inbox" || sel.folder_id == "local-inbox" {
-                Some(crate::i18n::gettext("Inbox"))
+                Some(gettext("Inbox"))
             } else if !sel.folder_id.is_empty() {
                 Some(sel.folder_id.clone())
             } else {
@@ -8957,7 +9022,7 @@ impl MailPage {
                 let subj = if !message.subject().is_empty() {
                     message.subject()
                 } else {
-                    gettext("(Kein Betreff)")
+                    gettext("(No Subject)")
                 };
                 lbl.set_text(&subj);
             }
@@ -8997,7 +9062,7 @@ impl MailPage {
                     let classic_toggle_btn = gtk::Button::builder()
                         .label(arrow_text)
                         .tooltip_text(&tip_text)
-                        .css_classes(vec!["flat", "mail-details-toggle"])
+                        .css_classes(["flat", "mail-details-toggle"])
                         .valign(gtk::Align::Baseline)
                         .halign(gtk::Align::Start)
                         .build();
@@ -9657,7 +9722,7 @@ impl MailPage {
         };
 
         if let Some(grid) = self.imp().all_headers_grid.borrow().as_ref() {
-            replace_formatted_header_status(grid, &crate::i18n::gettext("Loading headers…"));
+            replace_formatted_header_status(grid, &gettext("Loading headers…"));
         }
         let cancelled = Arc::new(AtomicBool::new(false));
         self.imp()
@@ -9768,9 +9833,9 @@ impl MailPage {
             .unwrap_or(false);
 
         let show_all_check = gtk::CheckButton::builder()
-            .label(&gettext("Show All Headers"))
+            .label(gettext("Show All Headers"))
             .active(show_all_active)
-            .tooltip_text(&gettext(
+            .tooltip_text(gettext(
                 "Expand all technical RFC 5322 headers (Received, SPF, DKIM, Message-ID, etc.) inline",
             ))
             .build();
@@ -9793,7 +9858,7 @@ impl MailPage {
             let btn = gtk::Button::builder()
                 .has_frame(false)
                 .halign(gtk::Align::Fill)
-                .css_classes(vec!["flat", "context-menu-item"])
+                .css_classes(["flat", "context-menu-item"])
                 .build();
             let row = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
@@ -9808,7 +9873,7 @@ impl MailPage {
                 .icon_name(icon_name)
                 .pixel_size(16)
                 .valign(gtk::Align::Center)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build();
             let lbl = gtk::Label::builder()
                 .label(label_text)
@@ -9925,7 +9990,7 @@ impl MailPage {
         };
 
         let dialog = adw::Window::builder()
-            .title(&gettext("Email Header Analysis"))
+            .title(gettext("Email Header Analysis"))
             .modal(true)
             .default_width(980)
             .default_height(660)
@@ -9939,9 +10004,9 @@ impl MailPage {
 
         let copy_all_btn = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
-            .label(&gettext("Copy All"))
-            .tooltip_text(&gettext("Copy all headers to clipboard"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Copy All"))
+            .tooltip_text(gettext("Copy all headers to clipboard"))
+            .css_classes(["flat"])
             .build();
         header.pack_end(&copy_all_btn);
         toolbar.add_top_bar(&header);
@@ -9965,7 +10030,7 @@ impl MailPage {
         outer_box.append(&summary_box);
 
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text(&gettext("Filter headers (e.g. Received, SPF, DKIM, Message-ID)…"))
+            .placeholder_text(gettext("Filter headers (e.g. Received, SPF, DKIM, Message-ID)…"))
             .hexpand(true)
             .build();
         outer_box.append(&search_entry);
@@ -9975,7 +10040,7 @@ impl MailPage {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .hexpand(true)
             .vexpand(true)
-            .css_classes(vec!["card"])
+            .css_classes(["card"])
             .build();
 
         let headers_grid = gtk::Grid::builder()
@@ -9987,7 +10052,7 @@ impl MailPage {
             .margin_bottom(12)
             .hexpand(true)
             .halign(gtk::Align::Fill)
-            .css_classes(vec!["mail-all-headers"])
+            .css_classes(["mail-all-headers"])
             .build();
         scrolled.set_child(Some(&headers_grid));
         outer_box.append(&scrolled);
@@ -10088,7 +10153,7 @@ impl MailPage {
                         .ellipsize(pango::EllipsizeMode::End)
                         .hexpand(true)
                         .xalign(1.0)
-                        .css_classes(vec!["caption", "dim-label"])
+                        .css_classes(["caption", "dim-label"])
                         .build();
                     badges_row.append(&rp_lbl);
                 }
@@ -10671,12 +10736,12 @@ impl MailPage {
             "view-sort-ascending-symbolic"
         });
         let label = if descending {
-            "Sortierung absteigend; Sortierrichtung umschalten"
+            gettext("Sort descending; toggle sort direction")
         } else {
-            "Sortierung aufsteigend; Sortierrichtung umschalten"
+            gettext("Sort ascending; toggle sort direction")
         };
-        button.set_tooltip_text(Some(label));
-        set_accessible_label(button, label);
+        button.set_tooltip_text(Some(&label));
+        set_accessible_label(button, &label);
     }
 
     fn refresh_mail_sort_controls(&self) {
@@ -10956,7 +11021,44 @@ impl MailPage {
         false
     }
 
+    fn select_single_thread_row(&self, selection: &gtk::MultiSelection, index: u32) {
+        self.imp().last_selected_mail_index.set(Some(index));
+        self.imp().mail_selection_anchor.set(Some(index));
+        let already_sole_selected =
+            selection.is_selected(index) && selection.selection().size() == 1;
+        if already_sole_selected {
+            let target_id = selection
+                .item(index)
+                .and_then(|item| {
+                    item.clone()
+                        .downcast::<MailMessageObject>()
+                        .ok()
+                        .or_else(|| {
+                            item.downcast::<gtk::TreeListRow>()
+                                .ok()
+                                .and_then(|r| r.item())
+                                .and_then(|o| o.downcast::<MailMessageObject>().ok())
+                        })
+                })
+                .map(|m| m.id());
+            let viewer_id = self
+                .imp()
+                .mail_viewer
+                .borrow()
+                .as_ref()
+                .and_then(|v| v.imp().current_message_id.borrow().clone());
+            if target_id.is_some() && target_id != viewer_id {
+                let prev = self.imp().thread_selection_syncing.replace(true);
+                selection.unselect_item(index);
+                self.imp().thread_selection_syncing.set(prev);
+            }
+        }
+        selection.select_item(index, true);
+    }
+
     pub fn select_thread_member_by_id(&self, target_id: &str) -> bool {
+        let mut selected_in_thread = false;
+        let mut thread_idx_found = None;
         // 1. If threading is active, synchronize thread_selection and expand parent if needed
         if self.imp().mail_threading.get() {
             if let Some(thread_selection) = self.imp().thread_selection.borrow().as_ref().cloned() {
@@ -10979,41 +11081,35 @@ impl MailPage {
                                 break;
                             }
                         }
+                    } else if let Some(msg) = thread_selection.item(i).and_downcast::<MailMessageObject>() {
+                        if msg.id() == target_id {
+                            found_index = Some(i);
+                            break;
+                        }
                     }
                 }
 
                 if found_index.is_none() {
                     if let Some(ref th_id) = target_thread_id {
-                        let is_reply_conv = self
-                            .imp()
-                            .thread_members
-                            .borrow()
-                            .as_ref()
-                            .and_then(|m| m.borrow().get(th_id).map(|msgs| Self::thread_is_reply_conversation(msgs)))
-                            .unwrap_or(true);
                         for i in 0..thread_selection.n_items() {
                             if let Some(row) = thread_selection.item(i).and_downcast::<gtk::TreeListRow>() {
                                 if let Some(msg) = row.item().and_downcast::<MailMessageObject>() {
                                     if msg.thread_id() == *th_id && row.is_expandable() {
-                                        if is_reply_conv {
-                                            row.set_expanded(true);
-                                            self.imp().expanded_threads.borrow_mut().insert(th_id.clone());
-                                        } else {
-                                            found_index = Some(i);
-                                        }
+                                        row.set_expanded(true);
+                                        self.imp().collapsed_threads.borrow_mut().remove(th_id);
+                                        self.imp().expanded_threads.borrow_mut().insert(th_id.clone());
+                                        self.imp().mail_table_layout.replace(None);
                                         break;
                                     }
                                 }
                             }
                         }
-                        if found_index.is_none() {
-                            for i in 0..thread_selection.n_items() {
-                                if let Some(row) = thread_selection.item(i).and_downcast::<gtk::TreeListRow>() {
-                                    if let Some(msg) = row.item().and_downcast::<MailMessageObject>() {
-                                        if msg.id() == target_id {
-                                            found_index = Some(i);
-                                            break;
-                                        }
+                        for i in 0..thread_selection.n_items() {
+                            if let Some(row) = thread_selection.item(i).and_downcast::<gtk::TreeListRow>() {
+                                if let Some(msg) = row.item().and_downcast::<MailMessageObject>() {
+                                    if msg.id() == target_id {
+                                        found_index = Some(i);
+                                        break;
                                     }
                                 }
                             }
@@ -11026,7 +11122,10 @@ impl MailPage {
                     thread_selection.unselect_all();
                     thread_selection.select_item(idx, true);
                     self.imp().last_selected_mail_index.set(Some(idx));
+                    self.imp().mail_selection_anchor.set(Some(idx));
                     self.imp().thread_selection_syncing.set(false);
+                    selected_in_thread = true;
+                    thread_idx_found = Some(idx);
                 }
             }
         }
@@ -11088,12 +11187,28 @@ impl MailPage {
                         }
 
                         flat_sel.unselect_all();
-                        self.imp().last_selected_mail_index.set(Some(i));
+                        if !self.imp().mail_threading.get() || thread_idx_found.is_none() {
+                            self.imp().last_selected_mail_index.set(Some(i));
+                        }
                         flat_sel.select_item(i, true);
                         self.render_thread_context(&msg);
                         return true;
                     }
                 }
+            }
+        }
+        if selected_in_thread {
+            if let (Some(thread_selection), Some(idx)) = (
+                self.imp().thread_selection.borrow().as_ref().cloned(),
+                thread_idx_found,
+            ) {
+                if let Some(flat_sel) = self.imp().message_selection.borrow().as_ref() {
+                    self.imp().thread_selection_syncing.set(true);
+                    flat_sel.unselect_all();
+                    self.imp().thread_selection_syncing.set(false);
+                }
+                self.select_single_thread_row(&thread_selection, idx);
+                return true;
             }
         }
         false
@@ -11315,25 +11430,25 @@ impl MailPage {
         let recipient_labels = recipient_choices
             .iter()
             .map(|choice| match choice {
-                AlternativeReplyRecipient::Sender => crate::i18n::gettext("Sender"),
-                AlternativeReplyRecipient::List => crate::i18n::gettext("Mailing List"),
-                AlternativeReplyRecipient::All => crate::i18n::gettext("All"),
+                AlternativeReplyRecipient::Sender => gettext("Sender"),
+                AlternativeReplyRecipient::List => gettext("Mailing List"),
+                AlternativeReplyRecipient::All => gettext("All"),
             })
             .collect::<Vec<_>>();
         let recipient_label_refs = recipient_labels.iter().map(String::as_str).collect::<Vec<_>>();
         let recipient_row = adw::ComboRow::builder()
-            .title(&crate::i18n::gettext("Recipients"))
+            .title(gettext("Recipients"))
             .model(&gtk::StringList::new(&recipient_label_refs))
             .selected(recipient_choices.len().saturating_sub(1) as u32)
             .build();
         let style_row = adw::ComboRow::builder()
-            .title(&crate::i18n::gettext("Reply Style"))
+            .title(gettext("Reply Style"))
             .model(&gtk::StringList::new(&[
-                &crate::i18n::gettext("Default"),
-                &crate::i18n::gettext("Inline with original headers"),
-                &crate::i18n::gettext("Quoted with >"),
-                &crate::i18n::gettext("Do not quote original"),
-                &crate::i18n::gettext("Original as attachment"),
+                &gettext("Default"),
+                &gettext("Inline with original headers"),
+                &gettext("Quoted with >"),
+                &gettext("Do not quote original"),
+                &gettext("Original as attachment"),
             ]))
             .build();
         let group = adw::PreferencesGroup::new();
@@ -11595,7 +11710,7 @@ impl MailPage {
             return false;
         };
         self.clipboard().set_text(&uri);
-        self.show_toast(&crate::i18n::gettext("Message link copied"));
+        self.show_toast(&gettext("Message link copied"));
         true
     }
 
@@ -12141,7 +12256,7 @@ impl MailPage {
             .and_downcast::<gtk::Window>()
             .or_else(|| self.native().and_downcast::<gtk::Window>());
         let file_dialog = gtk::FileDialog::builder()
-            .title(&gettext("Save Email as EML"))
+            .title(gettext("Save Email as EML"))
             .accept_label(&gettext("Save"))
             .initial_name(&filename)
             .modal(true)
@@ -12220,13 +12335,13 @@ impl MailPage {
                     match save_result {
                         Ok(_) => {
                             tracing::info!("Email exported as EML");
-                            page.show_toast(&crate::i18n::gettext("Email exported as EML"));
+                            page.show_toast(&gettext("Email exported as EML"));
                         }
                         Err(error) => {
                             tracing::error!(%error, "Could not save EML");
                             page.show_toast(&format!(
                                 "{}: {error}",
-                                crate::i18n::gettext("Could not save EML")
+                                gettext("Could not save EML")
                             ));
                         }
                     }
@@ -12424,7 +12539,7 @@ impl MailPage {
         let warning_label = gtk::Label::builder()
             .wrap(true)
             .xalign(0.0)
-            .css_classes(vec!["warning", "caption"])
+            .css_classes(["warning", "caption"])
             .margin_start(10)
             .margin_end(10)
             .margin_top(8)
@@ -12451,12 +12566,12 @@ impl MailPage {
         source_content.append(&scrolled);
 
         let loading_page = adw::StatusPage::builder()
-            .title(&crate::i18n::gettext("Loading message source…"))
-            .description(&crate::i18n::gettext("Retrieving original RFC822 message."))
+            .title(gettext("Loading message source…"))
+            .description(gettext("Retrieving original RFC822 message."))
             .icon_name("content-loading-symbolic")
             .build();
         let error_page = adw::StatusPage::builder()
-            .title(&crate::i18n::gettext("Failed to load message source"))
+            .title(gettext("Failed to load message source"))
             .icon_name("dialog-error-symbolic")
             .build();
         let stack = gtk::Stack::builder()
@@ -12544,7 +12659,7 @@ impl MailPage {
             .unwrap_or_default();
         let entry = gtk::Entry::builder()
             .text(&initial_name)
-            .placeholder_text(&gettext("e.g. Projects/2026"))
+            .placeholder_text(gettext("e.g. Projects/2026"))
             .hexpand(true)
             .activates_default(true)
             .build();
@@ -12554,10 +12669,10 @@ impl MailPage {
             .margin_top(6)
             .build();
         let hint = gtk::Label::builder()
-            .label(&gettext("Subfolders can be separated with /. Imported mail files remain unchanged."))
+            .label(gettext("Subfolders can be separated with /. Imported mail files remain unchanged."))
             .wrap(true)
             .halign(gtk::Align::Start)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         content.append(&entry);
         content.append(&hint);
@@ -12866,16 +12981,16 @@ impl MailPage {
                 Ok(_) => {
                     self.show_toast(&format!(
                         "{} “{}” {} “{}”",
-                        crate::i18n::gettext("Moved folder"),
+                        gettext("Moved folder"),
                         dragged.display_name,
-                        crate::i18n::gettext("to"),
+                        gettext("to"),
                         target.name()
                     ));
                     self.refresh_mail();
                     return true;
                 }
                 Err(error) => {
-                    self.show_toast(&format!("{}: {error}", crate::i18n::gettext("Move failed")));
+                    self.show_toast(&format!("{}: {error}", gettext("Move failed")));
                     return false;
                 }
             }
@@ -13006,9 +13121,13 @@ impl MailPage {
         let display_name = Self::local_folder_display_label(folder_id);
         let display_name_for_drag = display_name.clone();
         drag_source.connect_drag_begin(move |_, drag| {
+            FOLDER_DRAG_ACTIVE.with(|flag| flag.set(true));
             let chip = create_folder_drag_chip(&display_name_for_drag, Some("folder-symbolic"));
             let drag_icon = gtk::DragIcon::for_drag(drag);
             drag_icon.set_child(Some(&chip));
+        });
+        drag_source.connect_drag_end(|_, _, _| {
+            FOLDER_DRAG_ACTIVE.with(|flag| flag.set(false));
         });
         drag_source.connect_prepare(move |_, _, _| {
             let payload = FolderDragPayload {
@@ -13021,6 +13140,7 @@ impl MailPage {
             let Ok(json) = serde_json::to_string(&payload) else {
                 return None;
             };
+            FOLDER_DRAG_ACTIVE.with(|flag| flag.set(true));
             let content_string = format!("meridian-folder:{json}");
             Some(gtk::gdk::ContentProvider::for_value(
                 &content_string.to_value(),
@@ -13041,14 +13161,22 @@ impl MailPage {
             let Some(c) = container_motion.upgrade() else {
                 return gtk::gdk::DragAction::empty();
             };
-            let height = c.height() as f64;
-            let threshold = if height > 0.0 { height / 2.0 } else { 12.0 };
-            if y < threshold {
-                c.add_css_class("drop-before");
+            let is_folder_drag = FOLDER_DRAG_ACTIVE.with(|flag| flag.get());
+            if !is_folder_drag {
+                c.add_css_class("drop-into");
+                c.remove_css_class("drop-before");
                 c.remove_css_class("drop-after");
             } else {
-                c.add_css_class("drop-after");
-                c.remove_css_class("drop-before");
+                c.remove_css_class("drop-into");
+                let height = c.height() as f64;
+                let threshold = if height > 0.0 { height / 2.0 } else { 12.0 };
+                if y < threshold {
+                    c.add_css_class("drop-before");
+                    c.remove_css_class("drop-after");
+                } else {
+                    c.add_css_class("drop-after");
+                    c.remove_css_class("drop-before");
+                }
             }
             gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY
         });
@@ -13107,7 +13235,7 @@ impl MailPage {
                             }
                         }
                         Err(err) => {
-                            page.show_toast(&format!("{}: {err}", crate::i18n::gettext("Action not possible")));
+                            page.show_toast(&format!("{}: {err}", gettext("Action not possible")));
                             all_success = false;
                         }
                     }
@@ -13491,6 +13619,7 @@ impl MailPage {
         };
         let messages = (0..store.n_items())
             .filter_map(|index| store.item(index).and_downcast::<MailMessageObject>())
+            .filter(|message| self.is_message_account_active(message))
             .collect::<Vec<_>>();
         let local_folder_ids = self.imp().local_folder_ids.borrow().clone();
         let remote_folder_ids = self.saved_search_remote_folder_ids();
@@ -13564,7 +13693,7 @@ impl MailPage {
             let Some(message) = store.item(index).and_downcast::<MailMessageObject>() else {
                 continue;
             };
-            if message.backend_location().is_some() {
+            if message.backend_location().is_some() || !self.is_message_account_active(&message) {
                 continue;
             }
             let entry = counts.entry(message.folder_id()).or_insert((0, 0));
@@ -14155,7 +14284,7 @@ impl MailPage {
         }
 
         let count = commands.len();
-        self.execute_mail_batch(commands, &crate::i18n::gettext("Mark conversation as read"))?;
+        self.execute_mail_batch(commands, &gettext("Mark conversation as read"))?;
         Ok(count)
     }
 
@@ -14353,7 +14482,7 @@ impl MailPage {
             } else {
                 ""
             })
-            .placeholder_text(&gettext("Folder Name"))
+            .placeholder_text(gettext("Folder Name"))
             .activates_default(true)
             .hexpand(true)
             .build();
@@ -14457,7 +14586,7 @@ impl MailPage {
             self.imp().folder_mutation_cancellation.borrow_mut().take();
             self.show_toast(&format!(
                 "{}: {error}",
-                crate::i18n::gettext("Could not start folder action")
+                gettext("Could not start folder action")
             ));
             return;
         }
@@ -14467,7 +14596,7 @@ impl MailPage {
             let result = receiver
                 .recv()
                 .await
-                .unwrap_or_else(|_| Err(crate::i18n::gettext("Folder action was interrupted")));
+                .unwrap_or_else(|_| Err(gettext("Folder action was interrupted")));
             let Some(page) = page.upgrade() else {
                 return;
             };
@@ -14483,7 +14612,7 @@ impl MailPage {
                 }
                 Err(error) => page.show_toast(&format!(
                     "{}: {error}",
-                    crate::i18n::gettext("Folder action failed")
+                    gettext("Folder action failed")
                 )),
             }
         });
@@ -14585,7 +14714,7 @@ impl MailPage {
         }
 
         let count = commands.len();
-        self.execute_mail_batch(commands, &crate::i18n::gettext("Mark all as read"))?;
+        self.execute_mail_batch(commands, &gettext("Mark all as read"))?;
         if let Some(app) = gio::Application::default() {
             crate::services::mail_notification_service::MailNotificationService::withdraw_notification(&app);
         }
@@ -15023,7 +15152,7 @@ impl MailPage {
                         .expect("one selected restore command"),
                 )?;
             } else {
-                self.execute_mail_batch(commands, &crate::i18n::gettext("Restore messages"))?;
+                self.execute_mail_batch(commands, &gettext("Restore messages"))?;
             }
             return Ok(true);
         }
@@ -15422,8 +15551,8 @@ impl MailPage {
         let header = adw::HeaderBar::new();
         let cancel = gtk::Button::with_label(&gettext("Cancel"));
         let save = gtk::Button::builder()
-            .label(&gettext("Save"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         header.pack_start(&cancel);
         header.pack_end(&save);
@@ -15438,11 +15567,11 @@ impl MailPage {
             .margin_bottom(20)
             .build();
         let group = adw::PreferencesGroup::builder()
-            .title(&gettext("Follow-up"))
+            .title(gettext("Follow-up"))
             .build();
-        let text = adw::EntryRow::builder().title(&gettext("Flag")).build();
+        let text = adw::EntryRow::builder().title(gettext("Flag")).build();
         let due = adw::EntryRow::builder()
-            .title(&gettext("Due (YYYY-MM-DD HH:MM, optional)"))
+            .title(gettext("Due (YYYY-MM-DD HH:MM, optional)"))
             .build();
         let current = message.follow_up();
         text.set_text(current.text.as_deref().unwrap_or(DEFAULT_FOLLOW_UP_TEXT));
@@ -15458,10 +15587,10 @@ impl MailPage {
         if is_graph {
             due.set_sensitive(false);
             let warning = gtk::Label::builder()
-                .label(&gettext("Microsoft Graph does not support follow-up due dates."))
+                .label(gettext("Microsoft Graph does not support follow-up due dates."))
                 .wrap(true)
                 .halign(gtk::Align::Start)
-                .css_classes(vec!["warning", "dim-label"])
+                .css_classes(["warning", "dim-label"])
                 .build();
             content.append(&warning);
         }
@@ -15686,8 +15815,8 @@ impl MailPage {
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
         let close_button = gtk::Button::builder()
-            .label(&gettext("Close"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Close"))
+            .css_classes(["suggested-action"])
             .build();
         header.pack_end(&close_button);
         toolbar.add_top_bar(&header);
@@ -15702,7 +15831,7 @@ impl MailPage {
             .build();
 
         let group_labels = adw::PreferencesGroup::builder()
-            .title(&gettext("Standard and Custom Labels"))
+            .title(gettext("Standard and Custom Labels"))
             .build();
 
         for label_def in configured_labels {
@@ -15723,7 +15852,7 @@ impl MailPage {
 
             let color_dot = gtk::Label::builder()
                 .label("●")
-                .css_classes(vec!["title-2"])
+                .css_classes(["title-2"])
                 .valign(gtk::Align::Center)
                 .margin_end(8)
                 .build();
@@ -15769,12 +15898,12 @@ impl MailPage {
         }
 
         let group_custom = adw::PreferencesGroup::builder()
-            .title(&gettext("Custom Label"))
-            .description(&gettext("Specify custom tag or label name"))
+            .title(gettext("Custom Label"))
+            .description(gettext("Specify custom tag or label name"))
             .build();
 
         let label_entry = adw::EntryRow::builder()
-            .title(&gettext("Custom label"))
+            .title(gettext("Custom label"))
             .show_apply_button(false)
             .build();
         group_custom.add(&label_entry);
@@ -15786,12 +15915,12 @@ impl MailPage {
             .build();
 
         let set_custom_btn = gtk::Button::builder()
-            .label(&gettext("Set Label"))
-            .css_classes(vec!["suggested-action", "flat"])
+            .label(gettext("Set Label"))
+            .css_classes(["suggested-action", "flat"])
             .build();
         let remove_custom_btn = gtk::Button::builder()
-            .label(&gettext("Remove Label"))
-            .css_classes(vec!["destructive-action", "flat"])
+            .label(gettext("Remove Label"))
+            .css_classes(["destructive-action", "flat"])
             .build();
 
         custom_actions.append(&set_custom_btn);
@@ -15918,14 +16047,14 @@ impl MailPage {
         toolbar.add_top_bar(&adw::HeaderBar::new());
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(["boxed-list"])
             .build();
         for destination in destinations {
             let button = gtk::Button::builder()
                 .label(&destination.label)
                 .halign(gtk::Align::Fill)
                 .hexpand(true)
-                .css_classes(vec!["flat"])
+                .css_classes(["flat"])
                 .build();
             let page = self.downgrade();
             let dialog_weak = dialog.downgrade();
@@ -17266,7 +17395,7 @@ impl MailPage {
                 .spacing(4)
                 .margin_start(4)
                 .margin_end(4)
-                .css_classes(vec!["mail-sidebar-row"])
+                .css_classes(["mail-sidebar-row"])
                 .build();
 
             let title = gtk::Label::builder()
@@ -17310,7 +17439,7 @@ impl MailPage {
         let source_view = gtk::ListView::builder()
             .model(&source_selection)
             .factory(&source_factory)
-            .css_classes(vec!["navigation-sidebar"])
+            .css_classes(["navigation-sidebar"])
             .visible(false)
             .build();
 
@@ -17380,13 +17509,13 @@ impl MailPage {
         folder_list.add_css_class("navigation-sidebar");
         folder_list.set_margin_start(0);
 
-        let all_str = crate::i18n::gettext("All Messages");
-        let inbox_str = crate::i18n::gettext("Inbox");
-        let sent_str = crate::i18n::gettext("Sent");
-        let drafts_str = crate::i18n::gettext("Drafts");
-        let trash_str = crate::i18n::gettext("Trash");
-        let archive_str = crate::i18n::gettext("Archive");
-        let junk_str = crate::i18n::gettext("Junk");
+        let all_str = gettext("All Messages");
+        let inbox_str = gettext("Inbox");
+        let sent_str = gettext("Sent");
+        let drafts_str = gettext("Drafts");
+        let trash_str = gettext("Trash");
+        let archive_str = gettext("Archive");
+        let junk_str = gettext("Junk");
 
         let folders = [
             ("all", "mail-unread-symbolic", all_str.as_str(), ""),
@@ -17565,7 +17694,7 @@ impl MailPage {
                 .margin_top(0)
                 .margin_bottom(0)
                 .valign(gtk::Align::Center)
-                .css_classes(vec!["mail-sidebar-row"])
+                .css_classes(["mail-sidebar-row"])
                 .build();
 
             row.append(&icon);
@@ -17702,8 +17831,12 @@ impl MailPage {
                     return;
                 };
                 let chip = create_folder_drag_chip(&folder.name(), Some(&folder.icon_name()));
+                FOLDER_DRAG_ACTIVE.with(|flag| flag.set(true));
                 let drag_icon = gtk::DragIcon::for_drag(drag);
                 drag_icon.set_child(Some(&chip));
+            });
+            drag_source.connect_drag_end(|_, _, _| {
+                FOLDER_DRAG_ACTIVE.with(|flag| flag.set(false));
             });
             drag_source.connect_prepare(move |_, _, _| {
                 let Some(list_item) = list_item_for_drag.upgrade() else {
@@ -17728,6 +17861,7 @@ impl MailPage {
                 let Ok(json) = serde_json::to_string(&payload) else {
                     return None;
                 };
+                FOLDER_DRAG_ACTIVE.with(|flag| flag.set(true));
                 let content_string = format!("meridian-folder:{json}");
                 Some(gtk::gdk::ContentProvider::for_value(
                     &content_string.to_value(),
@@ -17753,14 +17887,22 @@ impl MailPage {
                 let Some(row) = row_for_motion.upgrade() else {
                     return gtk::gdk::DragAction::empty();
                 };
-                let height = row.height() as f64;
-                let threshold = if height > 0.0 { height / 2.0 } else { 12.0 };
-                if y < threshold {
-                    row.add_css_class("drop-before");
+                let is_folder_drag = FOLDER_DRAG_ACTIVE.with(|flag| flag.get());
+                if !is_folder_drag {
+                    row.add_css_class("drop-into");
+                    row.remove_css_class("drop-before");
                     row.remove_css_class("drop-after");
                 } else {
-                    row.add_css_class("drop-after");
-                    row.remove_css_class("drop-before");
+                    row.remove_css_class("drop-into");
+                    let height = row.height() as f64;
+                    let threshold = if height > 0.0 { height / 2.0 } else { 12.0 };
+                    if y < threshold {
+                        row.add_css_class("drop-before");
+                        row.remove_css_class("drop-after");
+                    } else {
+                        row.add_css_class("drop-after");
+                        row.remove_css_class("drop-before");
+                    }
                 }
                 gtk::gdk::DragAction::MOVE | gtk::gdk::DragAction::COPY
             });
@@ -17837,7 +17979,7 @@ impl MailPage {
                         .unwrap_or_else(|| target_folder.id());
                     match crate::services::MailStoreService::new().import_files_to_folder(&dropped_files, &target_folder_id) {
                         Ok(count) if count > 0 => {
-                            page.show_toast(&format!("{} {}", count, gettext("Nachricht(en) importiert")));
+                            page.show_toast(&format!("{} {}", count, gettext("message(s) imported")));
                             page.refresh_mail();
                             return true;
                         }
@@ -18052,12 +18194,12 @@ impl MailPage {
                             "mail-sync-symbolic",
                         );
                         sync_icon.set_tooltip_text(Some(&gettext(
-                            "Konto deaktiviert – Klicken zum Aktivieren",
+                            "Account disabled – click to enable",
                         )));
                     } else {
                         sync_icon.set_icon_name(Some("mail-sync-symbolic"));
                         sync_icon.set_tooltip_text(Some(&gettext(
-                            "Konto aktiv – Klicken zum Deaktivieren",
+                            "Account active – click to disable",
                         )));
                     }
                 }
@@ -18153,7 +18295,7 @@ impl MailPage {
         let dynamic_folder_view = gtk::ListView::builder()
             .model(&dynamic_folder_selection)
             .factory(&dynamic_factory)
-            .css_classes(vec!["navigation-sidebar"])
+            .css_classes(["navigation-sidebar"])
             .build();
         dynamic_folder_view.set_margin_start(0);
 
@@ -18213,7 +18355,7 @@ impl MailPage {
                     let target_source_uid = folder.source_uid().unwrap_or_default();
 
                     // Find target child inbox or first child in dynamic_folder_children
-                    let mut inbox_folder_name = "Posteingang".to_string();
+                    let mut inbox_folder_name = "Inbox".to_string();
                     let mut inbox_folder_id = None;
                     let root_id = folder.id();
                     if let Some(children_rc) = page.imp().dynamic_folder_children.borrow().as_ref() {
@@ -18405,8 +18547,8 @@ impl MailPage {
         });
 
         let search_header = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Search Folders"))
-            .css_classes(vec!["sidebar-section-header"])
+            .label(gettext("Search Folders"))
+            .css_classes(["sidebar-section-header"])
             .halign(gtk::Align::Start)
             .margin_start(8)
             .margin_top(4)
@@ -18428,16 +18570,16 @@ impl MailPage {
             .margin_bottom(1)
             .build();
         let local_folder_header = gtk::Label::builder()
-            .label(&gettext("On This Computer"))
-            .css_classes(vec!["sidebar-section-header"])
+            .label(gettext("On This Computer"))
+            .css_classes(["sidebar-section-header"])
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .build();
         let new_local_folder_button = gtk::Button::builder()
             .icon_name("folder-new-symbolic")
-            .tooltip_text(&gettext("Create local folder"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create local folder"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         local_folder_toolbar.append(&local_folder_header);
@@ -18482,12 +18624,12 @@ impl MailPage {
             })
             .pixel_size(16)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
 
         let unified_folder_header = gtk::Label::builder()
-            .label(&gettext("All"))
-            .css_classes(vec!["account-heading"])
+            .label(gettext("All"))
+            .css_classes(["account-heading"])
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
@@ -18496,7 +18638,7 @@ impl MailPage {
         let header_badge = gtk::Label::builder()
             .xalign(1.0)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["badge", "numeric"])
+            .css_classes(["badge", "numeric"])
             .visible(false)
             .build();
 
@@ -18507,7 +18649,7 @@ impl MailPage {
             .margin_end(4)
             .margin_top(3)
             .margin_bottom(1)
-            .css_classes(vec![
+            .css_classes([
                 "sidebar-account-row",
                 "account-root-row",
                 "mail-sidebar-row",
@@ -18629,12 +18771,12 @@ impl MailPage {
             .spacing(0)
             .margin_start(0)
             .margin_end(0)
-            .css_classes(vec!["mail-sidebar"])
+            .css_classes(["mail-sidebar"])
             .build();
 
         let source_state = gtk::Label::builder()
-            .label(&gettext("Loading accounts…"))
-            .css_classes(vec!["dim-label"])
+            .label(gettext("Loading accounts…"))
+            .css_classes(["dim-label"])
             .visible(false)
             .halign(gtk::Align::Start)
             .wrap(false)
@@ -18648,7 +18790,7 @@ impl MailPage {
 
         let source_status_area = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["mail-pane-status"])
+            .css_classes(["mail-pane-status"])
             .build();
         source_status_area.append(&source_state);
         source_status_area.set_visible(false);
@@ -18669,11 +18811,11 @@ impl MailPage {
             .margin_start(4)
             .margin_end(4)
             .visible(false)
-            .css_classes(vec!["sidebar-drawer-header"])
+            .css_classes(["sidebar-drawer-header"])
             .build();
         let drawer_icon = gtk::Image::from_icon_name("mail-inbox-symbolic");
         let drawer_title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Inbox"))
+            .label(gettext("Inbox"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
@@ -18683,7 +18825,7 @@ impl MailPage {
             .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
             .visible(false)
-            .css_classes(vec!["sidebar-drawer-total", "sidebar-drawer-unread-badge"])
+            .css_classes(["sidebar-drawer-total", "sidebar-drawer-unread-badge"])
             .build();
         drawer_header.append(&drawer_icon);
         drawer_header.append(&drawer_title);
@@ -18705,7 +18847,7 @@ impl MailPage {
         let sidebar_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .vexpand(true)
-            .css_classes(vec!["meridian-sidebar-drawer"])
+            .css_classes(["meridian-sidebar-drawer"])
             .build();
         sidebar_scroll.set_vexpand(true);
         self.imp()
@@ -18808,14 +18950,14 @@ impl MailPage {
             }
             let edit_button = gtk::Button::builder()
                 .icon_name("document-edit-symbolic")
-                .tooltip_text(&gettext("Edit saved search folder"))
-                .css_classes(vec!["flat", "circular"])
+                .tooltip_text(gettext("Edit saved search folder"))
+                .css_classes(["flat", "circular"])
                 .valign(gtk::Align::Center)
                 .build();
             let delete_button = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
-                .tooltip_text(&gettext("Delete saved search folder"))
-                .css_classes(vec!["flat", "circular"])
+                .tooltip_text(gettext("Delete saved search folder"))
+                .css_classes(["flat", "circular"])
                 .valign(gtk::Align::Center)
                 .build();
             if let Some(box_container) = row.child().and_downcast::<gtk::Box>() {
@@ -18877,7 +19019,7 @@ impl MailPage {
             .spacing(6)
             .margin_start(6)
             .margin_end(6)
-            .css_classes(vec!["mail-sidebar-row"])
+            .css_classes(["mail-sidebar-row"])
             .build();
 
         let icon = gtk::Image::builder()
@@ -18904,7 +19046,7 @@ impl MailPage {
 
         let badge = gtk::Label::builder()
             .label(badge_text)
-            .css_classes(vec!["badge", "numeric"])
+            .css_classes(["badge", "numeric"])
             .halign(gtk::Align::End)
             .visible(show_badge)
             .build();
@@ -19126,12 +19268,12 @@ impl MailPage {
 
     fn local_folder_sort_label(folder_id: &str) -> String {
         match folder_id {
-            "inbox" => crate::i18n::gettext("Inbox"),
-            "sent" => crate::i18n::gettext("Sent"),
-            "drafts" => crate::i18n::gettext("Drafts"),
-            "trash" => crate::i18n::gettext("Trash"),
-            "archive" => crate::i18n::gettext("Archive"),
-            "spam" => crate::i18n::gettext("Junk"),
+            "inbox" => gettext("Inbox"),
+            "sent" => gettext("Sent"),
+            "drafts" => gettext("Drafts"),
+            "trash" => gettext("Trash"),
+            "archive" => gettext("Archive"),
+            "spam" => gettext("Junk"),
             _ => Self::local_folder_display_label(folder_id),
         }
     }
@@ -19182,7 +19324,7 @@ impl MailPage {
             } else {
                 "Unterordner ausblenden"
             })
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         if let Some(container) = row.child().and_downcast::<gtk::Box>() {
@@ -19210,14 +19352,14 @@ impl MailPage {
 
         let rename_button = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
-            .tooltip_text(&gettext("Rename local folder"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Rename local folder"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         let delete_button = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text(&gettext("Delete empty local folder"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Delete empty local folder"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         container.append(&rename_button);
@@ -19263,20 +19405,20 @@ impl MailPage {
     fn localize_folder_name(name: &str) -> String {
         let clean = name.trim();
         match clean.to_lowercase().as_str() {
-            "inbox" | "posteingang" => crate::i18n::gettext("Inbox"),
-            "drafts" | "draft" | "entwürfe" | "entwuerfe" | "entwurf" => crate::i18n::gettext("Drafts"),
+            "inbox" | "posteingang" => gettext("Inbox"),
+            "drafts" | "draft" | "entwürfe" | "entwuerfe" | "entwurf" => gettext("Drafts"),
             "sent" | "sent items" | "sent mail" | "gesendet" | "gesendete elemente" | "gesendete" => {
-                crate::i18n::gettext("Sent")
+                gettext("Sent")
             }
             "trash" | "mülleimer" | "papierkorb" | "deleted items" | "gelöschte elemente"
-            | "geloeschte elemente" | "gelöscht" => crate::i18n::gettext("Trash"),
-            "junk" | "junk email" | "junk-e-mail" | "spam" => crate::i18n::gettext("Junk"),
-            "archive" | "archiv" => crate::i18n::gettext("Archive"),
-            "outbox" | "postausgang" => crate::i18n::gettext("Outbox"),
-            "synchronisierungsprobleme" | "sync issues" => crate::i18n::gettext("Sync Issues"),
-            "konflikte" | "conflicts" => crate::i18n::gettext("Conflicts"),
-            "lokale fehler" | "local failures" => crate::i18n::gettext("Local Failures"),
-            "serverfehler" | "server failures" => crate::i18n::gettext("Server Failures"),
+            | "geloeschte elemente" | "gelöscht" => gettext("Trash"),
+            "junk" | "junk email" | "junk-e-mail" | "spam" => gettext("Junk"),
+            "archive" | "archiv" => gettext("Archive"),
+            "outbox" | "postausgang" => gettext("Outbox"),
+            "synchronisierungsprobleme" | "sync issues" => gettext("Sync Issues"),
+            "konflikte" | "conflicts" => gettext("Conflicts"),
+            "lokale fehler" | "local failures" => gettext("Local Failures"),
+            "serverfehler" | "server failures" => gettext("Server Failures"),
             _ => clean.to_string(),
         }
     }
@@ -19289,12 +19431,12 @@ impl MailPage {
             || normalized.contains("gnome online")
             || normalized == "goa"
         {
-            return crate::i18n::gettext("Mail Account");
+            return gettext("Mail Account");
         }
         match normalized.as_str() {
-            "on this computer" | "local" => crate::i18n::gettext("On This Computer"),
-            "search folders" | "vfolder" => crate::i18n::gettext("Search Folders"),
-            "news and blogs" | "rss" => crate::i18n::gettext("News & Blogs"),
+            "on this computer" | "local" => gettext("On This Computer"),
+            "search folders" | "vfolder" => gettext("Search Folders"),
+            "news and blogs" | "rss" => gettext("News & Blogs"),
             _ => clean.to_string(),
         }
     }
@@ -19557,7 +19699,7 @@ impl MailPage {
                 .entry(canonical_src.to_string())
                 .or_insert_with(|| {
                     let source_name = Self::localize_source_name(&folder.source_display_name);
-                    let fallback_account = crate::i18n::gettext("Mail Account");
+                    let fallback_account = gettext("Mail Account");
                     FolderObject::new_backend(
                         &source_root_id,
                         if source_name.is_empty() {
@@ -20422,7 +20564,7 @@ impl MailPage {
         };
 
         if total == 0 {
-            return format!("{title_display} ({})", crate::i18n::gettext("No emails"));
+            return format!("{title_display} ({})", gettext("No emails"));
         }
 
         let fid = selection.folder_id.to_ascii_lowercase();
@@ -21029,7 +21171,7 @@ impl MailPage {
             .margin_end(0)
             .margin_top(0)
             .margin_bottom(0)
-            .css_classes(vec!["unified-mail-toolbar"])
+            .css_classes(["unified-mail-toolbar"])
             .build();
 
         let make_button = |icon_name: &str, tooltip: &str, action_name: &str| {
@@ -21037,7 +21179,7 @@ impl MailPage {
                 .icon_name(icon_name)
                 .tooltip_text(tooltip)
                 .action_name(action_name)
-                .css_classes(vec!["flat"])
+                .css_classes(["flat"])
                 .valign(gtk::Align::Center)
                 .build();
             let fallback = match icon_name {
@@ -21060,15 +21202,15 @@ impl MailPage {
         };
 
         // 0. Communication Group: Reply, Reply All, Forward (.linked)
-        let str_reply = crate::i18n::gettext("Reply (Ctrl+R)");
-        let str_reply_all = crate::i18n::gettext("Reply All (Ctrl+Shift+R)");
-        let str_forward = crate::i18n::gettext("Forward (Ctrl+L)");
+        let str_reply = gettext("Reply (Ctrl+R)");
+        let str_reply_all = gettext("Reply All (Ctrl+Shift+R)");
+        let str_forward = gettext("Forward (Ctrl+L)");
         let reply_btn = make_button("mail-reply-sender-symbolic", &str_reply, "win.reply");
         let reply_all_btn = make_button("mail-reply-all-symbolic", &str_reply_all, "win.reply-all");
         let forward_btn = make_button("mail-forward-symbolic", &str_forward, "win.forward");
         let comm_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .build();
         comm_group.append(&reply_btn);
@@ -21078,26 +21220,26 @@ impl MailPage {
         // 1. Print Action
         let print_btn = make_button(
             "document-print-symbolic",
-            &crate::i18n::gettext("Print message (Ctrl+P)"),
+            &gettext("Print message (Ctrl+P)"),
             "win.mail-print",
         );
 
         // 2. Triage & Organize Group: Delete, Archive, Junk, Move, Copy (.linked)
         let delete_btn = make_button(
             "user-trash-symbolic",
-            &crate::i18n::gettext("Delete message (Del)"),
+            &gettext("Delete message (Del)"),
             "win.delete",
         );
         let archive_btn = make_button(
             "package-x-generic-symbolic",
-            &crate::i18n::gettext("Archive message"),
+            &gettext("Archive message"),
             "win.archive",
         );
         set_button_icon_with_fallback(&archive_btn, "package-x-generic-symbolic", "folder-symbolic");
 
         let junk_btn = make_button(
             "mail-mark-junk-symbolic",
-            &crate::i18n::gettext("Mark as junk (Ctrl+J)"),
+            &gettext("Mark as junk (Ctrl+J)"),
             "win.mark-junk",
         );
         let _action_mark_not_junk = "win.mark-not-junk";
@@ -21123,8 +21265,8 @@ impl MailPage {
             let Some(message) = page.selected_message() else {
                 move_popover_content.append(
                     &gtk::Label::builder()
-                        .label(&gettext("No message selected"))
-                        .css_classes(vec!["caption", "dim-label"])
+                        .label(gettext("No message selected"))
+                        .css_classes(["caption", "dim-label"])
                         .build(),
                 );
                 return;
@@ -21134,8 +21276,8 @@ impl MailPage {
             if destinations.is_empty() {
                 move_popover_content.append(
                     &gtk::Label::builder()
-                        .label(&gettext("No target folders available"))
-                        .css_classes(vec!["caption", "dim-label"])
+                        .label(gettext("No target folders available"))
+                        .css_classes(["caption", "dim-label"])
                         .build(),
                 );
                 return;
@@ -21144,7 +21286,7 @@ impl MailPage {
                 let button = gtk::Button::builder()
                     .label(&destination.label)
                     .halign(gtk::Align::Fill)
-                    .css_classes(vec!["flat"])
+                    .css_classes(["flat"])
                     .build();
                 let page_for_destination = page.downgrade();
                 let popover_for_destination = move_popover_weak.clone();
@@ -21167,12 +21309,12 @@ impl MailPage {
                 move_popover_content.append(&button);
             }
         });
-        let str_move_tip = crate::i18n::gettext("Move message");
+        let str_move_tip = gettext("Move message");
         let move_button = gtk::MenuButton::builder()
             .icon_name("folder-symbolic")
             .tooltip_text(&str_move_tip)
             .popover(&move_popover)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&move_button, &str_move_tip);
@@ -21198,8 +21340,8 @@ impl MailPage {
             let Some(message) = page.selected_message() else {
                 copy_popover_content.append(
                     &gtk::Label::builder()
-                        .label(&gettext("No message selected"))
-                        .css_classes(vec!["caption", "dim-label"])
+                        .label(gettext("No message selected"))
+                        .css_classes(["caption", "dim-label"])
                         .build(),
                 );
                 return;
@@ -21209,8 +21351,8 @@ impl MailPage {
             if destinations.is_empty() {
                 copy_popover_content.append(
                     &gtk::Label::builder()
-                        .label(&gettext("No target folders available"))
-                        .css_classes(vec!["caption", "dim-label"])
+                        .label(gettext("No target folders available"))
+                        .css_classes(["caption", "dim-label"])
                         .build(),
                 );
                 return;
@@ -21219,7 +21361,7 @@ impl MailPage {
                 let button = gtk::Button::builder()
                     .label(&destination.label)
                     .halign(gtk::Align::Fill)
-                    .css_classes(vec!["flat"])
+                    .css_classes(["flat"])
                     .build();
                 let page_for_destination = page.downgrade();
                 let popover_for_destination = copy_popover_weak.clone();
@@ -21242,19 +21384,19 @@ impl MailPage {
                 copy_popover_content.append(&button);
             }
         });
-        let str_copy_tip = crate::i18n::gettext("Copy message");
+        let str_copy_tip = gettext("Copy message");
         let copy_button = gtk::MenuButton::builder()
             .icon_name("edit-copy-symbolic")
             .tooltip_text(&str_copy_tip)
             .popover(&copy_popover)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&copy_button, &str_copy_tip);
 
         let triage_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .build();
         triage_group.append(&delete_btn);
@@ -21266,22 +21408,22 @@ impl MailPage {
         // 3. Spam & Status Group: Junk, Mark Read / Unread, Star, Important (.linked)
         let mark_read_btn = make_button(
             "mail-read-symbolic",
-            &crate::i18n::gettext("Mark as read"),
+            &gettext("Mark as read"),
             "win.mark-read",
         );
         let mark_unread_btn = make_button(
             "mail-unread-symbolic",
-            &crate::i18n::gettext("Mark as unread"),
+            &gettext("Mark as unread"),
             "win.mark-unread",
         );
         let flag_btn = make_button(
             "starred-symbolic",
-            &crate::i18n::gettext("Mark with star"),
+            &gettext("Mark with star"),
             "win.toggle-flag",
         );
         let important_btn = make_button(
             "mail-mark-important-symbolic",
-            &crate::i18n::gettext("Mark as important"),
+            &gettext("Mark as important"),
             "win.toggle-important",
         );
 
@@ -21298,7 +21440,7 @@ impl MailPage {
 
         let status_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .visible(show_status_actions)
             .build();
@@ -21333,7 +21475,7 @@ impl MailPage {
         );
         let nav_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .build();
         nav_group.append(&prev_btn);
@@ -21341,7 +21483,7 @@ impl MailPage {
 
         let undo_btn = make_button(
             "edit-undo-symbolic",
-            &crate::i18n::gettext("Undo last action"),
+            &gettext("Undo last action"),
             "win.undo",
         );
 
@@ -21355,7 +21497,7 @@ impl MailPage {
             .icon_name("sidebar-show-symbolic")
             .tooltip_text(&str_sidebar_tip)
             .active(sidebar_visible)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&sidebar_toggle, &str_sidebar_acc);
@@ -21397,7 +21539,7 @@ impl MailPage {
             .icon_name("sidebar-show-right-symbolic")
             .tooltip_text(&str_todo_tip)
             .active(todo_visible)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&preview_toggle, &str_todo_acc);
@@ -21455,7 +21597,7 @@ impl MailPage {
         secondary_actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         secondary_actions_box.append(&undo_btn);
         secondary_actions_box.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        let str_source_tip = crate::i18n::gettext("View message source (Ctrl+U)");
+        let str_source_tip = gettext("View message source (Ctrl+U)");
         let source_btn = make_button(
             "code-symbolic",
             &str_source_tip,
@@ -21499,7 +21641,7 @@ impl MailPage {
                 let pop = gtk::Popover::builder()
                     .child(&pop_box)
                     .has_arrow(false)
-                    .css_classes(vec!["menu", "context-menu"])
+                    .css_classes(["menu", "context-menu"])
                     .build();
                 pop.set_parent(&parent);
                 pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
@@ -21507,12 +21649,12 @@ impl MailPage {
                 let btn_customize = gtk::Button::builder()
                     .child(
                         &gtk::Label::builder()
-                            .label(&gettext("Customize Action Bar…"))
+                            .label(gettext("Customize Action Bar…"))
                             .halign(gtk::Align::Start)
                             .build(),
                     )
                     .halign(gtk::Align::Fill)
-                    .css_classes(vec!["flat", "context-menu-item"])
+                    .css_classes(["flat", "context-menu-item"])
                     .build();
                 let pop_w1 = pop.downgrade();
                 let page_w1 = page.downgrade();
@@ -21529,12 +21671,12 @@ impl MailPage {
                 let btn_hide = gtk::Button::builder()
                     .child(
                         &gtk::Label::builder()
-                            .label(&gettext("Hide Action Bar"))
+                            .label(gettext("Hide Action Bar"))
                             .halign(gtk::Align::Start)
                             .build(),
                     )
                     .halign(gtk::Align::Fill)
-                    .css_classes(vec!["flat", "context-menu-item"])
+                    .css_classes(["flat", "context-menu-item"])
                     .build();
                 let pop_w2 = pop.downgrade();
                 btn_hide.connect_clicked(move |_| {
@@ -21624,16 +21766,16 @@ impl MailPage {
         let pop = gtk::Popover::builder()
             .child(&pop_box)
             .has_arrow(false)
-            .css_classes(vec!["menu", "context-menu"])
+            .css_classes(["menu", "context-menu"])
             .build();
         let overflow_btn = gtk::MenuButton::builder()
             .icon_name("pan-down-symbolic")
-            .tooltip_text(&gettext("More actions"))
+            .tooltip_text(gettext("More actions"))
             .popover(&pop)
             .valign(gtk::Align::Center)
             .halign(gtk::Align::End)
             .visible(false)
-            .css_classes(vec!["flat", "mail-list-bar-btn"])
+            .css_classes(["flat", "mail-list-bar-btn"])
             .build();
         (overflow_btn, pop_box)
     }
@@ -22348,7 +22490,7 @@ impl MailPage {
             .child(&img)
             .tooltip_text(tooltip)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["flat", "mail-list-bar-btn"])
+            .css_classes(["flat", "mail-list-bar-btn"])
             .build();
         set_accessible_label(&btn, tooltip);
         btn
@@ -22466,7 +22608,7 @@ impl MailPage {
             let pop = gtk::Popover::builder()
                 .child(&pop_box)
                 .has_arrow(false)
-                .css_classes(vec!["menu", "context-menu"])
+                .css_classes(["menu", "context-menu"])
                 .build();
             pop.set_parent(&parent);
             pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
@@ -22481,7 +22623,7 @@ impl MailPage {
                     )
                     .halign(gtk::Align::Fill)
                     .sensitive(sensitive)
-                    .css_classes(vec!["flat", "context-menu-item"])
+                    .css_classes(["flat", "context-menu-item"])
                     .build()
             };
 
@@ -22497,8 +22639,8 @@ impl MailPage {
                     }
                     let Some(pg) = page_weak_rn.upgrade() else { return; };
                     let dialog = adw::AlertDialog::builder()
-                        .heading(&gettext("Rename Action Bar Item"))
-                        .body(&gettext("Enter a custom label for this button, or leave it empty to use the default icon/name."))
+                        .heading(gettext("Rename Action Bar Item"))
+                        .body(gettext("Enter a custom label for this button, or leave it empty to use the default icon/name."))
                         .default_response("save")
                         .close_response("cancel")
                         .build();
@@ -22507,7 +22649,7 @@ impl MailPage {
                     dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
                     let entry = gtk::Entry::builder()
                         .text(&alias_for_rn)
-                        .placeholder_text(&gettext("Default label"))
+                        .placeholder_text(gettext("Default label"))
                         .activates_default(true)
                         .build();
                     dialog.set_extra_child(Some(&entry));
@@ -22913,7 +23055,7 @@ impl MailPage {
             } else {
                 "meridian-view-table-symbolic"
             };
-            (icon.to_string(), crate::i18n::gettext("Table view"))
+            (icon.to_string(), gettext("Table view"))
         } else {
             let theme = gtk::IconTheme::for_display(&split_btn.display());
             let icon = if theme.has_icon("view-list-symbolic") {
@@ -22923,7 +23065,7 @@ impl MailPage {
             } else {
                 "view-list-symbolic"
             };
-            (icon.to_string(), crate::i18n::gettext("List view"))
+            (icon.to_string(), gettext("List view"))
         };
         split_btn.set_icon_name(&icon_name);
         split_btn.set_tooltip_text(Some(&tooltip_text));
@@ -22962,16 +23104,16 @@ impl MailPage {
             .build();
 
         let desc_label = gtk::Label::builder()
-            .label(&gettext("Use the arrows to reorder columns, and toggle visibility."))
+            .label(gettext("Use the arrows to reorder columns, and toggle visibility."))
             .wrap(true)
             .xalign(0.0)
-            .css_classes(vec!["dim-label", "caption"])
+            .css_classes(["dim-label", "caption"])
             .build();
         content.append(&desc_label);
 
         let list_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(["boxed-list"])
             .build();
 
         const TABLE_REORDERABLE_COLUMNS: [&str; 11] = [
@@ -23096,7 +23238,7 @@ impl MailPage {
                 let row_box = gtk::Box::builder()
                     .orientation(gtk::Orientation::Horizontal)
                     .spacing(8)
-                    .css_classes(vec!["column-order-row"])
+                    .css_classes(["column-order-row"])
                     .build();
 
                 let check = gtk::CheckButton::builder()
@@ -23153,7 +23295,7 @@ impl MailPage {
                 let col_icon = gtk::Image::builder()
                     .icon_name(icon_name)
                     .pixel_size(15)
-                    .css_classes(vec!["dim-label"])
+                    .css_classes(["dim-label"])
                     .build();
                 row_box.append(&col_icon);
 
@@ -23174,15 +23316,15 @@ impl MailPage {
                     .build();
                 let up = gtk::Button::builder()
                     .icon_name("go-up-symbolic")
-                    .tooltip_text(&gettext("Move column up / left"))
-                    .css_classes(vec!["flat", "circular"])
+                    .tooltip_text(gettext("Move column up / left"))
+                    .css_classes(["flat", "circular"])
                     .valign(gtk::Align::Center)
                     .sensitive(index > 0)
                     .build();
                 let down = gtk::Button::builder()
                     .icon_name("go-down-symbolic")
-                    .tooltip_text(&gettext("Move column down / right"))
-                    .css_classes(vec!["flat", "circular"])
+                    .tooltip_text(gettext("Move column down / right"))
+                    .css_classes(["flat", "circular"])
                     .valign(gtk::Align::Center)
                     .sensitive(index + 1 < columns.len())
                     .build();
@@ -23220,8 +23362,8 @@ impl MailPage {
         content.append(&list_box);
 
         let reset_btn = gtk::Button::builder()
-            .label(&gettext("Restore Default Order"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Restore Default Order"))
+            .css_classes(["flat"])
             .halign(gtk::Align::Center)
             .margin_top(4)
             .build();
@@ -23310,15 +23452,15 @@ impl MailPage {
                 .build();
             let back_btn = gtk::Button::builder()
                 .icon_name("go-previous-symbolic")
-                .tooltip_text(&gettext("Back"))
-                .css_classes(vec!["flat", "circular"])
+                .tooltip_text(gettext("Back"))
+                .css_classes(["flat", "circular"])
                 .valign(gtk::Align::Center)
                 .build();
             let title_lbl = gtk::Label::builder()
                 .label(&dialog_title)
                 .xalign(0.0)
                 .hexpand(true)
-                .css_classes(vec!["heading"])
+                .css_classes(["heading"])
                 .build();
             title_row.append(&back_btn);
             title_row.append(&title_lbl);
@@ -23440,9 +23582,9 @@ impl MailPage {
             .build();
 
         let title = gtk::Label::builder()
-            .label(&gettext("Columns"))
+            .label(gettext("Columns"))
             .halign(gtk::Align::Start)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .build();
         content.append(&title);
 
@@ -23615,10 +23757,10 @@ impl MailPage {
         content.append(&crate::views::create_context_menu_separator());
 
         let content_section_title = gtk::Label::builder()
-            .label(&gettext("Details"))
+            .label(gettext("Details"))
             .halign(gtk::Align::Start)
             .margin_top(4)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .build();
         content.append(&content_section_title);
 
@@ -23633,7 +23775,7 @@ impl MailPage {
             let btn = gtk::Button::builder()
                 .has_frame(false)
                 .halign(gtk::Align::Fill)
-                .css_classes(vec!["flat", "context-menu-item"])
+                .css_classes(["flat", "context-menu-item"])
                 .build();
             let row = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
@@ -23648,7 +23790,7 @@ impl MailPage {
                 .icon_name(icon_name)
                 .pixel_size(16)
                 .valign(gtk::Align::Center)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build();
             let lbl = gtk::Label::builder()
                 .label(label_text)
@@ -25106,7 +25248,7 @@ impl MailPage {
             .margin_end(0)
             .margin_top(0)
             .margin_bottom(0)
-            .css_classes(vec!["mail-column-header"])
+            .css_classes(["mail-column-header"])
             .build();
 
         let status_column = gtk::Box::builder()
@@ -25114,7 +25256,7 @@ impl MailPage {
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
             .hexpand(false)
-            .css_classes(vec!["mail-column-header-cell", "icon-cell"])
+            .css_classes(["mail-column-header-cell", "icon-cell"])
             .build();
         let status_icon = gtk::Image::builder()
             .icon_name("mail-unread-symbolic")
@@ -25122,7 +25264,7 @@ impl MailPage {
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label", "mail-status-header-icon", "mail-column-header-icon"])
+            .css_classes(["dim-label", "mail-status-header-icon", "mail-column-header-icon"])
             .build();
         status_column.append(&status_icon);
 
@@ -25131,7 +25273,7 @@ impl MailPage {
             .width_request(MAIL_AVATAR_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
             .hexpand(false)
-            .css_classes(vec!["mail-column-header-cell", "icon-cell"])
+            .css_classes(["mail-column-header-cell", "icon-cell"])
             .build();
         let avatar_icon = gtk::Image::builder()
             .icon_name("avatar-default-symbolic")
@@ -25139,7 +25281,7 @@ impl MailPage {
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label", "mail-avatar-header-icon", "mail-column-header-icon"])
+            .css_classes(["dim-label", "mail-avatar-header-icon", "mail-column-header-icon"])
             .build();
         avatar_column.append(&avatar_icon);
 
@@ -25150,17 +25292,17 @@ impl MailPage {
             .hexpand(false)
             .halign(gtk::Align::Fill)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["mail-column-header-cell", "sender-cell"])
+            .css_classes(["mail-column-header-cell", "sender-cell"])
             .build();
         let sender_label = gtk::Label::builder()
-            .label(&gettext("From"))
+            .label(gettext("From"))
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .max_width_chars(1)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         sender_column.append(&sender_label);
 
@@ -25169,7 +25311,7 @@ impl MailPage {
             .width_request(1)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["mail-column-separator"])
+            .css_classes(["mail-column-separator"])
             .build();
         sender_separator.set_cursor(gdk::Cursor::from_name("col-resize", None).as_ref());
         sender_separator.set_widget_name("mail-column-sep-sender");
@@ -25184,17 +25326,17 @@ impl MailPage {
             .hexpand(false)
             .halign(gtk::Align::Fill)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["mail-column-header-cell", "recipient-cell"])
+            .css_classes(["mail-column-header-cell", "recipient-cell"])
             .build();
         let recipient_label = gtk::Label::builder()
-            .label(&gettext("To"))
+            .label(gettext("To"))
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .max_width_chars(1)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         recipient_column.append(&recipient_label);
 
@@ -25203,7 +25345,7 @@ impl MailPage {
             .width_request(1)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["mail-column-separator"])
+            .css_classes(["mail-column-separator"])
             .build();
         recipient_separator.set_cursor(gdk::Cursor::from_name("col-resize", None).as_ref());
         recipient_separator.set_widget_name("mail-column-sep-recipient");
@@ -25218,21 +25360,21 @@ impl MailPage {
             .halign(gtk::Align::Fill)
             .hexpand(false)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["mail-column-header-cell", "date-cell"])
+            .css_classes(["mail-column-header-cell", "date-cell"])
             .build();
         let date_align_left = AppSettings::try_new()
             .as_ref()
             .map(|s| s.mail_date_align() == "left")
             .unwrap_or(false);
         let date_label = gtk::Label::builder()
-            .label(&gettext("Date"))
+            .label(gettext("Date"))
             .halign(gtk::Align::Fill)
             .xalign(if date_align_left { 0.0 } else { 1.0 })
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .max_width_chars(1)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         date_column.append(&date_label);
 
@@ -25241,7 +25383,7 @@ impl MailPage {
             .width_request(1)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["mail-column-separator"])
+            .css_classes(["mail-column-separator"])
             .build();
         date_separator.set_cursor(gdk::Cursor::from_name("col-resize", None).as_ref());
         date_separator.set_widget_name("mail-column-sep-date");
@@ -25254,7 +25396,7 @@ impl MailPage {
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
             .hexpand(false)
-            .css_classes(vec!["mail-column-header-cell", "icon-cell"])
+            .css_classes(["mail-column-header-cell", "icon-cell"])
             .build();
         let attachment_icon = gtk::Image::builder()
             .icon_name("mail-attachment-symbolic")
@@ -25262,7 +25404,7 @@ impl MailPage {
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label", "mail-column-header-icon"])
+            .css_classes(["dim-label", "mail-column-header-icon"])
             .build();
         attachment_column.append(&attachment_icon);
 
@@ -25271,7 +25413,7 @@ impl MailPage {
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
             .hexpand(false)
-            .css_classes(vec!["mail-column-header-cell", "icon-cell"])
+            .css_classes(["mail-column-header-cell", "icon-cell"])
             .build();
         let star_icon = gtk::Image::builder()
             .icon_name("starred-symbolic")
@@ -25279,7 +25421,7 @@ impl MailPage {
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label", "mail-column-header-icon"])
+            .css_classes(["dim-label", "mail-column-header-icon"])
             .build();
         star_column.append(&star_icon);
 
@@ -25288,7 +25430,7 @@ impl MailPage {
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
             .hexpand(false)
-            .css_classes(vec!["mail-column-header-cell", "icon-cell"])
+            .css_classes(["mail-column-header-cell", "icon-cell"])
             .build();
         let follow_up_icon = gtk::Image::builder()
             .icon_name("mail-flag-symbolic")
@@ -25296,7 +25438,7 @@ impl MailPage {
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label", "mail-column-header-icon"])
+            .css_classes(["dim-label", "mail-column-header-icon"])
             .build();
         set_image_icon_with_fallback(
             &follow_up_icon,
@@ -25310,7 +25452,7 @@ impl MailPage {
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
             .hexpand(false)
-            .css_classes(vec!["mail-column-header-cell", "icon-cell"])
+            .css_classes(["mail-column-header-cell", "icon-cell"])
             .build();
         let memo_icon = gtk::Image::builder()
             .icon_name("accessories-text-editor-symbolic")
@@ -25318,7 +25460,7 @@ impl MailPage {
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label", "mail-column-header-icon"])
+            .css_classes(["dim-label", "mail-column-header-icon"])
             .build();
         memo_column.append(&memo_icon);
 
@@ -25327,7 +25469,7 @@ impl MailPage {
             .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
             .hexpand(false)
-            .css_classes(vec!["mail-column-header-cell", "icon-cell"])
+            .css_classes(["mail-column-header-cell", "icon-cell"])
             .build();
         let important_icon = gtk::Image::builder()
             .icon_name("emblem-important-symbolic")
@@ -25335,7 +25477,7 @@ impl MailPage {
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .hexpand(true)
-            .css_classes(vec!["dim-label", "mail-column-header-icon"])
+            .css_classes(["dim-label", "mail-column-header-icon"])
             .build();
         important_column.append(&important_icon);
 
@@ -25344,17 +25486,17 @@ impl MailPage {
             .hexpand(true)
             .halign(gtk::Align::Fill)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["mail-column-header-cell", "subject-cell"])
+            .css_classes(["mail-column-header-cell", "subject-cell"])
             .build();
         let subject_label = gtk::Label::builder()
-            .label(&gettext("Subject"))
+            .label(gettext("Subject"))
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .max_width_chars(1)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         subject_column.append(&subject_label);
 
@@ -25362,15 +25504,15 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .hexpand(true)
             .halign(gtk::Align::Fill)
-            .css_classes(vec!["mail-column-header-cell"])
+            .css_classes(["mail-column-header-cell"])
             .build();
         messages_column.append(
             &gtk::Label::builder()
-                .label(&gettext("Messages"))
+                .label(gettext("Messages"))
                 .halign(gtk::Align::Start)
                 .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build(),
         );
 
@@ -25379,16 +25521,16 @@ impl MailPage {
             .width_request(MAIL_PREVIEW_COLUMN_WIDTH)
             .halign(gtk::Align::Start)
             .visible(false)
-            .css_classes(vec!["mail-column-header-cell"])
+            .css_classes(["mail-column-header-cell"])
             .build();
         let preview_label = gtk::Label::builder()
-            .label(&gettext("Preview"))
+            .label(gettext("Preview"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .max_width_chars(20)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         preview_column.append(&preview_label);
 
@@ -25398,16 +25540,16 @@ impl MailPage {
             .halign(gtk::Align::Fill)
             .hexpand(false)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["mail-column-header-cell", "date-cell"])
+            .css_classes(["mail-column-header-cell", "date-cell"])
             .build();
         size_column.append(
             &gtk::Label::builder()
-                .label(&gettext("Size"))
+                .label(gettext("Size"))
                 .halign(gtk::Align::End)
                 .xalign(1.0)
                 .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build(),
         );
 
@@ -25416,7 +25558,7 @@ impl MailPage {
             .width_request(1)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["mail-column-separator"])
+            .css_classes(["mail-column-separator"])
             .build();
         size_separator.set_cursor(gdk::Cursor::from_name("col-resize", None).as_ref());
         size_separator.set_widget_name("mail-column-sep-size");
@@ -25429,16 +25571,16 @@ impl MailPage {
             .width_request(MAIL_DUE_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
             .visible(false)
-            .css_classes(vec!["mail-column-header-cell", "date-cell"])
+            .css_classes(["mail-column-header-cell", "date-cell"])
             .build();
         due_column.append(
             &gtk::Label::builder()
-                .label(&gettext("Due date"))
+                .label(gettext("Due date"))
                 .halign(gtk::Align::End)
                 .xalign(1.0)
                 .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build(),
         );
 
@@ -25447,16 +25589,16 @@ impl MailPage {
             .width_request(MAIL_LOCATION_COLUMN_WIDTH)
             .halign(gtk::Align::Fill)
             .visible(false)
-            .css_classes(vec!["mail-column-header-cell"])
+            .css_classes(["mail-column-header-cell"])
             .build();
         location_column.append(
             &gtk::Label::builder()
-                .label(&gettext("Location"))
+                .label(gettext("Location"))
                 .halign(gtk::Align::Start)
                 .xalign(0.0)
                 .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build(),
         );
 
@@ -26300,10 +26442,7 @@ impl MailPage {
                 return false;
             }
             if let Some(page) = page_weak_for_custom_filter.upgrade() {
-                if msg
-                    .backend_location()
-                    .is_some_and(|loc| !loc.source_uid.is_empty() && !page.is_mail_account_active(&loc.source_uid))
-                {
+                if !page.is_message_account_active(msg) {
                     return false;
                 }
             }
@@ -26360,10 +26499,7 @@ impl MailPage {
                 return false;
             }
             if let Some(page) = page_weak_for_thread_filter.upgrade() {
-                if root
-                    .backend_location()
-                    .is_some_and(|loc| !loc.source_uid.is_empty() && !page.is_mail_account_active(&loc.source_uid))
-                {
+                if !page.is_message_account_active(root) {
                     return false;
                 }
             }
@@ -26399,6 +26535,12 @@ impl MailPage {
                 .get(&root.thread_id())
                 .map(|messages| {
                     messages.iter().any(|message| {
+                        if page_opt
+                            .as_ref()
+                            .is_some_and(|p| !p.is_message_account_active(message))
+                        {
+                            return false;
+                        }
                         if current_filter == MessageFilter::HasMemo
                             && !page_opt
                                 .as_ref()
@@ -26497,32 +26639,64 @@ impl MailPage {
                 }
                 return;
             };
-            let Some(row) = selection.item(sel_pos).and_downcast::<gtk::TreeListRow>() else {
+            let message = selection.item(sel_pos).and_then(|item| {
+                item.clone()
+                    .downcast::<MailMessageObject>()
+                    .ok()
+                    .or_else(|| {
+                        item.downcast::<gtk::TreeListRow>()
+                            .ok()
+                            .and_then(|row| row.item())
+                            .and_then(|obj| obj.downcast::<MailMessageObject>().ok())
+                    })
+            });
+            let Some(message) = message else {
                 return;
             };
-            let Some(message) = row.item().and_downcast::<MailMessageObject>() else {
-                return;
-            };
+            let mut found_flat_index = None;
             if let Some(candidate) = flat_selection_for_tree
                 .item(sel_pos)
                 .and_downcast::<MailMessageObject>()
             {
                 if candidate.id() == message.id() {
-                    flat_selection_for_tree.select_item(sel_pos, true);
-                    return;
+                    found_flat_index = Some(sel_pos);
                 }
             }
-            for index in 0..flat_selection_for_tree.n_items() {
-                let Some(candidate) = flat_selection_for_tree
-                    .item(index)
-                    .and_downcast::<MailMessageObject>()
-                else {
-                    continue;
-                };
-                if candidate.id() == message.id() {
-                    flat_selection_for_tree.select_item(index, true);
-                    break;
+            if found_flat_index.is_none() {
+                for index in 0..flat_selection_for_tree.n_items() {
+                    let Some(candidate) = flat_selection_for_tree
+                        .item(index)
+                        .and_downcast::<MailMessageObject>()
+                    else {
+                        continue;
+                    };
+                    if candidate.id() == message.id() {
+                        found_flat_index = Some(index);
+                        break;
+                    }
                 }
+            }
+            if let Some(index) = found_flat_index {
+                let already_selected = flat_selection_for_tree.is_selected(index)
+                    && flat_selection_for_tree.selection().size() == 1;
+                if already_selected {
+                    let viewer_id = page
+                        .imp()
+                        .mail_viewer
+                        .borrow()
+                        .as_ref()
+                        .and_then(|v| v.imp().current_message_id.borrow().clone());
+                    if viewer_id.as_deref() != Some(message.id().as_str()) {
+                        let prev = page.imp().thread_selection_syncing.replace(true);
+                        flat_selection_for_tree.unselect_item(index);
+                        page.imp().thread_selection_syncing.set(prev);
+                    }
+                }
+                flat_selection_for_tree.select_item(index, true);
+            } else {
+                let prev = page.imp().thread_selection_syncing.replace(true);
+                flat_selection_for_tree.unselect_all();
+                page.imp().thread_selection_syncing.set(prev);
             }
         });
 
@@ -26542,7 +26716,7 @@ impl MailPage {
                 .margin_top(0)
                 .margin_bottom(0)
                 .hexpand(true)
-                .css_classes(vec!["message-line"])
+                .css_classes(["message-line"])
                 .build();
 
             let header_box = gtk::Box::builder()
@@ -26578,7 +26752,7 @@ impl MailPage {
                 .build();
 
             let sender = gtk::Label::builder()
-                .css_classes(vec!["heading"])
+                .css_classes(["heading"])
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .hexpand(true)
@@ -26598,7 +26772,7 @@ impl MailPage {
                 .build();
 
             let recipient = gtk::Label::builder()
-                .css_classes(vec!["body"])
+                .css_classes(["body"])
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .hexpand(true)
@@ -26609,7 +26783,7 @@ impl MailPage {
                 .build();
 
             let date = gtk::Label::builder()
-                .css_classes(vec!["caption", "dim-label", "mail-date-label"])
+                .css_classes(["caption", "dim-label", "mail-date-label"])
                 .halign(gtk::Align::Fill)
                 .xalign(1.0)
                 .ellipsize(pango::EllipsizeMode::End)
@@ -26644,11 +26818,11 @@ impl MailPage {
             let btn_star = gtk::Button::builder()
                 .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
                 .icon_name("non-starred-symbolic")
-                .css_classes(vec!["flat", "circular", "mail-star"])
+                .css_classes(["flat", "circular", "mail-star"])
                 .valign(gtk::Align::Center)
                 .halign(gtk::Align::Center)
                 .hexpand(false)
-                .tooltip_text(&gettext("Star / mark message"))
+                .tooltip_text(gettext("Star / mark message"))
                 .build();
             set_button_icon_with_fallback(
                 &btn_star,
@@ -26661,11 +26835,11 @@ impl MailPage {
             let btn_follow_up = gtk::Button::builder()
                 .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
                 .icon_name("mail-flag-symbolic")
-                .css_classes(vec!["flat", "circular", "mail-follow-up"])
+                .css_classes(["flat", "circular", "mail-follow-up"])
                 .valign(gtk::Align::Center)
                 .halign(gtk::Align::Center)
                 .hexpand(false)
-                .tooltip_text(&gettext("Set follow-up (right-click for options)"))
+                .tooltip_text(gettext("Set follow-up (right-click for options)"))
                 .build();
             set_button_icon_with_fallback(
                 &btn_follow_up,
@@ -26721,11 +26895,11 @@ impl MailPage {
             let btn_important = gtk::Button::builder()
                 .width_request(MAIL_INDICATOR_COLUMN_WIDTH)
                 .icon_name("emblem-important-symbolic")
-                .css_classes(vec!["flat", "circular", "mail-important"])
+                .css_classes(["flat", "circular", "mail-important"])
                 .valign(gtk::Align::Center)
                 .halign(gtk::Align::Center)
                 .hexpand(false)
-                .tooltip_text(&gettext("Mark as important"))
+                .tooltip_text(gettext("Mark as important"))
                 .build();
             set_button_icon_with_fallback(
                 &btn_important,
@@ -26939,7 +27113,7 @@ impl MailPage {
                 .build();
 
             let thread_expander = gtk::Button::builder()
-                .css_classes(vec!["flat", "circular", "mail-thread-expander"])
+                .css_classes(["flat", "circular", "mail-thread-expander"])
                 .valign(gtk::Align::Center)
                 .halign(gtk::Align::Center)
                 .width_request(18)
@@ -26949,7 +27123,7 @@ impl MailPage {
             set_accessible_label(&thread_expander, &gettext("Expand or collapse conversation"));
 
             let subject = gtk::Label::builder()
-                .css_classes(vec!["body"])
+                .css_classes(["body"])
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .hexpand(true)
@@ -26971,7 +27145,7 @@ impl MailPage {
                 .build();
             messages.append(
                 &gtk::Label::builder()
-                    .css_classes(vec!["heading"])
+                    .css_classes(["heading"])
                     .halign(gtk::Align::Fill)
                     .xalign(0.0)
                     .hexpand(true)
@@ -26983,7 +27157,7 @@ impl MailPage {
             );
             messages.append(
                 &gtk::Label::builder()
-                    .css_classes(vec!["body"])
+                    .css_classes(["body"])
                     .halign(gtk::Align::Fill)
                     .xalign(0.0)
                     .hexpand(true)
@@ -27066,7 +27240,7 @@ impl MailPage {
             });
 
             let preview = gtk::Label::builder()
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .halign(gtk::Align::Start)
                 .width_request(MAIL_PREVIEW_COLUMN_WIDTH)
                 .ellipsize(pango::EllipsizeMode::End)
@@ -27076,7 +27250,7 @@ impl MailPage {
                 .build();
 
             let size = gtk::Label::builder()
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .halign(gtk::Align::End)
                 .xalign(1.0)
                 .width_request(MAIL_SIZE_COLUMN_WIDTH)
@@ -27085,7 +27259,7 @@ impl MailPage {
                 .build();
 
             let follow_up_due = gtk::Label::builder()
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .halign(gtk::Align::End)
                 .xalign(1.0)
                 .width_request(MAIL_DUE_COLUMN_WIDTH)
@@ -27094,7 +27268,7 @@ impl MailPage {
                 .build();
 
             let location = gtk::Label::builder()
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .halign(gtk::Align::Start)
                 .xalign(0.0)
                 .width_request(MAIL_LOCATION_COLUMN_WIDTH)
@@ -27153,7 +27327,7 @@ impl MailPage {
                 .width_request(1)
                 .halign(gtk::Align::Center)
                 .valign(gtk::Align::Fill)
-                .css_classes(vec!["mail-column-row-separator"])
+                .css_classes(["mail-column-row-separator"])
                 .build();
             row_sender_sep.set_widget_name("mail-column-sep-sender");
 
@@ -27162,7 +27336,7 @@ impl MailPage {
                 .width_request(1)
                 .halign(gtk::Align::Center)
                 .valign(gtk::Align::Fill)
-                .css_classes(vec!["mail-column-row-separator"])
+                .css_classes(["mail-column-row-separator"])
                 .build();
             row_recipient_sep.set_widget_name("mail-column-sep-recipient");
 
@@ -27171,7 +27345,7 @@ impl MailPage {
                 .width_request(1)
                 .halign(gtk::Align::Center)
                 .valign(gtk::Align::Fill)
-                .css_classes(vec!["mail-column-row-separator"])
+                .css_classes(["mail-column-row-separator"])
                 .build();
             row_date_sep.set_widget_name("mail-column-sep-date");
 
@@ -28028,7 +28202,7 @@ impl MailPage {
         let list_view = gtk::ListView::builder()
             .model(&thread_selection)
             .factory(&factory)
-            .css_classes(vec!["message-list"])
+            .css_classes(["message-list"])
             .build();
         self.imp().mail_list_view.replace(Some(list_view.clone()));
         self.imp().mail_list_factory.replace(Some(factory.clone()));
@@ -28087,22 +28261,22 @@ impl MailPage {
         list_view.add_controller(enter_controller);
 
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text(&crate::i18n::gettext("Search mail (from:, in:sent, on:2026-08-11, is:unread)…"))
+            .placeholder_text(gettext("Search mail (from:, in:sent, on:2026-08-11, is:unread)…"))
             .hexpand(true)
             .build();
 
         let quick_filter_model = gtk::StringList::new(&[
-            &crate::i18n::gettext("All"),
-            &crate::i18n::gettext("Unread"),
-            &crate::i18n::gettext("Flagged"),
-            &crate::i18n::gettext("Important"),
-            &crate::i18n::gettext("With Attachment"),
-            &crate::i18n::gettext("Follow-Up"),
-            &crate::i18n::gettext("Memos"),
+            &gettext("All"),
+            &gettext("Unread"),
+            &gettext("Flagged"),
+            &gettext("Important"),
+            &gettext("With Attachment"),
+            &gettext("Follow-Up"),
+            &gettext("Memos"),
         ]);
         let quick_filter = gtk::DropDown::new(Some(quick_filter_model), None::<&gtk::Expression>);
-        quick_filter.set_tooltip_text(Some(&crate::i18n::gettext("Message filter")));
-        set_accessible_label(&quick_filter, &crate::i18n::gettext("Message filter"));
+        quick_filter.set_tooltip_text(Some(&gettext("Message filter")));
+        set_accessible_label(&quick_filter, &gettext("Message filter"));
         quick_filter.set_selected(message_filter.get().selector_index());
         let message_filter_for_quick_filter = Rc::clone(&message_filter);
         let filter_for_quick_filter = custom_filter.clone();
@@ -28136,13 +28310,13 @@ impl MailPage {
 
         let save_search_button = gtk::Button::builder()
             .icon_name("document-save-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Save current search as search folder"))
-            .css_classes(vec!["flat", "circular", "save-search-button"])
+            .tooltip_text(gettext("Save current search as search folder"))
+            .css_classes(["flat", "circular", "save-search-button"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(
             &save_search_button,
-            &crate::i18n::gettext("Save current search as search folder"),
+            &gettext("Save current search as search folder"),
         );
         let page_for_save_search = self.downgrade();
         let search_entry_for_save = search_entry.clone();
@@ -28152,7 +28326,7 @@ impl MailPage {
             };
             let query = search_entry_for_save.text().trim().to_string();
             if query.is_empty() {
-                page.show_toast(&crate::i18n::gettext("Cannot save an empty search"));
+                page.show_toast(&gettext("Cannot save an empty search"));
                 return;
             }
             let field = page.imp().search_field_scope.get().to_saved();
@@ -28185,33 +28359,33 @@ impl MailPage {
         });
 
         let search_field_model = gtk::StringList::new(&[
-            &crate::i18n::gettext("Subject or Addresses"),
-            &crate::i18n::gettext("Subject"),
-            &crate::i18n::gettext("Sender"),
-            &crate::i18n::gettext("Recipients"),
-            &crate::i18n::gettext("Message"),
-            &crate::i18n::gettext("Message Body"),
-            &crate::i18n::gettext("Free Expression"),
+            &gettext("Subject or Addresses"),
+            &gettext("Subject"),
+            &gettext("Sender"),
+            &gettext("Recipients"),
+            &gettext("Message"),
+            &gettext("Message Body"),
+            &gettext("Free Expression"),
         ]);
         let search_field_selector =
             gtk::DropDown::new(Some(search_field_model), None::<&gtk::Expression>);
-        search_field_selector.set_tooltip_text(Some(&crate::i18n::gettext("Select quick search field")));
-        set_accessible_label(&search_field_selector, &crate::i18n::gettext("Search option"));
+        search_field_selector.set_tooltip_text(Some(&gettext("Select quick search field")));
+        set_accessible_label(&search_field_selector, &gettext("Search option"));
         search_field_selector.set_selected(self.imp().search_field_scope.get().selector_index());
         self.imp()
             .search_field_selector
             .replace(Some(search_field_selector.clone()));
 
         let search_scope_model = gtk::StringList::new(&[
-            &crate::i18n::gettext("Current Folder"),
-            &crate::i18n::gettext("Current Folder and Subfolders"),
-            &crate::i18n::gettext("Current Account"),
-            &crate::i18n::gettext("All Accounts"),
+            &gettext("Current Folder"),
+            &gettext("Current Folder and Subfolders"),
+            &gettext("Current Account"),
+            &gettext("All Accounts"),
         ]);
         let search_scope_selector =
             gtk::DropDown::new(Some(search_scope_model), None::<&gtk::Expression>);
-        search_scope_selector.set_tooltip_text(Some(&crate::i18n::gettext("Search scope")));
-        set_accessible_label(&search_scope_selector, &crate::i18n::gettext("Search scope"));
+        search_scope_selector.set_tooltip_text(Some(&gettext("Search scope")));
+        set_accessible_label(&search_scope_selector, &gettext("Search scope"));
         search_scope_selector.set_selected(self.imp().search_scope.get().selector_index());
         self.imp()
             .search_scope_selector
@@ -28359,22 +28533,22 @@ impl MailPage {
         });
 
         let sort_model = gtk::StringList::new(&[
-            &crate::i18n::gettext("Date"),
-            &crate::i18n::gettext("Subject"),
-            &crate::i18n::gettext("Sender"),
-            &crate::i18n::gettext("Recipients"),
-            &crate::i18n::gettext("Unread Status"),
-            &crate::i18n::gettext("Flagged"),
-            &crate::i18n::gettext("Follow-up"),
-            &crate::i18n::gettext("Importance"),
-            &crate::i18n::gettext("Attachments"),
-            &crate::i18n::gettext("Size"),
-            &crate::i18n::gettext("Due By"),
-            &crate::i18n::gettext("Location"),
+            &gettext("Date"),
+            &gettext("Subject"),
+            &gettext("Sender"),
+            &gettext("Recipients"),
+            &gettext("Unread Status"),
+            &gettext("Flagged"),
+            &gettext("Follow-up"),
+            &gettext("Importance"),
+            &gettext("Attachments"),
+            &gettext("Size"),
+            &gettext("Due By"),
+            &gettext("Location"),
         ]);
         let sort_selector = gtk::DropDown::new(Some(sort_model), None::<&gtk::Expression>);
-        sort_selector.set_tooltip_text(Some(&crate::i18n::gettext("Sort mail")));
-        set_accessible_label(&sort_selector, &crate::i18n::gettext("Sort messages"));
+        sort_selector.set_tooltip_text(Some(&gettext("Sort mail")));
+        set_accessible_label(&sort_selector, &gettext("Sort messages"));
         sort_selector.set_selected(Self::mail_sort_selector_index(
             self.imp().mail_sort_field.get(),
         ));
@@ -28382,7 +28556,7 @@ impl MailPage {
             .mail_sort_selector
             .replace(Some(sort_selector.clone()));
         let direction_button = gtk::Button::builder()
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(["flat", "circular"])
             .build();
         let set_direction_button = |button: &gtk::Button, descending: bool| {
             button.set_icon_name(if descending {
@@ -28391,9 +28565,9 @@ impl MailPage {
                 "view-sort-ascending-symbolic"
             });
             let label = if descending {
-                crate::i18n::gettext("Sort descending; toggle sort direction")
+                gettext("Sort descending; toggle sort direction")
             } else {
-                crate::i18n::gettext("Sort ascending; toggle sort direction")
+                gettext("Sort ascending; toggle sort direction")
             };
             button.set_tooltip_text(Some(&label));
             set_accessible_label(button, &label);
@@ -28454,9 +28628,9 @@ impl MailPage {
                 .build();
                 
             sec2_box.append(&gtk::Label::builder()
-                .label(&gettext("Preview Pane"))
+                .label(gettext("Preview Pane"))
                 .halign(gtk::Align::Start)
-                .css_classes(vec!["dim-label", "caption"])
+                .css_classes(["dim-label", "caption"])
                 .build()
             );
             
@@ -28464,12 +28638,12 @@ impl MailPage {
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(0)
                 .homogeneous(true)
-                .css_classes(vec!["linked"])
+                .css_classes(["linked"])
                 .build();
                 
-            let btn_prev_off = gtk::ToggleButton::builder().label(&gettext("Off")).build();
-            let btn_prev_bottom = gtk::ToggleButton::builder().label(&gettext("Bottom")).build();
-            let btn_prev_right = gtk::ToggleButton::builder().label(&gettext("Right")).build();
+            let btn_prev_off = gtk::ToggleButton::builder().label(gettext("Off")).build();
+            let btn_prev_bottom = gtk::ToggleButton::builder().label(gettext("Bottom")).build();
+            let btn_prev_right = gtk::ToggleButton::builder().label(gettext("Right")).build();
             
             btn_prev_bottom.set_group(Some(&btn_prev_off));
             btn_prev_right.set_group(Some(&btn_prev_off));
@@ -28525,9 +28699,9 @@ impl MailPage {
                 .build();
 
             sec_density_box.append(&gtk::Label::builder()
-                .label(&gettext("Density"))
+                .label(gettext("Density"))
                 .halign(gtk::Align::Start)
-                .css_classes(vec!["dim-label", "caption"])
+                .css_classes(["dim-label", "caption"])
                 .build()
             );
 
@@ -28535,12 +28709,12 @@ impl MailPage {
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(0)
                 .homogeneous(true)
-                .css_classes(vec!["linked"])
+                .css_classes(["linked"])
                 .build();
 
-            let btn_density_compact = gtk::ToggleButton::builder().label(&gettext("Compact")).build();
-            let btn_density_normal = gtk::ToggleButton::builder().label(&gettext("Normal")).build();
-            let btn_density_spacious = gtk::ToggleButton::builder().label(&gettext("Spacious")).build();
+            let btn_density_compact = gtk::ToggleButton::builder().label(gettext("Compact")).build();
+            let btn_density_normal = gtk::ToggleButton::builder().label(gettext("Normal")).build();
+            let btn_density_spacious = gtk::ToggleButton::builder().label(gettext("Spacious")).build();
 
             btn_density_normal.set_group(Some(&btn_density_compact));
             btn_density_spacious.set_group(Some(&btn_density_compact));
@@ -28585,9 +28759,9 @@ impl MailPage {
                 .build();
 
             sec_header_box.append(&gtk::Label::builder()
-                .label(&gettext("Header Style"))
+                .label(gettext("Header Style"))
                 .halign(gtk::Align::Start)
-                .css_classes(vec!["dim-label", "caption"])
+                .css_classes(["dim-label", "caption"])
                 .build()
             );
 
@@ -28595,11 +28769,11 @@ impl MailPage {
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(0)
                 .homogeneous(true)
-                .css_classes(vec!["linked"])
+                .css_classes(["linked"])
                 .build();
 
-            let btn_header_modern = gtk::ToggleButton::builder().label(&gettext("Modern")).build();
-            let btn_header_classic = gtk::ToggleButton::builder().label(&gettext("Classic")).build();
+            let btn_header_modern = gtk::ToggleButton::builder().label(gettext("Modern")).build();
+            let btn_header_classic = gtk::ToggleButton::builder().label(gettext("Classic")).build();
             btn_header_classic.set_group(Some(&btn_header_modern));
 
             header_style_box.append(&btn_header_modern);
@@ -28644,11 +28818,11 @@ impl MailPage {
             // --- Section 2: Switches (Flat rows, GNOME HIG) ---
             let listbox = gtk::ListBox::builder()
                 .selection_mode(gtk::SelectionMode::None)
-                .css_classes(vec!["view-options-list"])
+                .css_classes(["view-options-list"])
                 .build();
                 
             let row_thread = adw::ActionRow::builder()
-                .title(&gettext("Group by conversations"))
+                .title(gettext("Group by conversations"))
                 .activatable(true)
                 .build();
             let switch_thread = gtk::Switch::builder()
@@ -28668,7 +28842,7 @@ impl MailPage {
             listbox.append(&row_thread);
             
             let row_avatars = adw::ActionRow::builder()
-                .title(&gettext("Show avatars"))
+                .title(gettext("Show avatars"))
                 .activatable(true)
                 .build();
             let switch_avatars = gtk::Switch::builder()
@@ -28680,7 +28854,7 @@ impl MailPage {
             listbox.append(&row_avatars);
             
             let row_logos = adw::ActionRow::builder()
-                .title(&gettext("Load sender logos"))
+                .title(gettext("Load sender logos"))
                 .activatable(true)
                 .build();
             let switch_logos = gtk::Switch::builder()
@@ -28701,7 +28875,7 @@ impl MailPage {
             let row_logos_container = gtk::ListBoxRow::builder()
                 .activatable(false)
                 .selectable(false)
-                .css_classes(vec!["view-options-revealer-row"])
+                .css_classes(["view-options-revealer-row"])
                 .child(&revealer_logos)
                 .visible(settings.mail_show_avatar())
                 .build();
@@ -28789,9 +28963,9 @@ impl MailPage {
         } else {
             columns_popover_box.append(
                 &gtk::Label::builder()
-                    .label(&gettext("Settings are not available in this development mode."))
+                    .label(gettext("Settings are not available in this development mode."))
                     .wrap(true)
-                    .css_classes(vec!["caption", "dim-label"])
+                    .css_classes(["caption", "dim-label"])
                     .build(),
             );
         }
@@ -28809,10 +28983,10 @@ impl MailPage {
         let str_view_opts = gettext("View options");
         let columns_button = adw::SplitButton::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text(&gettext("List view"))
+            .tooltip_text(gettext("List view"))
             .dropdown_tooltip(&str_view_opts)
             .popover(&columns_popover)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&columns_button, &str_view_opts);
@@ -28857,9 +29031,9 @@ impl MailPage {
             .build();
         sec_filter_box.append(
             &gtk::Label::builder()
-                .label(&gettext("Show Messages"))
+                .label(gettext("Show Messages"))
                 .halign(gtk::Align::Start)
-                .css_classes(vec!["dim-label", "caption"])
+                .css_classes(["dim-label", "caption"])
                 .build(),
         );
 
@@ -28867,18 +29041,18 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
             .homogeneous(true)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .build();
         let btn_flt_all = gtk::ToggleButton::builder()
-            .label(&gettext("All"))
+            .label(gettext("All"))
             .active(true)
             .build();
         let btn_flt_unread = gtk::ToggleButton::builder()
-            .label(&gettext("Unread"))
+            .label(gettext("Unread"))
             .group(&btn_flt_all)
             .build();
         let btn_flt_flagged = gtk::ToggleButton::builder()
-            .label(&gettext("Flagged"))
+            .label(gettext("Flagged"))
             .group(&btn_flt_all)
             .build();
         filter_top_row.append(&btn_flt_all);
@@ -28891,16 +29065,16 @@ impl MailPage {
             .spacing(6)
             .build();
         let btn_flt_important = gtk::ToggleButton::builder()
-            .label(&gettext("Important"))
+            .label(gettext("Important"))
             .group(&btn_flt_all)
             .hexpand(true)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         let btn_flt_attachment = gtk::ToggleButton::builder()
-            .label(&gettext("With Attachment"))
+            .label(gettext("With Attachment"))
             .group(&btn_flt_all)
             .hexpand(true)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         filter_bottom_row.append(&btn_flt_important);
         filter_bottom_row.append(&btn_flt_attachment);
@@ -28911,16 +29085,16 @@ impl MailPage {
             .spacing(6)
             .build();
         let btn_flt_followup = gtk::ToggleButton::builder()
-            .label(&gettext("Follow-Up"))
+            .label(gettext("Follow-Up"))
             .group(&btn_flt_all)
             .hexpand(true)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         let btn_flt_memo = gtk::ToggleButton::builder()
-            .label(&gettext("Memos"))
+            .label(gettext("Memos"))
             .group(&btn_flt_all)
             .hexpand(true)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         filter_extra_row.append(&btn_flt_followup);
         filter_extra_row.append(&btn_flt_memo);
@@ -28935,9 +29109,9 @@ impl MailPage {
             .build();
         sec_sort_box.append(
             &gtk::Label::builder()
-                .label(&gettext("Sort By"))
+                .label(gettext("Sort By"))
                 .halign(gtk::Align::Start)
-                .css_classes(vec!["dim-label", "caption"])
+                .css_classes(["dim-label", "caption"])
                 .build(),
         );
         let sort_row = gtk::Box::builder()
@@ -28951,8 +29125,8 @@ impl MailPage {
 
         let btn_reset_sort = gtk::Button::builder()
             .icon_name("edit-undo-symbolic")
-            .tooltip_text(&gettext("Reset to default sort order (Date, newest first)"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Reset to default sort order (Date, newest first)"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_reset_sort, &gettext("Reset sort order"));
@@ -28973,7 +29147,7 @@ impl MailPage {
             .icon_name("funnel-symbolic")
             .tooltip_text(&str_filter_opts)
             .popover(&filter_popover)
-            .css_classes(vec!["flat", "mail-filter-button"])
+            .css_classes(["flat", "mail-filter-button"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&filter_options_btn, &str_filter_opts);
@@ -29040,8 +29214,8 @@ impl MailPage {
             .build();
 
         let search_options_header = gtk::Label::builder()
-            .label(&gettext("Search Options & Filters"))
-            .css_classes(vec!["heading"])
+            .label(gettext("Search Options & Filters"))
+            .css_classes(["heading"])
             .halign(gtk::Align::Start)
             .build();
         search_options_box.append(&search_options_header);
@@ -29052,27 +29226,27 @@ impl MailPage {
             .build();
 
         let lbl_field = gtk::Label::builder()
-            .label(&gettext("Search field:"))
+            .label(gettext("Search field:"))
             .halign(gtk::Align::Start)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         search_grid.attach(&lbl_field, 0, 0, 1, 1);
         search_field_selector.set_hexpand(true);
         search_grid.attach(&search_field_selector, 1, 0, 1, 1);
 
         let lbl_scope = gtk::Label::builder()
-            .label(&gettext("Search scope:"))
+            .label(gettext("Search scope:"))
             .halign(gtk::Align::Start)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         search_grid.attach(&lbl_scope, 0, 1, 1, 1);
         search_scope_selector.set_hexpand(true);
         search_grid.attach(&search_scope_selector, 1, 1, 1, 1);
 
         let lbl_filter = gtk::Label::builder()
-            .label(&gettext("Filter:"))
+            .label(gettext("Filter:"))
             .halign(gtk::Align::Start)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         search_grid.attach(&lbl_filter, 0, 2, 1, 1);
         quick_filter.set_hexpand(true);
@@ -29082,9 +29256,9 @@ impl MailPage {
         search_options_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         let syntax_header = gtk::Label::builder()
-            .label(&gettext("Search Syntax Operators"))
+            .label(gettext("Search Syntax Operators"))
             .halign(gtk::Align::Start)
-            .css_classes(vec!["title-5"])
+            .css_classes(["title-5"])
             .build();
         search_options_box.append(&syntax_header);
 
@@ -29110,13 +29284,13 @@ impl MailPage {
                 .build();
             let btn_token = gtk::Button::builder()
                 .label(token)
-                .css_classes(vec!["flat", "caption"])
+                .css_classes(["flat", "caption"])
                 .build();
             let lbl_desc = gtk::Label::builder()
                 .label(&desc)
                 .halign(gtk::Align::Start)
                 .hexpand(true)
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .build();
             let search_entry_clone = search_entry_for_syntax.clone();
             let token_str = token.to_string();
@@ -29141,7 +29315,7 @@ impl MailPage {
                 .icon_name("preferences-system-search-symbolic")
                 .tooltip_text(&search_options_label)
                 .popover(&search_options_popover)
-                .css_classes(vec!["flat", "circular", "search-options-button"])
+                .css_classes(["flat", "circular", "search-options-button"])
                 .valign(gtk::Align::Center)
                 .build();
             set_accessible_label(&search_options_button, &search_options_label);
@@ -29198,7 +29372,7 @@ impl MailPage {
         let mail_search_bar = gtk::SearchBar::builder()
             .search_mode_enabled(false)
             .key_capture_widget(self)
-            .css_classes(vec!["mail-search-bar"])
+            .css_classes(["mail-search-bar"])
             .build();
         mail_search_bar.connect_entry(&search_entry);
         self.imp()
@@ -29228,36 +29402,36 @@ impl MailPage {
         let mode_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .homogeneous(true)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .build();
 
         let btn_plain = gtk::ToggleButton::builder()
             .label("Abc")
             .active(true)
-            .tooltip_text(&crate::i18n::gettext("Normal text: matches characters literally"))
-            .css_classes(vec!["search-mode-button"])
+            .tooltip_text(gettext("Normal text: matches characters literally"))
+            .css_classes(["search-mode-button"])
             .valign(gtk::Align::Fill)
             .build();
-        set_accessible_label(&btn_plain, &crate::i18n::gettext("Normal text search mode"));
+        set_accessible_label(&btn_plain, &gettext("Normal text search mode"));
 
         let btn_wildcard = gtk::ToggleButton::builder()
             .label("*?")
             .group(&btn_plain)
-            .tooltip_text(&crate::i18n::gettext("Wildcards: '*' for any text, '?' for a single character"))
-            .css_classes(vec!["search-mode-button"])
+            .tooltip_text(gettext("Wildcards: '*' for any text, '?' for a single character"))
+            .css_classes(["search-mode-button"])
             .valign(gtk::Align::Fill)
             .build();
-        set_accessible_label(&btn_wildcard, &crate::i18n::gettext("Wildcard search mode"));
+        set_accessible_label(&btn_wildcard, &gettext("Wildcard search mode"));
 
         let btn_regex = gtk::ToggleButton::builder()
             .label(".*")
             .group(&btn_plain)
-            .tooltip_text(&crate::i18n::gettext("Regular expression (Regex)"))
-            .css_classes(vec!["search-mode-button"])
+            .tooltip_text(gettext("Regular expression (Regex)"))
+            .css_classes(["search-mode-button"])
             .valign(gtk::Align::Fill)
             .build();
-        set_accessible_label(&btn_regex, &crate::i18n::gettext("Regex search mode"));
+        set_accessible_label(&btn_regex, &gettext("Regex search mode"));
 
         mode_box.append(&btn_plain);
         mode_box.append(&btn_wildcard);
@@ -29386,8 +29560,8 @@ impl MailPage {
             .orientation(gtk::Orientation::Vertical)
             .build();
         let message_state = gtk::Label::builder()
-            .label(&gettext("Loading messages…"))
-            .css_classes(vec!["caption", "dim-label"])
+            .label(gettext("Loading messages…"))
+            .css_classes(["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .margin_start(4)
             .margin_end(4)
@@ -29398,7 +29572,7 @@ impl MailPage {
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
         let graph_local_search_warning = gtk::Label::builder()
-            .css_classes(vec!["warning", "caption"])
+            .css_classes(["warning", "caption"])
             .halign(gtk::Align::Start)
             .margin_start(8)
             .margin_end(8)
@@ -29414,7 +29588,7 @@ impl MailPage {
         let refresh_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
             .tooltip_text(&str_refresh)
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(["flat", "circular"])
             .build();
         set_accessible_label(&refresh_button, &str_refresh_acc);
         let page_for_refresh = self.downgrade();
@@ -29429,7 +29603,7 @@ impl MailPage {
         let load_more_button = gtk::Button::builder()
             .label(&str_load_more)
             .tooltip_text(&str_load_more_tip)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .visible(false)
             .build();
         set_accessible_label(&load_more_button, &str_load_more_tip);
@@ -29462,16 +29636,16 @@ impl MailPage {
             .visible(false)
             .build();
         let batch_action_label = gtk::Label::builder()
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .hexpand(true)
             .halign(gtk::Align::Start)
             .build();
         batch_action_bar.append(&batch_action_label);
 
         let batch_read_button = gtk::Button::builder()
-            .label(&gettext("Read"))
-            .tooltip_text(&gettext("Mark selected messages as read"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Read"))
+            .tooltip_text(gettext("Mark selected messages as read"))
+            .css_classes(["flat"])
             .build();
         let page_for_batch_read = self.downgrade();
         batch_read_button.connect_clicked(move |_| {
@@ -29485,9 +29659,9 @@ impl MailPage {
         batch_action_bar.append(&batch_read_button);
 
         let batch_unread_button = gtk::Button::builder()
-            .label(&gettext("Unread"))
-            .tooltip_text(&gettext("Mark selected messages as unread"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Unread"))
+            .tooltip_text(gettext("Mark selected messages as unread"))
+            .css_classes(["flat"])
             .build();
         let page_for_batch_unread = self.downgrade();
         batch_unread_button.connect_clicked(move |_| {
@@ -29501,9 +29675,9 @@ impl MailPage {
         batch_action_bar.append(&batch_unread_button);
 
         let batch_flag_button = gtk::Button::builder()
-            .label(&gettext("Flag"))
-            .tooltip_text(&gettext("Toggle flag on selected messages"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Flag"))
+            .tooltip_text(gettext("Toggle flag on selected messages"))
+            .css_classes(["flat"])
             .build();
         let page_for_batch_flag = self.downgrade();
         batch_flag_button.connect_clicked(move |_| {
@@ -29517,9 +29691,9 @@ impl MailPage {
         batch_action_bar.append(&batch_flag_button);
 
         let batch_important_button = gtk::Button::builder()
-            .label(&gettext("Important"))
-            .tooltip_text(&gettext("Toggle importance on selected messages"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Important"))
+            .tooltip_text(gettext("Toggle importance on selected messages"))
+            .css_classes(["flat"])
             .build();
         let page_for_batch_important = self.downgrade();
         batch_important_button.connect_clicked(move |_| {
@@ -29533,9 +29707,9 @@ impl MailPage {
         batch_action_bar.append(&batch_important_button);
 
         let batch_label_button = gtk::Button::builder()
-            .label(&gettext("Label"))
-            .tooltip_text(&gettext("Set or remove label on selected messages"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Label"))
+            .tooltip_text(gettext("Set or remove label on selected messages"))
+            .css_classes(["flat"])
             .build();
         let page_for_batch_label = self.downgrade();
         batch_label_button.connect_clicked(move |_| {
@@ -29546,9 +29720,9 @@ impl MailPage {
         batch_action_bar.append(&batch_label_button);
 
         let batch_archive_button = gtk::Button::builder()
-            .label(&gettext("Archive"))
-            .tooltip_text(&gettext("Archive selected messages"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Archive"))
+            .tooltip_text(gettext("Archive selected messages"))
+            .css_classes(["flat"])
             .build();
         let page_for_batch_archive = self.downgrade();
         batch_archive_button.connect_clicked(move |_| {
@@ -29562,9 +29736,9 @@ impl MailPage {
         batch_action_bar.append(&batch_archive_button);
 
         let batch_junk_button = gtk::Button::builder()
-            .label(&gettext("Junk"))
-            .tooltip_text(&gettext("Mark selected messages as junk"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Junk"))
+            .tooltip_text(gettext("Mark selected messages as junk"))
+            .css_classes(["flat"])
             .build();
         let page_for_batch_junk = self.downgrade();
         batch_junk_button.connect_clicked(move |_| {
@@ -29578,9 +29752,9 @@ impl MailPage {
         batch_action_bar.append(&batch_junk_button);
 
         let batch_not_junk_button = gtk::Button::builder()
-            .label(&gettext("Not Junk"))
-            .tooltip_text(&gettext("Remove junk status from selected messages"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Not Junk"))
+            .tooltip_text(gettext("Remove junk status from selected messages"))
+            .css_classes(["flat"])
             .build();
         let page_for_batch_not_junk = self.downgrade();
         batch_not_junk_button.connect_clicked(move |_| {
@@ -29615,8 +29789,8 @@ impl MailPage {
             if destinations.is_empty() {
                 move_popover_content.append(
                     &gtk::Label::builder()
-                        .label(&gettext("No target folders available"))
-                        .css_classes(vec!["caption", "dim-label"])
+                        .label(gettext("No target folders available"))
+                        .css_classes(["caption", "dim-label"])
                         .build(),
                 );
                 return;
@@ -29625,7 +29799,7 @@ impl MailPage {
                 let button = gtk::Button::builder()
                     .label(&destination.label)
                     .halign(gtk::Align::Fill)
-                    .css_classes(vec!["flat"])
+                    .css_classes(["flat"])
                     .build();
                 let page_for_destination = page.downgrade();
                 let popover_for_destination = move_popover_weak.clone();
@@ -29641,10 +29815,10 @@ impl MailPage {
             }
         });
         let move_button = gtk::MenuButton::builder()
-            .label(&gettext("Move"))
-            .tooltip_text(&gettext("Move selected messages to an account or local folder"))
+            .label(gettext("Move"))
+            .tooltip_text(gettext("Move selected messages to an account or local folder"))
             .popover(&move_popover)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         batch_action_bar.append(&move_button);
 
@@ -29670,8 +29844,8 @@ impl MailPage {
             if destinations.is_empty() {
                 copy_popover_content.append(
                     &gtk::Label::builder()
-                        .label(&gettext("No target folders available"))
-                        .css_classes(vec!["caption", "dim-label"])
+                        .label(gettext("No target folders available"))
+                        .css_classes(["caption", "dim-label"])
                         .build(),
                 );
                 return;
@@ -29680,7 +29854,7 @@ impl MailPage {
                 let button = gtk::Button::builder()
                     .label(&destination.label)
                     .halign(gtk::Align::Fill)
-                    .css_classes(vec!["flat"])
+                    .css_classes(["flat"])
                     .build();
                 let page_for_destination = page.downgrade();
                 let popover_for_destination = copy_popover_weak.clone();
@@ -29696,17 +29870,17 @@ impl MailPage {
             }
         });
         let copy_button = gtk::MenuButton::builder()
-            .label(&gettext("Copy"))
-            .tooltip_text(&gettext("Copy selected messages to another folder"))
+            .label(gettext("Copy"))
+            .tooltip_text(gettext("Copy selected messages to another folder"))
             .popover(&copy_popover)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         batch_action_bar.append(&copy_button);
 
         let batch_delete_button = gtk::Button::builder()
-            .label(&gettext("Delete"))
-            .tooltip_text(&gettext("Delete selected messages"))
-            .css_classes(vec!["flat", "destructive-action"])
+            .label(gettext("Delete"))
+            .tooltip_text(gettext("Delete selected messages"))
+            .css_classes(["flat", "destructive-action"])
             .build();
         let page_for_batch_delete = self.downgrade();
         batch_delete_button.connect_clicked(move |_| {
@@ -29767,10 +29941,10 @@ impl MailPage {
             .focusable(true)
             .can_focus(true)
             .focus_on_click(true)
-            .css_classes(vec!["mail-table-canvas"])
+            .css_classes(["mail-table-canvas"])
             .build();
         set_accessible_role(&mail_table_canvas, gtk::AccessibleRole::List);
-        set_accessible_label(&mail_table_canvas, &crate::i18n::gettext("Message List"));
+        set_accessible_label(&mail_table_canvas, &gettext("Message List"));
 
         self.imp()
             .mail_table_canvas
@@ -29995,9 +30169,7 @@ impl MailPage {
                         page.imp().last_selected_mail_index.set(Some(model_index as u32));
                         thread_sel_for_click.select_range(start, count, true);
                     } else {
-                        page.imp().last_selected_mail_index.set(Some(model_index as u32));
-                        page.imp().mail_selection_anchor.set(Some(model_index as u32));
-                        thread_sel_for_click.select_item(model_index as u32, true);
+                        page.select_single_thread_row(&thread_sel_for_click, model_index as u32);
                     }
 
                     page.imp().is_mouse_selecting.set(false);
@@ -30264,7 +30436,7 @@ impl MailPage {
                         let _ = page.delete_selected();
                         crate::views::accessibility::announce_to_screen_reader(
                             &canvas_for_swipe,
-                            &crate::i18n::gettext("Message moved to trash"),
+                            &gettext("Message moved to trash"),
                             gtk::AccessibleAnnouncementPriority::Medium,
                         );
                         gesture.set_state(gtk::EventSequenceState::Claimed);
@@ -30275,14 +30447,14 @@ impl MailPage {
                                 let _ = page.mark_message_read(&item);
                                 crate::views::accessibility::announce_to_screen_reader(
                                     &canvas_for_swipe,
-                                    &crate::i18n::gettext("Marked as read"),
+                                    &gettext("Marked as read"),
                                     gtk::AccessibleAnnouncementPriority::Medium,
                                 );
                             } else {
                                 let _ = page.mark_message_unread(&item);
                                 crate::views::accessibility::announce_to_screen_reader(
                                     &canvas_for_swipe,
-                                    &crate::i18n::gettext("Marked as unread"),
+                                    &gettext("Marked as unread"),
                                     gtk::AccessibleAnnouncementPriority::Medium,
                                 );
                             }
@@ -30449,7 +30621,7 @@ impl MailPage {
 
             match crate::services::MailStoreService::new().import_files_to_folder(&dropped_files, &target_folder_id) {
                 Ok(count) if count > 0 => {
-                    page.show_toast(&format!("{} {}", count, gettext("Nachricht(en) importiert")));
+                    page.show_toast(&format!("{} {}", count, gettext("message(s) imported")));
                     page.refresh_mail();
                     true
                 }
@@ -30595,8 +30767,7 @@ impl MailPage {
                     let count = (anchor.max(target) - start) + 1;
                     thread_sel_for_key.select_range(start, count, true);
                 } else {
-                    page.imp().mail_selection_anchor.set(Some(target));
-                    thread_sel_for_key.select_item(target, true);
+                    page.select_single_thread_row(&thread_sel_for_key, target);
                 }
                 page.scroll_mail_table_to_selected();
                 canvas_for_key.queue_draw();
@@ -30627,9 +30798,7 @@ impl MailPage {
                                 && cur + 1 < thread_sel_for_key.n_items()
                             {
                                 let target = cur + 1;
-                                page.imp().last_selected_mail_index.set(Some(target));
-                                page.imp().mail_selection_anchor.set(Some(target));
-                                thread_sel_for_key.select_item(target, true);
+                                page.select_single_thread_row(&thread_sel_for_key, target);
                                 page.scroll_mail_table_to_selected();
                                 canvas_for_key.queue_draw();
                                 return glib::Propagation::Stop;
@@ -30661,11 +30830,7 @@ impl MailPage {
                                         .and_downcast::<gtk::TreeListRow>()
                                     {
                                         if prev_row.depth() < cur_depth {
-                                            page.imp()
-                                                .last_selected_mail_index
-                                                .set(Some(prev_idx));
-                                            page.imp().mail_selection_anchor.set(Some(prev_idx));
-                                            thread_sel_for_key.select_item(prev_idx, true);
+                                            page.select_single_thread_row(&thread_sel_for_key, prev_idx);
                                             page.scroll_mail_table_to_selected();
                                             canvas_for_key.queue_draw();
                                             return glib::Propagation::Stop;
@@ -30756,9 +30921,9 @@ impl MailPage {
                 }
                 if let Some(msg) = page.selected_message() {
                     let unread_str = if msg.is_unread() {
-                        crate::i18n::gettext("Unread")
+                        gettext("Unread")
                     } else {
-                        crate::i18n::gettext("Read")
+                        gettext("Read")
                     };
                     let sender = msg.sender_name();
                     let subj = msg.subject();
@@ -31142,13 +31307,13 @@ impl MailPage {
     ) {
         let detail_view = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["mail-detail"])
+            .css_classes(["mail-detail"])
             .spacing(0)
             .build();
 
         let header_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["mail-detail-header"])
+            .css_classes(["mail-detail-header"])
             .spacing(0)
             .margin_start(8)
             .margin_end(8)
@@ -31165,7 +31330,7 @@ impl MailPage {
 
         let crypto_label = gtk::Label::builder()
             .label("Sicherheit:")
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .halign(gtk::Align::End)
             .visible(false)
             .build();
@@ -31173,7 +31338,7 @@ impl MailPage {
         let crypto_chip = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
-            .css_classes(vec!["badge"])
+            .css_classes(["badge"])
             .halign(gtk::Align::Start)
             .visible(false)
             .build();
@@ -31184,11 +31349,11 @@ impl MailPage {
             "dialog-information-symbolic",
         );
         let lbl_crypto = gtk::Label::builder()
-            .label(&gettext("No OpenPGP/S/MIME protection detected"))
+            .label(gettext("No OpenPGP/S/MIME protection detected"))
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .max_width_chars(1)
-            .css_classes(vec!["caption"])
+            .css_classes(["caption"])
             .build();
         crypto_chip.append(&icon_lock);
         crypto_chip.append(&lbl_crypto);
@@ -31208,7 +31373,7 @@ impl MailPage {
             .lines(3)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
-            .css_classes(vec!["mail-detail-subject", "title-4"])
+            .css_classes(["mail-detail-subject", "title-4"])
             .visible(false)
             .build();
         self.imp()
@@ -31234,7 +31399,7 @@ impl MailPage {
             .margin_top(0)
             .margin_bottom(0)
             .hexpand(true)
-            .css_classes(vec!["mail-modern-header-card"])
+            .css_classes(["mail-modern-header-card"])
             .visible(false)
             .build();
 
@@ -31269,7 +31434,7 @@ impl MailPage {
         let modern_sender_name = gtk::Label::builder()
             .label("")
             .halign(gtk::Align::Start)
-            .css_classes(vec!["heading", "mail-modern-sender-name"])
+            .css_classes(["heading", "mail-modern-sender-name"])
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .single_line_mode(true)
@@ -31278,7 +31443,7 @@ impl MailPage {
         let modern_sender_address = gtk::Label::builder()
             .label("")
             .halign(gtk::Align::Start)
-            .css_classes(vec!["caption", "dim-label", "mail-modern-sender-address"])
+            .css_classes(["caption", "dim-label", "mail-modern-sender-address"])
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .single_line_mode(true)
@@ -31296,7 +31461,7 @@ impl MailPage {
 
         let compact_bullet = gtk::Label::builder()
             .label("•")
-            .css_classes(vec!["dim-label", "mail-compact-bullet"])
+            .css_classes(["dim-label", "mail-compact-bullet"])
             .valign(gtk::Align::Center)
             .build();
 
@@ -31307,7 +31472,7 @@ impl MailPage {
             .hexpand(true)
             .width_chars(1)
             .single_line_mode(true)
-            .css_classes(vec!["mail-compact-subject"])
+            .css_classes(["mail-compact-subject"])
             .ellipsize(pango::EllipsizeMode::End)
             .build();
         self.imp()
@@ -31343,15 +31508,15 @@ impl MailPage {
             .label("")
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["mail-details-recipient-label"])
+            .css_classes(["mail-details-recipient-label"])
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .single_line_mode(true)
             .build();
 
         let modern_details_button = gtk::Button::builder()
-            .tooltip_text(&gettext("Show detailed headers"))
-            .css_classes(vec!["flat", "mail-details-toggle"])
+            .tooltip_text(gettext("Show detailed headers"))
+            .css_classes(["flat", "mail-details-toggle"])
             .valign(gtk::Align::Center)
             .halign(gtk::Align::Start)
             .child(&modern_recipient_summary)
@@ -31371,7 +31536,7 @@ impl MailPage {
             .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
             .single_line_mode(true)
-            .css_classes(vec!["mail-preview-date-label"])
+            .css_classes(["mail-preview-date-label"])
             .build();
 
         let modern_date_revealer = gtk::Revealer::builder()
@@ -31408,7 +31573,7 @@ impl MailPage {
         let modern_star_button = gtk::Button::builder()
             .icon_name("non-starred-symbolic")
             .tooltip_text(&str_star_tip)
-            .css_classes(vec!["flat", "mail-header-action-btn"])
+            .css_classes(["flat", "mail-header-action-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&modern_star_button, &str_star_tip);
@@ -31440,7 +31605,7 @@ impl MailPage {
             let button = gtk::Button::builder()
                 .tooltip_text(tooltip)
                 .action_name(action_name)
-                .css_classes(vec!["flat", "mail-header-action-btn"])
+                .css_classes(["flat", "mail-header-action-btn"])
                 .valign(gtk::Align::Center)
                 .build();
             let icon = gtk::Image::new();
@@ -31516,7 +31681,7 @@ impl MailPage {
             .icon_name("pan-down-symbolic")
             .menu_model(&m_more_menu)
             .tooltip_text(&str_more_tip)
-            .css_classes(vec!["flat", "mail-header-action-btn"])
+            .css_classes(["flat", "mail-header-action-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&m_more_btn, &str_more_tip);
@@ -31527,7 +31692,7 @@ impl MailPage {
             .spacing(0)
             .valign(gtk::Align::Center)
             .halign(gtk::Align::Start)
-            .css_classes(vec!["linked", "mail-header-actions-group", "action-pill", "mail-action-pill"])
+            .css_classes(["linked", "mail-header-actions-group", "action-pill", "mail-action-pill"])
             .build();
         modern_reply_group.append(&m_reply);
         modern_reply_group.append(&m_reply_all);
@@ -31541,7 +31706,7 @@ impl MailPage {
         let modern_memo_button = gtk::Button::builder()
             .child(&modern_memo_icon)
             .tooltip_text(&str_memo_tip)
-            .css_classes(vec![
+            .css_classes([
                 "flat",
                 "mail-header-action-btn",
                 "mail-header-memo-btn",
@@ -31565,7 +31730,7 @@ impl MailPage {
             .spacing(0)
             .valign(gtk::Align::Center)
             .halign(gtk::Align::Start)
-            .css_classes(vec!["linked", "mail-header-actions-group", "action-pill", "mail-action-pill"])
+            .css_classes(["linked", "mail-header-actions-group", "action-pill", "mail-action-pill"])
             .build();
         modern_triage_group.append(&modern_memo_button);
         modern_triage_group.append(&m_unread);
@@ -31578,7 +31743,7 @@ impl MailPage {
             .valign(gtk::Align::Center)
             .halign(gtk::Align::Start)
             .hexpand(true)
-            .css_classes(vec!["mail-header-actions-group"])
+            .css_classes(["mail-header-actions-group"])
             .build();
         modern_actions_group.append(&modern_reply_group);
         modern_actions_group.append(&modern_triage_group);
@@ -31625,7 +31790,7 @@ impl MailPage {
         let modern_load_remote_images_btn = gtk::Button::builder()
             .child(&modern_load_remote_box)
             .tooltip_text(&str_load_remote_tip)
-            .css_classes(vec![
+            .css_classes([
                 "flat",
                 "action-pill",
                 "mail-action-pill",
@@ -31655,7 +31820,7 @@ impl MailPage {
             .margin_top(0)
             .margin_bottom(0)
             .visible(false)
-            .css_classes(vec!["sidebar-drawer-header", "mail-preview-actions-bar"])
+            .css_classes(["sidebar-drawer-header", "mail-preview-actions-bar"])
             .build();
 
         modern_actions_bar.append(&modern_actions_group);
@@ -31686,7 +31851,7 @@ impl MailPage {
             .margin_start(4)
             .margin_top(4)
             .margin_bottom(4)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
 
         let modern_details_revealer = gtk::Revealer::builder()
@@ -31754,7 +31919,7 @@ impl MailPage {
             .row_spacing(0)
             .column_spacing(6)
             .hexpand(true)
-            .css_classes(vec!["mail-normal-headers"])
+            .css_classes(["mail-normal-headers"])
             .build();
         self.imp()
             .normal_headers_grid
@@ -31769,7 +31934,7 @@ impl MailPage {
             .margin_bottom(6)
             .hexpand(true)
             .halign(gtk::Align::Fill)
-            .css_classes(vec!["mail-all-headers"])
+            .css_classes(["mail-all-headers"])
             .build();
         let all_headers_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -31781,7 +31946,7 @@ impl MailPage {
             .propagate_natural_height(true)
             .margin_top(6)
             .margin_bottom(8)
-            .css_classes(vec!["mail-all-headers-scroll"])
+            .css_classes(["mail-all-headers-scroll"])
             .child(&all_headers_grid)
             .build();
         let all_headers_revealer = gtk::Revealer::builder()
@@ -31800,7 +31965,7 @@ impl MailPage {
             let button = gtk::Button::builder()
                 .tooltip_text(tooltip)
                 .action_name(action_name)
-                .css_classes(vec!["flat", "circular", "mail-header-action-btn"])
+                .css_classes(["flat", "circular", "mail-header-action-btn"])
                 .valign(gtk::Align::Center)
                 .build();
             let fallback = match icon_name {
@@ -31829,24 +31994,24 @@ impl MailPage {
             (button, label)
         };
 
-        let str_reply = crate::i18n::gettext("Reply");
-        let str_reply_tip = crate::i18n::gettext("Reply to sender");
+        let str_reply = gettext("Reply");
+        let str_reply_tip = gettext("Reply to sender");
         let (reply_btn, reply_lbl) = make_reply_btn(
             "mail-reply-sender-symbolic",
             &str_reply,
             &str_reply_tip,
             "win.reply",
         );
-        let str_reply_all = crate::i18n::gettext("Reply All");
-        let str_reply_all_tip = crate::i18n::gettext("Reply to all recipients");
+        let str_reply_all = gettext("Reply All");
+        let str_reply_all_tip = gettext("Reply to all recipients");
         let (reply_all_btn, reply_all_lbl) = make_reply_btn(
             "mail-reply-all-symbolic",
             &str_reply_all,
             &str_reply_all_tip,
             "win.reply-all",
         );
-        let str_forward = crate::i18n::gettext("Forward");
-        let str_forward_tip = crate::i18n::gettext("Forward message");
+        let str_forward = gettext("Forward");
+        let str_forward_tip = gettext("Forward message");
         let (forward_btn, forward_lbl) = make_reply_btn(
             "mail-forward-symbolic",
             &str_forward,
@@ -31895,7 +32060,7 @@ impl MailPage {
             .icon_name("view-more-symbolic")
             .menu_model(&preview_more_menu)
             .tooltip_text(&str_prev_more)
-            .css_classes(vec!["flat", "circular", "mail-header-action-btn"])
+            .css_classes(["flat", "circular", "mail-header-action-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&preview_more_btn, &str_prev_more);
@@ -31912,7 +32077,7 @@ impl MailPage {
         let str_allow_sender = gettext("Always load images from this sender");
         let allow_sender_btn = gtk::Button::builder()
             .label(&str_allow_sender)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&allow_sender_btn, &str_allow_sender);
         remote_images_popover_box.append(&allow_sender_btn);
@@ -31927,7 +32092,7 @@ impl MailPage {
             .popover(&remote_images_popover)
             .valign(gtk::Align::Center)
             .halign(gtk::Align::Start)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .visible(false)
             .build();
         set_accessible_label(&load_remote_images_btn, &gettext("Load external images"));
@@ -31941,8 +32106,8 @@ impl MailPage {
             .build();
         let preview_memo_btn = gtk::Button::builder()
             .child(&preview_memo_icon)
-            .tooltip_text(&gettext("Add or edit memo for this email"))
-            .css_classes(vec!["flat", "mail-header-action-btn", "mail-header-memo-btn"])
+            .tooltip_text(gettext("Add or edit memo for this email"))
+            .css_classes(["flat", "mail-header-action-btn", "mail-header-memo-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&preview_memo_btn, &gettext("Add or edit memo for this email"));
@@ -31958,7 +32123,7 @@ impl MailPage {
 
         let preview_reply_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked", "mail-preview-reply-actions"])
+            .css_classes(["linked", "mail-preview-reply-actions"])
             .valign(gtk::Align::Center)
             .halign(gtk::Align::End)
             .hexpand(true)
@@ -31984,7 +32149,7 @@ impl MailPage {
             .margin_top(0)
             .margin_bottom(0)
             .visible(false)
-            .css_classes(vec!["sidebar-drawer-header", "mail-preview-actions-bar"])
+            .css_classes(["sidebar-drawer-header", "mail-preview-actions-bar"])
             .build();
         preview_actions_row.append(&load_remote_images_btn);
         preview_actions_row.append(&preview_reply_group);
@@ -31992,9 +32157,9 @@ impl MailPage {
             .preview_actions_row
             .replace(Some(preview_actions_row.clone()));
 
-        // Classic compact revealer (shown when collapsed on scroll: "Von: Sender · Betreff")
+        // Classic compact revealer (shown when collapsed on scroll: "From: Sender · Subject")
         let classic_compact_sender = gtk::Label::builder()
-            .css_classes(vec!["mail-classic-compact-sender", "title-5"])
+            .css_classes(["mail-classic-compact-sender", "title-5"])
             .ellipsize(pango::EllipsizeMode::End)
             .single_line_mode(true)
             .valign(gtk::Align::Center)
@@ -32004,12 +32169,12 @@ impl MailPage {
 
         let classic_compact_bullet = gtk::Label::builder()
             .label(" · ")
-            .css_classes(vec!["dim-label", "mail-classic-compact-bullet"])
+            .css_classes(["dim-label", "mail-classic-compact-bullet"])
             .valign(gtk::Align::Center)
             .build();
 
         let classic_compact_subject = gtk::Label::builder()
-            .css_classes(vec!["mail-classic-compact-subject"])
+            .css_classes(["mail-classic-compact-subject"])
             .ellipsize(pango::EllipsizeMode::End)
             .single_line_mode(true)
             .hexpand(true)
@@ -32023,7 +32188,7 @@ impl MailPage {
             .spacing(4)
             .hexpand(true)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["mail-classic-compact-box"])
+            .css_classes(["mail-classic-compact-box"])
             .build();
         classic_compact_box.append(&classic_compact_sender);
         classic_compact_box.append(&classic_compact_bullet);
@@ -32074,7 +32239,7 @@ impl MailPage {
             .margin_top(2)
             .margin_bottom(2)
             .visible(false)
-            .css_classes(vec!["mail-classic-header-box"])
+            .css_classes(["mail-classic-header-box"])
             .build();
         classic_header_box.append(&classic_left_box);
         classic_header_box.append(&preview_actions_row);
@@ -32148,7 +32313,7 @@ impl MailPage {
             .spacing(6)
             .valign(gtk::Align::Fill)
             .vexpand(true)
-            .css_classes(vec!["mail-conversation-inner"])
+            .css_classes(["mail-conversation-inner"])
             .build();
         self.imp().thread_bar_box.replace(Some(thread_bar_box.clone()));
         let thread_context = gtk::ScrolledWindow::builder()
@@ -32165,7 +32330,7 @@ impl MailPage {
             .margin_end(8)
             .margin_top(0)
             .margin_bottom(6)
-            .css_classes(vec!["mail-conversation-bar"])
+            .css_classes(["mail-conversation-bar"])
             .visible(false)
             .build();
 
@@ -32176,7 +32341,7 @@ impl MailPage {
             .margin_end(8)
             .margin_top(0)
             .margin_bottom(0)
-            .css_classes(vec!["mail-thread-accordion-list"])
+            .css_classes(["mail-thread-accordion-list"])
             .build();
         self.imp().thread_accordion_box.replace(Some(thread_accordion_box.clone()));
         let thread_accordion_scroll = gtk::ScrolledWindow::builder()
@@ -32390,19 +32555,19 @@ impl MailPage {
         });
 
         let print_status_label = gtk::Label::builder()
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
         let print_cancel_button = gtk::Button::builder()
-            .label(&crate::i18n::gettext("Cancel"))
-            .tooltip_text(&crate::i18n::gettext("Cancel print preparation"))
+            .label(gettext("Cancel"))
+            .tooltip_text(gettext("Cancel print preparation"))
             .action_name("win.mail-print-cancel")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .visible(false)
             .build();
-        set_accessible_label(&print_cancel_button, &crate::i18n::gettext("Cancel print job"));
+        set_accessible_label(&print_cancel_button, &gettext("Cancel print job"));
         let print_status_area = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
@@ -32425,32 +32590,32 @@ impl MailPage {
             .replace(Some(print_cancel_button.clone()));
 
         let message_find_entry = gtk::SearchEntry::builder()
-            .placeholder_text(&crate::i18n::gettext("Find in message"))
+            .placeholder_text(gettext("Find in message"))
             .hexpand(true)
             .build();
         let message_find_status = gtk::Label::builder()
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .width_chars(14)
             .xalign(0.0)
             .build();
         let find_previous = gtk::Button::builder()
             .icon_name("go-up-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Previous match"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Previous match"))
+            .css_classes(["flat"])
             .build();
         let find_next = gtk::Button::builder()
             .icon_name("go-down-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Next match"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Next match"))
+            .css_classes(["flat"])
             .build();
         let find_close = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Close find"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Close find"))
+            .css_classes(["flat"])
             .build();
-        set_accessible_label(&find_previous, &crate::i18n::gettext("Previous match"));
-        set_accessible_label(&find_next, &crate::i18n::gettext("Next match"));
-        set_accessible_label(&find_close, &crate::i18n::gettext("Close find in message"));
+        set_accessible_label(&find_previous, &gettext("Previous match"));
+        set_accessible_label(&find_next, &gettext("Next match"));
+        set_accessible_label(&find_close, &gettext("Close find in message"));
         find_previous.set_sensitive(false);
         find_next.set_sensitive(false);
         let message_find_bar = gtk::Box::builder()
@@ -32585,7 +32750,7 @@ impl MailPage {
             .margin_start(8)
             .margin_end(8)
             .margin_bottom(8)
-            .css_classes(vec!["attachment-section-container", "is-floating-card"])
+            .css_classes(["attachment-section-container", "is-floating-card"])
             .visible(false)
             .build();
 
@@ -32595,14 +32760,14 @@ impl MailPage {
             .valign(gtk::Align::Center)
             .margin_top(2)
             .margin_bottom(1)
-            .css_classes(vec!["attachment-handle-container"])
+            .css_classes(["attachment-handle-container"])
             .focusable(false)
             .visible(false)
             .build();
         handle_box.set_cursor_from_name(Some("pointer"));
 
         let handle_pill = gtk::Box::builder()
-            .css_classes(vec!["attachment-bar-handle"])
+            .css_classes(["attachment-bar-handle"])
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .build();
@@ -32616,7 +32781,7 @@ impl MailPage {
             .margin_end(8)
             .margin_top(5)
             .margin_bottom(5)
-            .css_classes(vec!["attachment-header-bar"])
+            .css_classes(["attachment-header-bar"])
             .build();
 
         let title_box = gtk::Box::builder()
@@ -32624,8 +32789,8 @@ impl MailPage {
             .spacing(0)
             .valign(gtk::Align::Center)
             .hexpand(false)
-            .css_classes(vec!["attachment-title-box"])
-            .tooltip_text(&gettext("Attachments"))
+            .css_classes(["attachment-title-box"])
+            .tooltip_text(gettext("Attachments"))
             .focusable(true)
             .build();
         title_box.set_cursor_from_name(Some("pointer"));
@@ -32643,7 +32808,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["attachment-summary-clickable"])
+            .css_classes(["attachment-summary-clickable"])
             .focusable(true)
             .visible(false)
             .build();
@@ -32654,7 +32819,7 @@ impl MailPage {
             .use_markup(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
-            .css_classes(vec!["attachment-summary-label"])
+            .css_classes(["attachment-summary-label"])
             .build();
         summary_box.append(&summary_label);
         attachment_header.append(&summary_box);
@@ -32664,7 +32829,7 @@ impl MailPage {
             .spacing(6)
             .valign(gtk::Align::Center)
             .hexpand(false)
-            .css_classes(vec!["attachment-bar-chip-container"])
+            .css_classes(["attachment-bar-chip-container"])
             .visible(true)
             .build();
         attachment_header.append(&chip_box);
@@ -32676,13 +32841,13 @@ impl MailPage {
         let save_all_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["attachment-save-all-box"])
+            .css_classes(["attachment-save-all-box"])
             .build();
         attachment_header.append(&save_all_box);
 
         let view_toggle_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked", "attachment-view-toggle"])
+            .css_classes(["linked", "attachment-view-toggle"])
             .valign(gtk::Align::Center)
             .margin_start(4)
             .visible(false)
@@ -32690,16 +32855,16 @@ impl MailPage {
 
         let btn_icons = gtk::Button::builder()
             .icon_name("view-grid-symbolic")
-            .tooltip_text(&gettext("Icon view"))
-            .css_classes(vec!["flat", "active", "attachment-view-icons-btn"])
+            .tooltip_text(gettext("Icon view"))
+            .css_classes(["flat", "active", "attachment-view-icons-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_icons, &gettext("Icon view"));
 
         let btn_list = gtk::Button::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text(&gettext("List view"))
-            .css_classes(vec!["flat", "attachment-view-list-btn"])
+            .tooltip_text(gettext("List view"))
+            .css_classes(["flat", "attachment-view-list-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_list, &gettext("List view"));
@@ -32714,8 +32879,8 @@ impl MailPage {
         chevron_icon.add_css_class("attachment-chevron");
         let btn_collapse = gtk::Button::builder()
             .child(&chevron_icon)
-            .tooltip_text(&gettext("Expand attachments"))
-            .css_classes(vec!["flat", "attachment-collapse-btn"])
+            .tooltip_text(gettext("Expand attachments"))
+            .css_classes(["flat", "attachment-collapse-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_collapse, &gettext("Expand attachments"));
@@ -32734,7 +32899,7 @@ impl MailPage {
             .transition_duration(150)
             .hhomogeneous(false)
             .vhomogeneous(false)
-            .css_classes(vec!["attachment-drawer-stack"])
+            .css_classes(["attachment-drawer-stack"])
             .build();
 
         let attachment_bar = gtk::Box::builder()
@@ -32776,7 +32941,7 @@ impl MailPage {
             .spacing(8)
             .margin_start(8)
             .margin_end(8)
-            .css_classes(vec!["attachment-list-header"])
+            .css_classes(["attachment-list-header"])
             .height_request(26)
             .visible(false)
             .build();
@@ -32785,32 +32950,32 @@ impl MailPage {
         list_header_box.append(&icon_spacer);
 
         let col_name = gtk::Label::builder()
-            .label(&gettext("Name"))
+            .label(gettext("Name"))
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
             .xalign(0.0)
-            .css_classes(vec!["attachment-col-header-label"])
+            .css_classes(["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_name);
 
         let col_type = gtk::Label::builder()
-            .label(&gettext("Type"))
+            .label(gettext("Type"))
             .width_request(60)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
             .xalign(0.0)
-            .css_classes(vec!["attachment-col-header-label"])
+            .css_classes(["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_type);
 
         let col_size = gtk::Label::builder()
-            .label(&gettext("Size"))
+            .label(gettext("Size"))
             .width_request(55)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
             .xalign(1.0)
-            .css_classes(vec!["attachment-col-header-label"])
+            .css_classes(["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_size);
 
@@ -32820,7 +32985,7 @@ impl MailPage {
 
         let attachment_listbox = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["attachment-listbox"])
+            .css_classes(["attachment-listbox"])
             .build();
 
         let list_scrolled = gtk::ScrolledWindow::builder()
@@ -33110,7 +33275,7 @@ impl MailPage {
             .margin_top(0)
             .margin_bottom(6)
             .visible(false)
-            .css_classes(vec!["mail-memo-banner-list"])
+            .css_classes(["mail-memo-banner-list"])
             .build();
         self.imp()
             .mail_memo_banner_list
@@ -33125,7 +33290,7 @@ impl MailPage {
             .margin_top(0)
             .margin_bottom(6)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["mail-memo-editor-bar"])
+            .css_classes(["mail-memo-editor-bar"])
             .build();
 
         let memo_scope_toggle = gtk::Box::builder()
@@ -33133,7 +33298,7 @@ impl MailPage {
             .spacing(0)
             .valign(gtk::Align::Fill)
             .vexpand(true)
-            .css_classes(vec!["linked", "mail-memo-scope-toggle"])
+            .css_classes(["linked", "mail-memo-scope-toggle"])
             .build();
 
         let priv_btn_content = gtk::Box::builder()
@@ -33153,8 +33318,8 @@ impl MailPage {
             .active(true)
             .valign(gtk::Align::Fill)
             .vexpand(true)
-            .tooltip_text(&gettext("Private memo (stored locally on this computer)"))
-            .css_classes(vec!["mail-memo-scope-btn"])
+            .tooltip_text(gettext("Private memo (stored locally on this computer)"))
+            .css_classes(["mail-memo-scope-btn"])
             .build();
 
         let team_btn_content = gtk::Box::builder()
@@ -33174,8 +33339,8 @@ impl MailPage {
             .group(&mail_memo_private_btn)
             .valign(gtk::Align::Fill)
             .vexpand(true)
-            .tooltip_text(&gettext("Team memo (shared via Exchange / CalDAV / Evolution)"))
-            .css_classes(vec!["mail-memo-scope-btn"])
+            .tooltip_text(gettext("Team memo (shared via Exchange / CalDAV / Evolution)"))
+            .css_classes(["mail-memo-scope-btn"])
             .build();
 
         let page_for_scope_toggle = self.downgrade();
@@ -33239,8 +33404,8 @@ impl MailPage {
         let mail_memo_entry = gtk::Entry::builder()
             .hexpand(true)
             .valign(gtk::Align::Center)
-            .placeholder_text(&gettext("Add a memo for this email…"))
-            .css_classes(vec!["mail-memo-entry"])
+            .placeholder_text(gettext("Add a memo for this email…"))
+            .css_classes(["mail-memo-entry"])
             .build();
         let page_for_memo_activate = self.downgrade();
         mail_memo_entry.connect_activate(move |_| {
@@ -33267,9 +33432,9 @@ impl MailPage {
 
         let memo_save_btn = gtk::Button::builder()
             .icon_name("object-select-symbolic")
-            .tooltip_text(&gettext("Save memo (Enter)"))
+            .tooltip_text(gettext("Save memo (Enter)"))
             .valign(gtk::Align::Center)
-            .css_classes(vec!["flat", "circular", "mail-memo-action-btn"])
+            .css_classes(["flat", "circular", "mail-memo-action-btn"])
             .build();
         let page_for_memo_save = self.downgrade();
         memo_save_btn.connect_clicked(move |_| {
@@ -33281,9 +33446,9 @@ impl MailPage {
 
         let memo_cancel_btn = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text(&gettext("Cancel (Esc)"))
+            .tooltip_text(gettext("Cancel (Esc)"))
             .valign(gtk::Align::Center)
-            .css_classes(vec!["flat", "circular", "mail-memo-action-btn"])
+            .css_classes(["flat", "circular", "mail-memo-action-btn"])
             .build();
         let page_for_memo_cancel = self.downgrade();
         memo_cancel_btn.connect_clicked(move |_| {
@@ -33386,7 +33551,7 @@ impl MailPage {
         let selection_for_async_crypto = selection.clone();
         let page_for_read = self.downgrade();
         let itip_banner_clone = itip_banner.clone();
-        selection.connect_selection_changed(glib::clone!(
+        let handle_selection_changed: Rc<dyn Fn(&gtk::MultiSelection)> = Rc::new(glib::clone!(
             #[strong]
             selection_for_async_crypto,
             #[strong]
@@ -33399,17 +33564,45 @@ impl MailPage {
             lbl_crypto,
             #[weak]
             attachment_bar,
-            move |sel, _pos, _n_items| {
-                let preferred = page_for_read.upgrade().and_then(|p| p.imp().last_selected_mail_index.get());
-                let msg_option = selected_mail_message(sel, preferred);
+            move |sel: &gtk::MultiSelection| {
+                if page_for_read
+                    .upgrade()
+                    .is_some_and(|p| p.imp().thread_selection_syncing.get())
+                {
+                    return;
+                }
+                let is_threaded = page_for_read
+                    .upgrade()
+                    .is_some_and(|p| p.imp().mail_threading.get());
+                let is_thread_sel = page_for_read
+                    .upgrade()
+                    .is_some_and(|p| p.imp().thread_selection.borrow().as_ref() == Some(sel));
+                let preferred = if is_threaded && !is_thread_sel {
+                    None
+                } else {
+                    page_for_read
+                        .upgrade()
+                        .and_then(|p| p.imp().last_selected_mail_index.get())
+                };
+                let msg_option = selected_mail_message(sel, preferred).or_else(|| {
+                    if is_threaded {
+                        page_for_read.upgrade().and_then(|p| p.selected_message())
+                    } else {
+                        None
+                    }
+                });
                 if let Some(msg) = msg_option {
                     if let Some(page) = page_for_read.upgrade() {
                         let active_folder = page.active_folder_selection();
+                        let flat_idx = {
+                            let b = sel.selection();
+                            (!b.is_empty()).then(|| b.minimum())
+                        };
                         page.save_anchor_for_folder(
                             &active_folder,
                             MailSelectionAnchor {
                                 id: Some(msg.id().to_string()),
-                                index: preferred,
+                                index: flat_idx.or(preferred),
                             },
                         );
                     }
@@ -33424,9 +33617,15 @@ impl MailPage {
                                 let cur_uid = &cur_id[uid_idx + 1..];
                                 if cur_uid == loc.message_uid {
                                     let cur_prefix = &cur_id[..uid_idx];
-                                    let cur_source = cur_prefix.strip_prefix("eds:").unwrap_or(cur_prefix);
-                                    let cur_source = cur_source.split(':').next().unwrap_or(cur_source);
-                                    account_sources_match(cur_source, &loc.source_uid)
+                                    let without_eds = cur_prefix.strip_prefix("eds:").unwrap_or(cur_prefix);
+                                    if let Some(fld_idx) = without_eds.rfind(':') {
+                                        let cur_source = &without_eds[..fld_idx];
+                                        let cur_folder = &without_eds[fld_idx + 1..];
+                                        account_sources_match(cur_source, &loc.source_uid)
+                                            && folder_names_match(cur_folder, &loc.folder_name)
+                                    } else {
+                                        false
+                                    }
                                 } else {
                                     false
                                 }
@@ -33691,8 +33890,15 @@ impl MailPage {
                             let Some(page) = page_for_crypto.upgrade() else {
                                 return;
                             };
-                            let preferred = page.imp().last_selected_mail_index.get();
-                            let Some(current) = selected_mail_message(&selection_for_crypto, preferred) else {
+                            let preferred = if page.imp().mail_threading.get() {
+                                None
+                            } else {
+                                page.imp().last_selected_mail_index.get()
+                            };
+                            let Some(current) = page
+                                .selected_message()
+                                .or_else(|| selected_mail_message(&selection_for_crypto, preferred))
+                            else {
                                 return;
                             };
                             if !crypto_result_is_current(
@@ -33811,8 +34017,15 @@ impl MailPage {
                                 let Some(page) = page_for_body.upgrade() else {
                                     return;
                                 };
-                                let preferred = page.imp().last_selected_mail_index.get();
-                                let Some(current) = selected_mail_message(&selection_for_body, preferred) else {
+                                let preferred = if page.imp().mail_threading.get() {
+                                    None
+                                } else {
+                                    page.imp().last_selected_mail_index.get()
+                                };
+                                let Some(current) = page
+                                    .selected_message()
+                                    .or_else(|| selected_mail_message(&selection_for_body, preferred))
+                                else {
                                     return;
                                 };
                                 if cancellation.load(Ordering::Relaxed) || !crypto_result_is_current(
@@ -33868,7 +34081,14 @@ impl MailPage {
                             || page.imp().mail_thread_apply_source.borrow().is_some()
                             || page.imp().mail_backend_load_pending.get()
                             || page.imp().mail_incremental_loading.get();
-                        if is_refreshing || (sel.n_items() > 0 && mail_viewer.imp().current_message_id.borrow().is_some()) {
+                        let has_any_items = sel.n_items() > 0
+                            || page
+                                .imp()
+                                .thread_selection
+                                .borrow()
+                                .as_ref()
+                                .is_some_and(|ts| ts.n_items() > 0);
+                        if is_refreshing || (has_any_items && mail_viewer.imp().current_message_id.borrow().is_some()) {
                             return;
                         }
                     }
@@ -33900,6 +34120,16 @@ impl MailPage {
                 }
             }
         ));
+        let handler_for_flat = Rc::clone(&handle_selection_changed);
+        selection.connect_selection_changed(move |sel, _pos, _n_items| {
+            handler_for_flat(sel);
+        });
+        if let Some(thread_sel) = self.imp().thread_selection.borrow().as_ref().cloned() {
+            let handler_for_thread = Rc::clone(&handle_selection_changed);
+            thread_sel.connect_selection_changed(move |sel, _pos, _n_items| {
+                handler_for_thread(sel);
+            });
+        }
 
         if selection.n_items() > 0 {
             let active_folder = self.active_folder_selection();
@@ -34407,7 +34637,7 @@ impl MailPage {
                     .valign(gtk::Align::Start)
                     .halign(gtk::Align::Fill)
                     .hexpand(true)
-                    .css_classes(vec!["attachment-flowbox"])
+                    .css_classes(["attachment-flowbox"])
                     .build();
                 attachment_bar.append(&fb);
                 Some(fb)
@@ -34419,7 +34649,7 @@ impl MailPage {
                 let card = Self::create_attachment_drawer_card(attachment, parent_window.as_ref());
                 if let Some(ref fb) = cards_flowbox {
                     let fb_child = gtk::FlowBoxChild::builder()
-                        .css_classes(vec!["attachment-flow-child"])
+                        .css_classes(["attachment-flow-child"])
                         .focusable(false)
                         .child(&card)
                         .build();
@@ -34456,7 +34686,7 @@ impl MailPage {
                         .label(&attachment.filename)
                         .ellipsize(gtk::pango::EllipsizeMode::End)
                         .width_chars(1)
-                        .css_classes(vec!["attachment-list-label"])
+                        .css_classes(["attachment-list-label"])
                         .hexpand(true)
                         .xalign(0.0)
                         .valign(gtk::Align::Center)
@@ -34468,7 +34698,7 @@ impl MailPage {
                         .label(&type_desc)
                         .ellipsize(gtk::pango::EllipsizeMode::End)
                         .width_chars(1)
-                        .css_classes(vec!["dim-label", "caption", "attachment-col-type"])
+                        .css_classes(["dim-label", "caption", "attachment-col-type"])
                         .width_request(60)
                         .xalign(0.0)
                         .valign(gtk::Align::Center)
@@ -34479,7 +34709,7 @@ impl MailPage {
                         .label(&attachment.size_formatted)
                         .ellipsize(gtk::pango::EllipsizeMode::End)
                         .width_chars(1)
-                        .css_classes(vec!["dim-label", "caption", "attachment-col-size"])
+                        .css_classes(["dim-label", "caption", "attachment-col-size"])
                         .width_request(55)
                         .xalign(1.0)
                         .valign(gtk::Align::Center)
@@ -34496,8 +34726,8 @@ impl MailPage {
                     save_icon.set_pixel_size(14);
                     let btn_save = gtk::Button::builder()
                         .child(&save_icon)
-                        .tooltip_text(&gettext("Save to Downloads (Right-click for options)"))
-                        .css_classes(vec!["flat", "circular", "attachment-list-download-btn"])
+                        .tooltip_text(gettext("Save to Downloads (Right-click for options)"))
+                        .css_classes(["flat", "circular", "attachment-list-download-btn"])
                         .valign(gtk::Align::Center)
                         .focusable(false)
                         .build();
@@ -34505,18 +34735,14 @@ impl MailPage {
                     let filename_for_save = attachment.filename.clone();
                     let content_for_save = attachment.content.clone();
                     let row_for_save = row.clone();
+                    let parent_for_save = parent_window.clone();
                     btn_save.connect_clicked(move |_| {
-                        match crate::services::quick_preview_service::download_attachment_to_downloads(&filename_for_save, content_for_save.as_ref()) {
-                            Ok(path) => {
-                                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&filename_for_save);
-                                let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                                let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
-                                show_mail_toast_with_folder_action(&row_for_save, &msg, dir);
-                            }
-                            Err(e) => {
-                                tracing::error!(%e, "Failed to download attachment");
-                            }
-                        }
+                        Self::save_single_attachment(
+                            &row_for_save,
+                            &filename_for_save,
+                            &content_for_save,
+                            parent_for_save.as_ref(),
+                        );
                     });
 
                     let fn_save_rc = attachment.filename.clone();
@@ -34547,32 +34773,45 @@ impl MailPage {
 
                     let fn_open_row = attachment.filename.clone();
                     let ct_open_row = attachment.content.clone();
-                    let click = gtk::GestureClick::new();
-                    click.connect_released(move |_, n_press, _, _| {
-                        if n_press == 2 {
-                            let temp_dir = std::env::temp_dir().join("meridian-attachments");
-                            let _ = fs::create_dir_all(&temp_dir);
-                            let temp_path = temp_dir.join(&fn_open_row);
-                            if fs::write(&temp_path, ct_open_row.as_ref()).is_ok() {
-                                let uri = format!("file://{}", temp_path.to_string_lossy());
-                                let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
+                    let parent_open_row = parent_window.clone();
+                    let row_for_pick = row.clone();
+                    let btn_save_for_pick = btn_save.clone();
+                    let click = gtk::GestureClick::builder().button(1).build();
+                    click.connect_released(move |gesture, n_press, x, y| {
+                        if n_press >= 1 {
+                            if let Some(picked) = row_for_pick.pick(x, y, gtk::PickFlags::DEFAULT) {
+                                if picked == btn_save_for_pick || picked.is_ancestor(&btn_save_for_pick) {
+                                    return;
+                                }
                             }
+                            gesture.set_state(gtk::EventSequenceState::Claimed);
+                            let parent = parent_open_row
+                                .clone()
+                                .or_else(|| row_for_pick.root().and_downcast::<gtk::Window>());
+                            let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                                &fn_open_row,
+                                ct_open_row.as_ref(),
+                                parent.as_ref(),
+                            );
                         }
                     });
                     row.add_controller(click);
 
                     let fn_key_row = attachment.filename.clone();
                     let ct_key_row = attachment.content.clone();
+                    let parent_key_row = parent_window.clone();
+                    let row_for_key = row.clone();
                     let key_ctrl = gtk::EventControllerKey::new();
                     key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
                         if keyval == gdk::Key::space || keyval == gdk::Key::Return {
-                            let temp_dir = std::env::temp_dir().join("meridian-attachments");
-                            let _ = fs::create_dir_all(&temp_dir);
-                            let temp_path = temp_dir.join(&fn_key_row);
-                            if fs::write(&temp_path, ct_key_row.as_ref()).is_ok() {
-                                let uri = format!("file://{}", temp_path.to_string_lossy());
-                                let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
-                            }
+                            let parent = parent_key_row
+                                .clone()
+                                .or_else(|| row_for_key.root().and_downcast::<gtk::Window>());
+                            let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                                &fn_key_row,
+                                ct_key_row.as_ref(),
+                                parent.as_ref(),
+                            );
                             return glib::Propagation::Stop;
                         }
                         glib::Propagation::Proceed
@@ -34592,14 +34831,120 @@ impl MailPage {
         }
     }
 
+    fn save_single_attachment<W: IsA<gtk::Widget> + Clone + 'static>(
+        widget: &W,
+        filename: &str,
+        content: &std::sync::Arc<[u8]>,
+        parent_window: Option<&gtk::Window>,
+    ) {
+        match crate::services::quick_preview_service::download_attachment_to_downloads(filename, content.as_ref()) {
+            Ok(path) => {
+                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(filename);
+                let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
+                show_mail_toast_with_folder_action(widget, &msg, &path);
+            }
+            Err(_) => {
+                Self::prompt_save_attachment_as(widget, filename, content, parent_window);
+            }
+        }
+    }
+
+    fn prompt_save_attachment_as<W: IsA<gtk::Widget> + Clone + 'static>(
+        widget: &W,
+        filename: &str,
+        content: &std::sync::Arc<[u8]>,
+        parent_window: Option<&gtk::Window>,
+    ) {
+        let parent = parent_window
+            .cloned()
+            .or_else(|| widget.root().and_downcast::<gtk::Window>());
+        let Some(parent) = parent.as_ref() else {
+            return;
+        };
+        let file_dialog = gtk::FileDialog::builder()
+            .title(gettext("Save Attachment"))
+            .modal(true)
+            .initial_name(filename)
+            .build();
+        let cont = content.clone();
+        let fname_toast = filename.to_string();
+        let w_toast = widget.clone();
+        file_dialog.save(Some(parent), None::<&gio::Cancellable>, move |result| {
+            if let Ok(file) = result {
+                if let Some(path) = file.path() {
+                    if std::fs::write(&path, cont.as_ref()).is_ok() {
+                        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&fname_toast);
+                        let msg = gettext("Saved: {}").replace("{}", file_name);
+                        show_mail_toast_with_folder_action(&w_toast, &msg, &path);
+                    }
+                }
+            }
+        });
+    }
+
+    fn save_all_attachments<W: IsA<gtk::Widget> + Clone + 'static>(
+        widget: &W,
+        attachments: &[crate::models::mail_message::AttachmentInfo],
+        parent_window: Option<&gtk::Window>,
+    ) {
+        match crate::services::quick_preview_service::download_all_attachments_to_downloads(attachments) {
+            Ok((saved_count, dir)) => {
+                let msg = if saved_count == 1 {
+                    gettext("1 attachment saved to Downloads")
+                } else {
+                    gettext("{} attachments saved to Downloads").replace("{}", &saved_count.to_string())
+                };
+                show_mail_toast_with_folder_action(widget, &msg, &dir);
+            }
+            Err(_) => {
+                Self::prompt_save_all_attachments_folder(widget, attachments, parent_window);
+            }
+        }
+    }
+
+    fn prompt_save_all_attachments_folder<W: IsA<gtk::Widget> + Clone + 'static>(
+        widget: &W,
+        attachments: &[crate::models::mail_message::AttachmentInfo],
+        parent_window: Option<&gtk::Window>,
+    ) {
+        let parent = parent_window
+            .cloned()
+            .or_else(|| widget.root().and_downcast::<gtk::Window>());
+        let Some(parent) = parent.as_ref() else {
+            return;
+        };
+        let folder_dialog = gtk::FileDialog::builder()
+            .title(gettext("Select folder for all attachments"))
+            .modal(true)
+            .build();
+        let atts = attachments.to_vec();
+        let w_toast = widget.clone();
+        folder_dialog.select_folder(Some(parent), None::<&gio::Cancellable>, move |result| {
+            if let Ok(folder) = result {
+                if let Some(folder_path) = folder.path() {
+                    let mut saved_count = 0;
+                    for att in &atts {
+                        let safe_name = crate::services::quick_preview_service::sanitize_attachment_filename(&att.filename);
+                        let target_path = folder_path.join(&safe_name);
+                        if std::fs::write(&target_path, att.content.as_ref()).is_ok() {
+                            saved_count += 1;
+                        }
+                    }
+                    let msg = gettext("{} attachments saved").replace("{}", &saved_count.to_string());
+                    show_mail_toast_with_folder_action(&w_toast, &msg, &folder_path);
+                }
+            }
+        });
+    }
+
     fn create_save_all_button(
         attachments: &[crate::models::mail_message::AttachmentInfo],
         parent_window: Option<&gtk::Window>,
     ) -> gtk::Button {
         let btn = gtk::Button::builder()
-            .css_classes(vec!["attachment-save-all-btn"])
+            .css_classes(["attachment-save-all-btn"])
             .valign(gtk::Align::Center)
-            .tooltip_text(&gettext("Save all attachments to Downloads (Right-click for options)"))
+            .tooltip_text(gettext("Save all attachments to Downloads (Right-click for options)"))
             .build();
         set_accessible_label(&btn, &gettext("Save all attachments"));
 
@@ -34612,10 +34957,10 @@ impl MailPage {
         let save_icon = gtk::Image::from_icon_name("document-save-symbolic");
         save_icon.set_pixel_size(15);
         let save_label = gtk::Label::builder()
-            .label(&gettext("Save all…"))
+            .label(gettext("Save all…"))
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .width_chars(1)
-            .css_classes(vec!["attachment-save-all-label"])
+            .css_classes(["attachment-save-all-label"])
             .build();
 
         btn_box.append(&save_icon);
@@ -34624,21 +34969,10 @@ impl MailPage {
 
         let atts_click = attachments.to_vec();
         let btn_weak = btn.downgrade();
+        let parent_for_click = parent_window.cloned();
         btn.connect_clicked(move |_| {
             let Some(btn_w) = btn_weak.upgrade() else { return; };
-            match crate::services::quick_preview_service::download_all_attachments_to_downloads(&atts_click) {
-                Ok((saved_count, dir)) => {
-                    let msg = if saved_count == 1 {
-                        gettext("1 attachment saved to Downloads")
-                    } else {
-                        gettext("{} attachments saved to Downloads").replace("{}", &saved_count.to_string())
-                    };
-                    show_mail_toast_with_folder_action(&btn_w, &msg, &dir);
-                }
-                Err(e) => {
-                    tracing::error!(%e, "Failed to download attachments");
-                }
-            }
+            Self::save_all_attachments(&btn_w, &atts_click, parent_for_click.as_ref());
         });
 
         let atts_rc = attachments.to_vec();
@@ -34672,21 +35006,10 @@ impl MailPage {
         let pop_quick = popover.clone();
         let btn_for_quick = button.clone();
         let atts_for_quick = attachments.to_vec();
+        let parent_for_quick = parent_window.cloned();
         btn_quick.connect_clicked(move |_| {
             pop_quick.popdown();
-            match crate::services::quick_preview_service::download_all_attachments_to_downloads(&atts_for_quick) {
-                Ok((saved_count, dir)) => {
-                    let msg = if saved_count == 1 {
-                        gettext("1 attachment saved to Downloads")
-                    } else {
-                        gettext("{} attachments saved to Downloads").replace("{}", &saved_count.to_string())
-                    };
-                    show_mail_toast_with_folder_action(&btn_for_quick, &msg, &dir);
-                }
-                Err(e) => {
-                    tracing::error!(%e, "Failed to download attachments");
-                }
-            }
+            Self::save_all_attachments(&btn_for_quick, &atts_for_quick, parent_for_quick.as_ref());
         });
         menu_box.append(&btn_quick);
 
@@ -34701,28 +35024,7 @@ impl MailPage {
         let btn_for_choose = button.clone();
         btn_choose.connect_clicked(move |_| {
             pop_choose.popdown();
-            let Some(parent) = parent_for_choose.as_ref() else { return; };
-            let folder_dialog = gtk::FileDialog::builder()
-                .title(&gettext("Select folder for all attachments"))
-                .modal(true)
-                .build();
-            let atts = atts_for_choose.clone();
-            let btn_w = btn_for_choose.clone();
-            folder_dialog.select_folder(Some(parent), None::<&gio::Cancellable>, move |result| {
-                if let Ok(folder) = result {
-                    if let Some(folder_path) = folder.path() {
-                        let mut saved_count = 0;
-                        for att in &atts {
-                            let target_path = folder_path.join(&att.filename);
-                            if std::fs::write(&target_path, att.content.as_ref()).is_ok() {
-                                saved_count += 1;
-                            }
-                        }
-                        let msg = gettext("{} attachments saved").replace("{}", &saved_count.to_string());
-                        show_mail_toast_with_folder_action(&btn_w, &msg, &folder_path);
-                    }
-                }
-            });
+            Self::prompt_save_all_attachments_folder(&btn_for_choose, &atts_for_choose, parent_for_choose.as_ref());
         });
         menu_box.append(&btn_choose);
 
@@ -34745,7 +35047,7 @@ impl MailPage {
             .spacing(10)
             .halign(gtk::Align::Fill)
             .hexpand(true)
-            .css_classes(vec!["attachment-drawer-card"])
+            .css_classes(["attachment-drawer-card"])
             .margin_top(0)
             .margin_bottom(0)
             .focusable(true)
@@ -34771,7 +35073,7 @@ impl MailPage {
             .label(&att.filename)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(28)
-            .css_classes(vec!["attachment-card-name"])
+            .css_classes(["attachment-card-name"])
             .xalign(0.0)
             .build();
         text_box.append(&lbl_name);
@@ -34780,7 +35082,7 @@ impl MailPage {
             .label(&format!("{} • {}", att.size_formatted, att.type_description()))
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(28)
-            .css_classes(vec!["dim-label", "caption", "attachment-card-meta"])
+            .css_classes(["dim-label", "caption", "attachment-card-meta"])
             .xalign(0.0)
             .build();
         text_box.append(&lbl_meta);
@@ -34791,8 +35093,8 @@ impl MailPage {
         save_icon.set_pixel_size(15);
         let btn_save = gtk::Button::builder()
             .child(&save_icon)
-            .tooltip_text(&gettext("Save to Downloads (Right-click for options)"))
-            .css_classes(vec!["flat", "circular", "attachment-card-download-btn"])
+            .tooltip_text(gettext("Save to Downloads (Right-click for options)"))
+            .css_classes(["flat", "circular", "attachment-card-download-btn"])
             .valign(gtk::Align::Center)
             .focusable(false)
             .build();
@@ -34801,18 +35103,9 @@ impl MailPage {
         let fn_save = att.filename.clone();
         let ct_save = att.content.clone();
         let card_for_toast = card.clone();
+        let parent_for_save = parent_window.cloned();
         btn_save.connect_clicked(move |_| {
-            match crate::services::quick_preview_service::download_attachment_to_downloads(&fn_save, ct_save.as_ref()) {
-                Ok(path) => {
-                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&fn_save);
-                    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                    let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
-                    show_mail_toast_with_folder_action(&card_for_toast, &msg, dir);
-                }
-                Err(e) => {
-                    tracing::error!(%e, "Failed to download attachment");
-                }
-            }
+            Self::save_single_attachment(&card_for_toast, &fn_save, &ct_save, parent_for_save.as_ref());
         });
 
         let fn_save_rc = att.filename.clone();
@@ -34830,32 +35123,45 @@ impl MailPage {
 
         let fn_open = att.filename.clone();
         let ct_open = att.content.clone();
-        let click = gtk::GestureClick::new();
-        click.connect_released(move |_, n_press, _, _| {
+        let parent_open = parent_window.cloned();
+        let card_for_pick = card.clone();
+        let btn_save_for_pick = btn_save.clone();
+        let click = gtk::GestureClick::builder().button(1).build();
+        click.connect_released(move |gesture, n_press, x, y| {
             if n_press >= 1 {
-                let temp_dir = std::env::temp_dir().join("meridian-attachments");
-                let _ = fs::create_dir_all(&temp_dir);
-                let temp_path = temp_dir.join(&fn_open);
-                if fs::write(&temp_path, ct_open.as_ref()).is_ok() {
-                    let uri = format!("file://{}", temp_path.to_string_lossy());
-                    let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
+                if let Some(picked) = card_for_pick.pick(x, y, gtk::PickFlags::DEFAULT) {
+                    if picked == btn_save_for_pick || picked.is_ancestor(&btn_save_for_pick) {
+                        return;
+                    }
                 }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let parent = parent_open
+                    .clone()
+                    .or_else(|| card_for_pick.root().and_downcast::<gtk::Window>());
+                let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                    &fn_open,
+                    ct_open.as_ref(),
+                    parent.as_ref(),
+                );
             }
         });
         card.add_controller(click);
 
         let fn_key = att.filename.clone();
         let ct_key = att.content.clone();
+        let parent_key = parent_window.cloned();
+        let card_for_key = card.clone();
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
             if keyval == gdk::Key::space || keyval == gdk::Key::Return {
-                let temp_dir = std::env::temp_dir().join("meridian-attachments");
-                let _ = fs::create_dir_all(&temp_dir);
-                let temp_path = temp_dir.join(&fn_key);
-                if fs::write(&temp_path, ct_key.as_ref()).is_ok() {
-                    let uri = format!("file://{}", temp_path.to_string_lossy());
-                    let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
-                }
+                let parent = parent_key
+                    .clone()
+                    .or_else(|| card_for_key.root().and_downcast::<gtk::Window>());
+                let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                    &fn_key,
+                    ct_key.as_ref(),
+                    parent.as_ref(),
+                );
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -34887,7 +35193,7 @@ fn create_attachment_bar_chip(
         .orientation(gtk::Orientation::Horizontal)
         .spacing(6)
         .valign(gtk::Align::Center)
-        .css_classes(vec!["attachment-chip"])
+        .css_classes(["attachment-chip"])
         .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
         .focusable(true)
         .build();
@@ -34907,7 +35213,7 @@ fn create_attachment_bar_chip(
         .max_width_chars(max_chars)
         .hexpand(true)
         .xalign(0.0)
-        .css_classes(vec!["attachment-chip-label"])
+        .css_classes(["attachment-chip-label"])
         .valign(gtk::Align::Center)
         .build();
     chip_box.append(&lbl);
@@ -34916,7 +35222,7 @@ fn create_attachment_bar_chip(
         .label(&format!("· {}", att.size_formatted))
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .width_chars(1)
-        .css_classes(vec!["dim-label", "caption", "attachment-chip-size"])
+        .css_classes(["dim-label", "caption", "attachment-chip-size"])
         .valign(gtk::Align::Center)
         .build();
     chip_box.append(&lbl_size);
@@ -34925,8 +35231,8 @@ fn create_attachment_bar_chip(
     save_icon.set_pixel_size(12);
     let btn_save = gtk::Button::builder()
         .child(&save_icon)
-        .tooltip_text(&gettext("Save to Downloads (Right-click for options)"))
-        .css_classes(vec!["flat", "circular", "attachment-chip-download-btn", "attachment-chip-btn"])
+        .tooltip_text(gettext("Save to Downloads (Right-click for options)"))
+        .css_classes(["flat", "circular", "attachment-chip-download-btn", "attachment-chip-btn"])
         .valign(gtk::Align::Center)
         .focusable(false)
         .build();
@@ -34935,18 +35241,14 @@ fn create_attachment_bar_chip(
     let filename_for_save = att.filename.clone();
     let content_for_save = att.content.clone();
     let chip_for_toast = chip_box.clone();
+    let parent_for_save = parent_window.cloned();
     btn_save.connect_clicked(move |_| {
-        match crate::services::quick_preview_service::download_attachment_to_downloads(&filename_for_save, content_for_save.as_ref()) {
-            Ok(path) => {
-                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&filename_for_save);
-                let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
-                show_mail_toast_with_folder_action(&chip_for_toast, &msg, dir);
-            }
-            Err(e) => {
-                tracing::error!(%e, "Failed to download attachment");
-            }
-        }
+        Self::save_single_attachment(
+            &chip_for_toast,
+            &filename_for_save,
+            &content_for_save,
+            parent_for_save.as_ref(),
+        );
     });
 
     let fn_save_rc = att.filename.clone();
@@ -34964,32 +35266,45 @@ fn create_attachment_bar_chip(
 
     let fn_open = att.filename.clone();
     let ct_open = att.content.clone();
-    let click = gtk::GestureClick::new();
-    click.connect_released(move |_, n_press, _, _| {
+    let parent_open = parent_window.cloned();
+    let chip_for_pick = chip_box.clone();
+    let btn_save_for_pick = btn_save.clone();
+    let click = gtk::GestureClick::builder().button(1).build();
+    click.connect_released(move |gesture, n_press, x, y| {
         if n_press >= 1 {
-            let temp_dir = std::env::temp_dir().join("meridian-attachments");
-            let _ = fs::create_dir_all(&temp_dir);
-            let temp_path = temp_dir.join(&fn_open);
-            if fs::write(&temp_path, ct_open.as_ref()).is_ok() {
-                let uri = format!("file://{}", temp_path.to_string_lossy());
-                let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
+            if let Some(picked) = chip_for_pick.pick(x, y, gtk::PickFlags::DEFAULT) {
+                if picked == btn_save_for_pick || picked.is_ancestor(&btn_save_for_pick) {
+                    return;
+                }
             }
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let parent = parent_open
+                .clone()
+                .or_else(|| chip_for_pick.root().and_downcast::<gtk::Window>());
+            let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                &fn_open,
+                ct_open.as_ref(),
+                parent.as_ref(),
+            );
         }
     });
     chip_box.add_controller(click);
 
     let fn_key = att.filename.clone();
     let ct_key = att.content.clone();
+    let parent_key = parent_window.cloned();
+    let chip_for_key = chip_box.clone();
     let key_ctrl = gtk::EventControllerKey::new();
     key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
         if keyval == gdk::Key::space || keyval == gdk::Key::Return {
-            let temp_dir = std::env::temp_dir().join("meridian-attachments");
-            let _ = fs::create_dir_all(&temp_dir);
-            let temp_path = temp_dir.join(&fn_key);
-            if fs::write(&temp_path, ct_key.as_ref()).is_ok() {
-                let uri = format!("file://{}", temp_path.to_string_lossy());
-                let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
-            }
+            let parent = parent_key
+                .clone()
+                .or_else(|| chip_for_key.root().and_downcast::<gtk::Window>());
+            let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                &fn_key,
+                ct_key.as_ref(),
+                parent.as_ref(),
+            );
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
@@ -35031,34 +35346,18 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
     let pop_open = popover.clone();
     let fname_open = filename.to_string();
     let cont_open = content.clone();
+    let parent_open = parent_window.cloned();
+    let w_open = widget.clone();
     btn_open.connect_clicked(move |_| {
         pop_open.popdown();
-        let temp_dir = std::env::temp_dir().join("meridian-attachments");
-        let _ = fs::create_dir_all(&temp_dir);
-        let temp_path = temp_dir.join(&fname_open);
-        if fs::write(&temp_path, cont_open.as_ref()).is_ok() {
-            let uri = format!("file://{}", temp_path.to_string_lossy());
-            let ext = temp_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if matches!(
-                ext.as_str(),
-                "ics" | "ical" | "ifb" | "vcs" | "vcf" | "vcard"
-            ) {
-                if let Some(app) = gio::Application::default()
-                    .and_downcast::<crate::application::MeridianApplication>()
-                {
-                    app.handle_external_open(&[gio::File::for_path(&temp_path)]);
-                    return;
-                }
-            }
-            let _ = gio::AppInfo::launch_default_for_uri(
-                &uri,
-                None::<&gio::AppLaunchContext>,
-            );
-        }
+        let parent = parent_open
+            .clone()
+            .or_else(|| w_open.root().and_downcast::<gtk::Window>());
+        let _ = crate::services::quick_preview_service::open_attachment_bytes(
+            &fname_open,
+            cont_open.as_ref(),
+            parent.as_ref(),
+        );
     });
     menu_box.append(&btn_open);
 
@@ -35071,19 +35370,10 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
     let fname_quick = filename.to_string();
     let cont_quick = content.clone();
     let w_quick = widget.clone();
+    let parent_quick = parent_window.cloned();
     btn_quick.connect_clicked(move |_| {
         pop_quick.popdown();
-        match crate::services::quick_preview_service::download_attachment_to_downloads(&fname_quick, cont_quick.as_ref()) {
-            Ok(path) => {
-                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&fname_quick);
-                let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
-                show_mail_toast_with_folder_action(&w_quick, &msg, dir);
-            }
-            Err(e) => {
-                tracing::error!(%e, "Failed to download attachment");
-            }
-        }
+        Self::save_single_attachment(&w_quick, &fname_quick, &cont_quick, parent_quick.as_ref());
     });
     menu_box.append(&btn_quick);
 
@@ -35099,32 +35389,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
     let w_save = widget.clone();
     btn_save.connect_clicked(move |_| {
         pop_save.popdown();
-        let parent = parent_clone
-            .as_ref()
-            .cloned()
-            .or_else(|| w_save.root().and_downcast::<gtk::Window>());
-        let Some(parent) = parent.as_ref() else {
-            return;
-        };
-        let file_dialog = gtk::FileDialog::builder()
-            .title(&gettext("Save Attachment"))
-            .modal(true)
-            .initial_name(&fname_save)
-            .build();
-        let cont = cont_save.clone();
-        let fname_toast = fname_save.clone();
-        let w_toast = w_save.clone();
-        file_dialog.save(Some(parent), None::<&gio::Cancellable>, move |result| {
-            if let Ok(file) = result {
-                if let Some(path) = file.path() {
-                    if std::fs::write(&path, cont.as_ref()).is_ok() {
-                        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                        let msg = gettext("Saved: {}").replace("{}", &fname_toast);
-                        show_mail_toast_with_folder_action(&w_toast, &msg, dir);
-                    }
-                }
-            }
-        });
+        Self::prompt_save_attachment_as(&w_save, &fname_save, &cont_save, parent_clone.as_ref());
     });
     menu_box.append(&btn_save);
 
@@ -35272,7 +35537,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             } else {
                 gettext("Similar Messages")
             })
-            .css_classes(vec!["caption", "heading"])
+            .css_classes(["caption", "heading"])
             .valign(gtk::Align::Center)
             .build();
         title_box.append(&icon_thread);
@@ -35285,13 +35550,13 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             .valign(gtk::Align::Fill)
             .vexpand(true)
             .margin_start(2)
-            .css_classes(vec!["mail-thread-stepper"])
+            .css_classes(["mail-thread-stepper"])
             .build();
 
         let btn_prev = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
-            .tooltip_text(&gettext("Previous message"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Previous message"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Fill)
             .vexpand(true)
             .sensitive(current_index > 0)
@@ -35304,7 +35569,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                 gettext("of"),
                 total_messages
             ))
-            .css_classes(vec!["caption", "heading"])
+            .css_classes(["caption", "heading"])
             .valign(gtk::Align::Center)
             .margin_start(4)
             .margin_end(4)
@@ -35312,8 +35577,8 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
 
         let btn_next = gtk::Button::builder()
             .icon_name("go-next-symbolic")
-            .tooltip_text(&gettext("Next message"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Next message"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Fill)
             .vexpand(true)
             .sensitive(current_index + 1 < total_messages)
@@ -35351,7 +35616,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
         if other_unread_count > 0 {
             let unread_lbl = gtk::Label::builder()
                 .label(&format!("• {} {}", other_unread_count, gettext("unread")))
-                .css_classes(vec!["caption", "heading", "accent"])
+                .css_classes(["caption", "heading", "accent"])
                 .valign(gtk::Align::Center)
                 .margin_start(2)
                 .build();
@@ -35368,7 +35633,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
             } else {
                 gettext("Show all messages")
             })
-            .css_classes(vec!["flat", "mail-thread-toggle-btn"])
+            .css_classes(["flat", "mail-thread-toggle-btn"])
             .valign(gtk::Align::Fill)
             .vexpand(true)
             .halign(gtk::Align::End)
@@ -35445,7 +35710,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                     if message.is_unread() {
                         let dot = gtk::Label::builder()
                             .label("•")
-                            .css_classes(vec!["mail-thread-unread-dot"])
+                            .css_classes(["mail-thread-unread-dot"])
                             .valign(gtk::Align::Center)
                             .build();
                         strip_content.append(&dot);
@@ -35473,7 +35738,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                     // Separator dot
                     let sep = gtk::Label::builder()
                         .label("·")
-                        .css_classes(vec!["caption", "dim-label"])
+                        .css_classes(["caption", "dim-label"])
                         .valign(gtk::Align::Center)
                         .build();
                     strip_content.append(&sep);
@@ -35503,7 +35768,7 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                     let icon_att = gtk::Image::builder()
                         .icon_name("mail-attachment-symbolic")
                         .pixel_size(12)
-                        .css_classes(vec!["dim-label"])
+                        .css_classes(["dim-label"])
                         .valign(gtk::Align::Center)
                         .visible(message.attachment_count() > 0)
                         .build();
@@ -36157,7 +36422,7 @@ pub(crate) fn layout_agenda_canvas_items(
             if day.events.is_empty() && day.tasks.is_empty() {
                 let empty_h = 24.0;
                 items.push(AgendaSidebarCanvasItem::EmptyState {
-                    text: crate::i18n::gettext("No events"),
+                    text: gettext("No events"),
                     y: current_y,
                     height: empty_h,
                 });
@@ -36205,12 +36470,12 @@ pub(crate) fn layout_agenda_canvas_items(
         }
     }
 
-    // Separate "Aufgaben" section at the very bottom for undated/general tasks
+    // Separate "Tasks" section at the very bottom for undated/general tasks
     if show_tasks && !grouped.undated_tasks.is_empty() {
         let is_tasks_expanded = !collapsed_tasks;
         let header_h = 28.0;
         items.push(AgendaSidebarCanvasItem::TasksSectionHeader {
-            title: crate::i18n::gettext("Tasks"),
+            title: gettext("Tasks"),
             is_expanded: is_tasks_expanded,
             y: current_y,
             height: header_h,
@@ -36250,11 +36515,11 @@ pub(crate) fn format_task_due_short(due: &str, today: chrono::NaiveDate) -> Opti
         .ok()?;
 
     if due_date == today {
-        Some(crate::i18n::gettext("Today"))
+        Some(gettext("Today"))
     } else if due_date == today + chrono::Duration::days(1) {
-        Some(crate::i18n::gettext("Tomorrow"))
+        Some(gettext("Tomorrow"))
     } else if due_date == today - chrono::Duration::days(1) {
-        Some(crate::i18n::gettext("Yesterday"))
+        Some(gettext("Yesterday"))
     } else {
         Some(due_date.format("%d.%m.").to_string())
     }
@@ -36302,7 +36567,7 @@ pub(crate) fn layout_agenda_events_canvas_items(
             if day.events.is_empty() {
                 let empty_h = 24.0;
                 items.push(AgendaSidebarCanvasItem::EmptyState {
-                    text: crate::i18n::gettext("No events"),
+                    text: gettext("No events"),
                     y: current_y,
                     height: empty_h,
                 });
@@ -36391,7 +36656,7 @@ pub(crate) fn layout_agenda_tasks_canvas_items(
     if all_tasks.is_empty() {
         let empty_h = 24.0;
         items.push(AgendaSidebarCanvasItem::EmptyState {
-            text: crate::i18n::gettext("No tasks"),
+            text: gettext("No tasks"),
             y: current_y,
             height: empty_h,
         });
@@ -36973,15 +37238,15 @@ impl MailPage {
         }
 
         let opt_label = gtk::Label::builder()
-            .label(&gettext("Sidebar Layout"))
-            .css_classes(vec!["heading", "caption"])
+            .label(gettext("Sidebar Layout"))
+            .css_classes(["heading", "caption"])
             .halign(gtk::Align::Start)
             .build();
         opt_box.append(&opt_label);
 
         let hint_label = gtk::Label::builder()
-            .label(&gettext("Choose own section or tab per area (or drag headers)"))
-            .css_classes(vec!["dim-label", "caption"])
+            .label(gettext("Choose own section or tab per area (or drag headers)"))
+            .css_classes(["dim-label", "caption"])
             .halign(gtk::Align::Start)
             .margin_bottom(4)
             .build();
@@ -37000,14 +37265,14 @@ impl MailPage {
             let order_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(0)
-                .css_classes(vec!["linked"])
+                .css_classes(["linked"])
                 .valign(gtk::Align::Center)
                 .build();
 
             let up_btn = gtk::Button::builder()
                 .icon_name("go-up-symbolic")
-                .tooltip_text(&gettext("Move up"))
-                .css_classes(vec!["flat"])
+                .tooltip_text(gettext("Move up"))
+                .css_classes(["flat"])
                 .sensitive(idx > 0)
                 .build();
             let page_weak_up = self.downgrade();
@@ -37020,8 +37285,8 @@ impl MailPage {
 
             let down_btn = gtk::Button::builder()
                 .icon_name("go-down-symbolic")
-                .tooltip_text(&gettext("Move down"))
-                .css_classes(vec!["flat"])
+                .tooltip_text(gettext("Move down"))
+                .css_classes(["flat"])
                 .sensitive(idx + 1 < total)
                 .build();
             let page_weak_down = self.downgrade();
@@ -37046,30 +37311,30 @@ impl MailPage {
             let mode_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(0)
-                .css_classes(vec!["linked", "sidebar-layout-mode-toggler"])
+                .css_classes(["linked", "sidebar-layout-mode-toggler"])
                 .valign(gtk::Align::Center)
                 .build();
 
             let btn_off = gtk::ToggleButton::builder()
-                .label(&gettext("Off"))
-                .tooltip_text(&gettext("Hide this panel"))
+                .label(gettext("Off"))
+                .tooltip_text(gettext("Hide this panel"))
                 .active(spec.mode == SidebarPanelMode::Off)
                 .build();
             let btn_split = gtk::ToggleButton::builder()
-                .label(&gettext("Section"))
-                .tooltip_text(&gettext("Show as its own resizable section"))
+                .label(gettext("Section"))
+                .tooltip_text(gettext("Show as its own resizable section"))
                 .group(&btn_off)
                 .active(spec.mode == SidebarPanelMode::Split)
                 .build();
             let btn_tab = gtk::ToggleButton::builder()
-                .label(&gettext("Tab"))
-                .tooltip_text(&gettext("Group together as tabs"))
+                .label(gettext("Tab"))
+                .tooltip_text(gettext("Group together as tabs"))
                 .group(&btn_off)
                 .active(spec.mode == SidebarPanelMode::Tab)
                 .build();
             let btn_win = gtk::ToggleButton::builder()
-                .label(&gettext("Window"))
-                .tooltip_text(&gettext("Detach into a standalone window"))
+                .label(gettext("Window"))
+                .tooltip_text(gettext("Detach into a standalone window"))
                 .group(&btn_off)
                 .active(spec.mode == SidebarPanelMode::Window)
                 .build();
@@ -37126,8 +37391,8 @@ impl MailPage {
         let is_auto = self.imp().mail_sidebar_manual_bottom_h.get().is_none()
             && self.imp().mail_sidebar_manual_inner_bottom_h.get().is_none();
         let auto_btn = gtk::Button::builder()
-            .css_classes(vec!["flat"])
-            .tooltip_text(&gettext(
+            .css_classes(["flat"])
+            .tooltip_text(gettext(
                 "Automatically fit section heights to their content (or double-click a divider line)",
             ))
             .build();
@@ -37136,10 +37401,10 @@ impl MailPage {
             .spacing(8)
             .build();
         let auto_lbl = gtk::Label::builder()
-            .label(&gettext("Auto-fit section heights"))
+            .label(gettext("Auto-fit section heights"))
             .xalign(0.0)
             .hexpand(true)
-            .css_classes(vec!["caption"])
+            .css_classes(["caption"])
             .build();
         let status_lbl = gtk::Label::builder()
             .label(&if is_auto {
@@ -37166,9 +37431,9 @@ impl MailPage {
         opt_box.append(&auto_btn);
 
         let hover_chk = gtk::CheckButton::builder()
-            .label(&gettext("Hover preview"))
+            .label(gettext("Hover preview"))
             .active(SIDEBAR_HOVER_PREVIEW_ENABLED.load(Ordering::Relaxed))
-            .tooltip_text(&gettext("Show preview popover when hovering agenda items, tasks, or memos"))
+            .tooltip_text(gettext("Show preview popover when hovering agenda items, tasks, or memos"))
             .margin_top(2)
             .build();
         let page_weak_hover = self.downgrade();
@@ -37224,7 +37489,7 @@ impl MailPage {
                 .child(&tab_lbl)
                 .tooltip_text(&tab_id.display_title())
                 .active(tab_id == active_tab)
-                .css_classes(vec!["flat"])
+                .css_classes(["flat"])
                 .build();
             if let Some(ref group_leader) = first_btn {
                 btn.set_group(Some(group_leader));
@@ -37377,7 +37642,7 @@ impl MailPage {
                     }
                     let title_lbl = gtk::Label::builder()
                         .label(&panel_id.display_title())
-                        .css_classes(vec!["title"])
+                        .css_classes(["title"])
                         .build();
                     header.set_title_widget(Some(&title_lbl));
 
@@ -37389,7 +37654,7 @@ impl MailPage {
                     let add_btn = gtk::Button::builder()
                         .icon_name("list-add-symbolic")
                         .tooltip_text(&add_tooltip)
-                        .css_classes(vec!["flat"])
+                        .css_classes(["flat"])
                         .build();
                     let page_weak = self.downgrade();
                     add_btn.connect_clicked(move |_| {
@@ -37665,17 +37930,17 @@ impl MailPage {
                 let icon = gtk::Image::builder()
                     .icon_name("window-new-symbolic")
                     .pixel_size(32)
-                    .css_classes(vec!["dim-label"])
+                    .css_classes(["dim-label"])
                     .build();
                 let lbl = gtk::Label::builder()
-                    .label(&gettext("All active panels are open in separate windows."))
+                    .label(gettext("All active panels are open in separate windows."))
                     .wrap(true)
                     .justify(gtk::Justification::Center)
-                    .css_classes(vec!["dim-label", "caption"])
+                    .css_classes(["dim-label", "caption"])
                     .build();
                 let dock_all_btn = gtk::Button::builder()
-                    .label(&gettext("Dock all into sidebar"))
-                    .css_classes(vec!["pill"])
+                    .label(gettext("Dock all into sidebar"))
+                    .css_classes(["pill"])
                     .halign(gtk::Align::Center)
                     .build();
                 let page_weak_dock_all = self.downgrade();
@@ -38020,7 +38285,7 @@ impl MailPage {
             .spacing(0)
             .width_request(185)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["sidebar", "todo-sidebar", "meridian-sidebar-drawer"])
+            .css_classes(["sidebar", "todo-sidebar", "meridian-sidebar-drawer"])
             .build();
 
         let initial_vpos = AppSettings::try_new()
@@ -38224,7 +38489,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["sidebar-drawer-header", "sidebar-section-header-slim"])
+            .css_classes(["sidebar-drawer-header", "sidebar-section-header-slim"])
             .build();
         self.imp().todo_header_box.replace(Some(header_bar.clone()));
         self.imp()
@@ -38233,8 +38498,8 @@ impl MailPage {
 
         let agenda_collapse_btn = gtk::Button::builder()
             .icon_name("pan-down-symbolic")
-            .css_classes(vec!["flat", "circular"])
-            .tooltip_text(&gettext("Toggle section"))
+            .css_classes(["flat", "circular"])
+            .tooltip_text(gettext("Toggle section"))
             .valign(gtk::Align::Center)
             .build();
         self.imp()
@@ -38242,8 +38507,8 @@ impl MailPage {
             .replace(Some(agenda_collapse_btn.clone()));
 
         let title = gtk::Label::builder()
-            .label(&gettext("Agenda"))
-            .css_classes(vec!["heading"])
+            .label(gettext("Agenda"))
+            .css_classes(["heading"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .ellipsize(pango::EllipsizeMode::End)
@@ -38255,7 +38520,7 @@ impl MailPage {
             .label("")
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["sidebar-drawer-total", "dim-label", "caption"])
+            .css_classes(["sidebar-drawer-total", "dim-label", "caption"])
             .build();
         self.imp()
             .todo_count_badge
@@ -38264,7 +38529,7 @@ impl MailPage {
         let agenda_switcher = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
@@ -38276,8 +38541,8 @@ impl MailPage {
 
         let agenda_add_event_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new appointment"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new appointment"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         agenda_add_event_btn.connect_clicked(move |btn| {
@@ -38293,8 +38558,8 @@ impl MailPage {
 
         let agenda_add_task_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new task"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new task"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
@@ -38311,8 +38576,8 @@ impl MailPage {
 
         let agenda_add_memo_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new memo"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new memo"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
@@ -38336,8 +38601,8 @@ impl MailPage {
 
         let sidebar_options_btn = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
-            .css_classes(vec!["flat", "circular"])
-            .tooltip_text(&gettext("Sidebar layout"))
+            .css_classes(["flat", "circular"])
+            .tooltip_text(gettext("Sidebar layout"))
             .valign(gtk::Align::Center)
             .build();
         let opt_popover = gtk::Popover::new();
@@ -38404,7 +38669,7 @@ impl MailPage {
             .hexpand(true)
             .vexpand(true)
             .content_height(200)
-            .css_classes(vec!["agenda-sidebar-canvas"])
+            .css_classes(["agenda-sidebar-canvas"])
             .build();
         set_accessible_label(&agenda_canvas, "Agenda Events Canvas");
         self.imp().agenda_canvas.replace(Some(agenda_canvas.clone()));
@@ -38653,7 +38918,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["sidebar-drawer-header", "sidebar-section-header-slim"])
+            .css_classes(["sidebar-drawer-header", "sidebar-section-header-slim"])
             .build();
         self.imp()
             .agenda_tasks_header
@@ -38661,17 +38926,17 @@ impl MailPage {
 
         let tasks_collapse_btn = gtk::Button::builder()
             .icon_name("pan-down-symbolic")
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
-            .tooltip_text(&crate::i18n::gettext("Toggle section"))
+            .tooltip_text(gettext("Toggle section"))
             .build();
         self.imp()
             .agenda_tasks_collapse_btn
             .replace(Some(tasks_collapse_btn.clone()));
 
         let tasks_title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Tasks"))
-            .css_classes(vec!["heading"])
+            .label(gettext("Tasks"))
+            .css_classes(["heading"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .ellipsize(pango::EllipsizeMode::End)
@@ -38685,7 +38950,7 @@ impl MailPage {
             .label("")
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["sidebar-drawer-total", "dim-label", "caption"])
+            .css_classes(["sidebar-drawer-total", "dim-label", "caption"])
             .build();
         self.imp()
             .agenda_tasks_count_badge
@@ -38694,7 +38959,7 @@ impl MailPage {
         let tasks_switcher = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
@@ -38706,8 +38971,8 @@ impl MailPage {
 
         let tasks_add_event_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new appointment"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new appointment"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
@@ -38724,8 +38989,8 @@ impl MailPage {
 
         let tasks_add_task_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new task"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new task"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         tasks_add_task_btn.connect_clicked(move |btn| {
@@ -38741,8 +39006,8 @@ impl MailPage {
 
         let tasks_add_memo_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new memo"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new memo"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
@@ -38829,7 +39094,7 @@ impl MailPage {
             .hexpand(true)
             .vexpand(true)
             .content_height(200)
-            .css_classes(vec!["agenda-sidebar-canvas"])
+            .css_classes(["agenda-sidebar-canvas"])
             .build();
         set_accessible_label(&agenda_tasks_canvas, "Agenda Tasks Canvas");
         self.imp().agenda_tasks_canvas.replace(Some(agenda_tasks_canvas.clone()));
@@ -39056,7 +39321,7 @@ impl MailPage {
             .hexpand(true)
             .valign(gtk::Align::Fill)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["memos-sidebar-section"])
+            .css_classes(["memos-sidebar-section"])
             .build();
         self.imp().agenda_memos_box.replace(Some(memos_box.clone()));
 
@@ -39068,7 +39333,7 @@ impl MailPage {
             .margin_top(4)
             .margin_bottom(2)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec![
+            .css_classes([
                 "sidebar-drawer-header",
                 "memos-section-header",
                 "sidebar-section-header-slim",
@@ -39080,17 +39345,17 @@ impl MailPage {
 
         let memos_collapse_btn = gtk::Button::builder()
             .icon_name("pan-down-symbolic")
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
-            .tooltip_text(&crate::i18n::gettext("Toggle section"))
+            .tooltip_text(gettext("Toggle section"))
             .build();
         self.imp()
             .agenda_memos_collapse_btn
             .replace(Some(memos_collapse_btn.clone()));
 
         let memos_title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Memos"))
-            .css_classes(vec!["heading"])
+            .label(gettext("Memos"))
+            .css_classes(["heading"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .ellipsize(pango::EllipsizeMode::End)
@@ -39101,7 +39366,7 @@ impl MailPage {
             .label("")
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["sidebar-drawer-total", "dim-label", "caption"])
+            .css_classes(["sidebar-drawer-total", "dim-label", "caption"])
             .build();
         self.imp()
             .agenda_memos_count_badge
@@ -39110,8 +39375,8 @@ impl MailPage {
         let memos_spacer = gtk::Box::builder().hexpand(true).build();
         let memos_add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new memo"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new memo"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         let page_for_memos_add = self.downgrade();
@@ -39144,7 +39409,7 @@ impl MailPage {
             .hexpand(true)
             .valign(gtk::Align::Fill)
             .min_content_height(48)
-            .css_classes(vec!["memos-panel-scroll"])
+            .css_classes(["memos-panel-scroll"])
             .build();
         self.imp()
             .agenda_memos_scroll
@@ -39155,7 +39420,7 @@ impl MailPage {
             .vexpand(true)
             .valign(gtk::Align::Fill)
             .content_height(52)
-            .css_classes(vec!["memopad-canvas"])
+            .css_classes(["memopad-canvas"])
             .build();
         set_accessible_label(&agenda_memos_canvas, "Agenda Memos Canvas");
         self.imp()
@@ -39624,7 +39889,7 @@ impl MailPage {
                 AgendaSidebarCanvasItem::EmptyState { text, y, height } => {
                     let lbl = gtk::Label::builder()
                         .label(text)
-                        .css_classes(vec!["dim-label", "caption"])
+                        .css_classes(["dim-label", "caption"])
                         .halign(gtk::Align::Start)
                         .valign(gtk::Align::Center)
                         .xalign(0.0)
@@ -39869,43 +40134,43 @@ impl MailPage {
     pub(crate) fn localized_weekday_short(date: chrono::NaiveDate) -> String {
         use chrono::Datelike;
         match date.weekday() {
-            chrono::Weekday::Mon => crate::i18n::gettext("Mon"),
-            chrono::Weekday::Tue => crate::i18n::gettext("Tue"),
-            chrono::Weekday::Wed => crate::i18n::gettext("Wed"),
-            chrono::Weekday::Thu => crate::i18n::gettext("Thu"),
-            chrono::Weekday::Fri => crate::i18n::gettext("Fri"),
-            chrono::Weekday::Sat => crate::i18n::gettext("Sat"),
-            chrono::Weekday::Sun => crate::i18n::gettext("Sun"),
+            chrono::Weekday::Mon => gettext("Mon"),
+            chrono::Weekday::Tue => gettext("Tue"),
+            chrono::Weekday::Wed => gettext("Wed"),
+            chrono::Weekday::Thu => gettext("Thu"),
+            chrono::Weekday::Fri => gettext("Fri"),
+            chrono::Weekday::Sat => gettext("Sat"),
+            chrono::Weekday::Sun => gettext("Sun"),
         }
     }
 
     pub(crate) fn localized_weekday_long(date: chrono::NaiveDate, _date_format: &str) -> String {
         use chrono::Datelike;
         match date.weekday() {
-            chrono::Weekday::Mon => crate::i18n::gettext("Monday"),
-            chrono::Weekday::Tue => crate::i18n::gettext("Tuesday"),
-            chrono::Weekday::Wed => crate::i18n::gettext("Wednesday"),
-            chrono::Weekday::Thu => crate::i18n::gettext("Thursday"),
-            chrono::Weekday::Fri => crate::i18n::gettext("Friday"),
-            chrono::Weekday::Sat => crate::i18n::gettext("Saturday"),
-            chrono::Weekday::Sun => crate::i18n::gettext("Sunday"),
+            chrono::Weekday::Mon => gettext("Monday"),
+            chrono::Weekday::Tue => gettext("Tuesday"),
+            chrono::Weekday::Wed => gettext("Wednesday"),
+            chrono::Weekday::Thu => gettext("Thursday"),
+            chrono::Weekday::Fri => gettext("Friday"),
+            chrono::Weekday::Sat => gettext("Saturday"),
+            chrono::Weekday::Sun => gettext("Sunday"),
         }
     }
 
     pub(crate) fn localized_month_long(month: u32, _date_format: &str) -> String {
         match month {
-            1 => crate::i18n::gettext("January"),
-            2 => crate::i18n::gettext("February"),
-            3 => crate::i18n::gettext("March"),
-            4 => crate::i18n::gettext("April"),
-            5 => crate::i18n::gettext("May"),
-            6 => crate::i18n::gettext("June"),
-            7 => crate::i18n::gettext("July"),
-            8 => crate::i18n::gettext("August"),
-            9 => crate::i18n::gettext("September"),
-            10 => crate::i18n::gettext("October"),
-            11 => crate::i18n::gettext("November"),
-            12 => crate::i18n::gettext("December"),
+            1 => gettext("January"),
+            2 => gettext("February"),
+            3 => gettext("March"),
+            4 => gettext("April"),
+            5 => gettext("May"),
+            6 => gettext("June"),
+            7 => gettext("July"),
+            8 => gettext("August"),
+            9 => gettext("September"),
+            10 => gettext("October"),
+            11 => gettext("November"),
+            12 => gettext("December"),
             _ => String::new(),
         }
     }
@@ -39913,9 +40178,9 @@ impl MailPage {
     pub(crate) fn format_agenda_date(date: chrono::NaiveDate, today: chrono::NaiveDate, date_format: &str) -> String {
         use chrono::Datelike;
         if date == today {
-            crate::i18n::gettext("Today")
+            gettext("Today")
         } else if date == today + chrono::Duration::days(1) {
-            crate::i18n::gettext("Tomorrow")
+            gettext("Tomorrow")
         } else {
             let wd = Self::localized_weekday_short(date);
             match date_format {
@@ -40025,7 +40290,7 @@ impl MailPage {
             .has_arrow(true)
             .position(gtk::PositionType::Left)
             .pointing_to(rect)
-            .css_classes(vec!["calendar-details-popover"])
+            .css_classes(["calendar-details-popover"])
             .build();
         popover.set_parent(canvas);
 
@@ -40142,16 +40407,16 @@ impl MailPage {
             .xalign(0.0)
             .hexpand(true)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .build();
         header_row.append(&title_label);
 
         let close_btn = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .halign(gtk::Align::End)
-            .tooltip_text(&crate::i18n::gettext("Close"))
+            .tooltip_text(gettext("Close"))
             .build();
         let pop_weak_close = popover.downgrade();
         close_btn.connect_clicked(move |_| {
@@ -40162,7 +40427,7 @@ impl MailPage {
         header_row.append(&close_btn);
         header_group.append(&header_row);
 
-        // Calendar source name (only display if it differs from the title and is not generic "Kalender")
+        // Calendar source name (only display if it differs from the title and is not generic "Calendar")
         let cal_name = event.source_display_name.trim();
         let is_duplicate_cal = cal_name.is_empty()
             || cal_name.eq_ignore_ascii_case("Kalender")
@@ -40171,7 +40436,7 @@ impl MailPage {
         if !is_duplicate_cal {
             let cal_label = gtk::Label::builder()
                 .label(cal_name)
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .xalign(0.0)
                 .margin_start(22)
                 .build();
@@ -40195,7 +40460,7 @@ impl MailPage {
             .pixel_size(16)
             .valign(gtk::Align::Start)
             .margin_top(2)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         time_box.append(&time_icon);
 
@@ -40217,15 +40482,15 @@ impl MailPage {
             let date_lbl = gtk::Label::builder()
                 .label(&date_str)
                 .xalign(0.0)
-                .css_classes(vec!["body"])
+                .css_classes(["body"])
                 .build();
             time_info_box.append(&date_lbl);
         }
 
         let time_desc = if event.all_day {
-            crate::i18n::gettext("All Day")
+            gettext("All Day")
         } else {
-            let suffix = if use_12h { "".to_string() } else { crate::i18n::gettext(" o'clock_suffix") };
+            let suffix = if use_12h { "".to_string() } else { gettext(" o'clock_suffix") };
             match (start_dt, end_dt) {
                 (Some(s), Some(e)) => {
                     format!(
@@ -40238,7 +40503,7 @@ impl MailPage {
                 (Some(s), None) => {
                     format!(
                         "{} {}{}",
-                        crate::i18n::gettext("from"),
+                        gettext("from"),
                         MailPage::format_agenda_time(s, use_12h),
                         suffix
                     )
@@ -40250,7 +40515,7 @@ impl MailPage {
             let time_lbl = gtk::Label::builder()
                 .label(&time_desc)
                 .xalign(0.0)
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .build();
             time_info_box.append(&time_lbl);
         }
@@ -40268,7 +40533,7 @@ impl MailPage {
                 .pixel_size(16)
                 .valign(gtk::Align::Start)
                 .margin_top(2)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build();
             loc_box.append(&loc_icon);
             let loc_label = gtk::Label::builder()
@@ -40292,7 +40557,7 @@ impl MailPage {
                 .pixel_size(16)
                 .valign(gtk::Align::Start)
                 .margin_top(2)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build();
             desc_box.append(&desc_icon);
             let desc_label = gtk::Label::builder()
@@ -40300,7 +40565,7 @@ impl MailPage {
                 .wrap(true)
                 .wrap_mode(pango::WrapMode::WordChar)
                 .xalign(0.0)
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .max_width_chars(32)
                 .build();
             desc_box.append(&desc_label);
@@ -40313,15 +40578,15 @@ impl MailPage {
         sep.set_margin_bottom(2);
         content.append(&sep);
 
-        // Action buttons: "Im Kalender" (left) and "Bearbeiten …" (right)
+        // Action buttons: "In Calendar" (left) and "Edit…" (right)
         let actions_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .build();
 
         let cal_btn = gtk::Button::builder()
-            .label(&gettext("In Calendar"))
-            .css_classes(vec!["flat"])
+            .label(gettext("In Calendar"))
+            .css_classes(["flat"])
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
@@ -40352,8 +40617,8 @@ impl MailPage {
         actions_box.append(&cal_btn);
 
         let edit_btn = gtk::Button::builder()
-            .label(&gettext("Edit…"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Edit…"))
+            .css_classes(["suggested-action"])
             .halign(gtk::Align::End)
             .build();
         let ev_for_edit = event.clone();
@@ -40420,7 +40685,7 @@ impl MailPage {
             .icon_name(if task.completed { "object-select-symbolic" } else { "checkbox-checked-symbolic" })
             .pixel_size(16)
             .valign(gtk::Align::Center)
-            .css_classes(vec![if task.completed { "success" } else { "accent" }])
+            .css_classes([if task.completed { "success" } else { "accent" }])
             .build();
         header_row.append(&task_icon);
 
@@ -40431,16 +40696,16 @@ impl MailPage {
             .xalign(0.0)
             .hexpand(true)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .build();
         header_row.append(&title_label);
 
         let close_btn = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .halign(gtk::Align::End)
-            .tooltip_text(&gettext("Close"))
+            .tooltip_text(gettext("Close"))
             .build();
         let pop_weak_close = popover.downgrade();
         close_btn.connect_clicked(move |_| {
@@ -40451,7 +40716,7 @@ impl MailPage {
         header_row.append(&close_btn);
         header_group.append(&header_row);
 
-        // List source name (only display if it differs from the title and is not generic "Aufgaben" / "Tasks")
+        // List source name (only display if it differs from the title and is not generic "Tasks")
         let list_name = task.source_display_name.trim();
         let is_duplicate_list = list_name.is_empty()
             || list_name.eq_ignore_ascii_case("Aufgaben")
@@ -40462,7 +40727,7 @@ impl MailPage {
         if !is_duplicate_list {
             let list_label = gtk::Label::builder()
                 .label(list_name)
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .xalign(0.0)
                 .margin_start(26)
                 .build();
@@ -40479,7 +40744,7 @@ impl MailPage {
         let status_icon = gtk::Image::builder()
             .icon_name(if task.completed { "object-select-symbolic" } else { "process-working-symbolic" })
             .pixel_size(15)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         status_box.append(&status_icon);
         let status_completed = gettext("Status: Completed");
@@ -40487,7 +40752,7 @@ impl MailPage {
         let status_str = if task.completed { &status_completed } else { &status_open };
         let status_label = gtk::Label::builder()
             .label(status_str)
-            .css_classes(vec!["body"])
+            .css_classes(["body"])
             .xalign(0.0)
             .build();
         status_box.append(&status_label);
@@ -40502,12 +40767,12 @@ impl MailPage {
             let due_icon = gtk::Image::builder()
                 .icon_name("preferences-system-time-symbolic")
                 .pixel_size(15)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build();
             due_box.append(&due_icon);
             let due_label = gtk::Label::builder()
                 .label(&format!("{}: {}", gettext("Due"), task.due.trim()))
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .xalign(0.0)
                 .build();
             due_box.append(&due_label);
@@ -40527,8 +40792,8 @@ impl MailPage {
             .build();
 
         let tasks_btn = gtk::Button::builder()
-            .label(&gettext("Open in Tasks"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Open in Tasks"))
+            .css_classes(["flat"])
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
@@ -40581,7 +40846,7 @@ impl MailPage {
                         .focusable(false)
                         .has_arrow(true)
                         .position(gtk::PositionType::Left)
-                        .css_classes(vec!["calendar-details-popover"])
+                        .css_classes(["calendar-details-popover"])
                         .build();
                     new_pop.set_parent(canvas);
                     page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
@@ -40594,7 +40859,7 @@ impl MailPage {
                     .focusable(false)
                     .has_arrow(true)
                     .position(gtk::PositionType::Left)
-                    .css_classes(vec!["calendar-details-popover"])
+                    .css_classes(["calendar-details-popover"])
                     .build();
                 new_pop.set_parent(canvas);
                 page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
@@ -40661,7 +40926,7 @@ impl MailPage {
             .wrap_mode(pango::WrapMode::WordChar)
             .xalign(0.0)
             .hexpand(true)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .can_target(false)
             .build();
         header_row.append(&title_label);
@@ -40685,7 +40950,7 @@ impl MailPage {
         let time_label = gtk::Label::builder()
             .label(&time_str)
             .xalign(0.0)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .can_target(false)
             .build();
         content.append(&time_label);
@@ -40696,7 +40961,7 @@ impl MailPage {
                 .xalign(0.0)
                 .ellipsize(pango::EllipsizeMode::End)
                 .max_width_chars(36)
-                .css_classes(vec!["caption"])
+                .css_classes(["caption"])
                 .can_target(false)
                 .build();
             content.append(&loc_label);
@@ -40711,7 +40976,7 @@ impl MailPage {
                 .lines(4)
                 .ellipsize(pango::EllipsizeMode::End)
                 .max_width_chars(36)
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .can_target(false)
                 .build();
             content.append(&desc_label);
@@ -40747,7 +41012,7 @@ impl MailPage {
                         .focusable(false)
                         .has_arrow(true)
                         .position(gtk::PositionType::Left)
-                        .css_classes(vec!["calendar-details-popover"])
+                        .css_classes(["calendar-details-popover"])
                         .build();
                     new_pop.set_parent(canvas);
                     page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
@@ -40760,7 +41025,7 @@ impl MailPage {
                     .focusable(false)
                     .has_arrow(true)
                     .position(gtk::PositionType::Left)
-                    .css_classes(vec!["calendar-details-popover"])
+                    .css_classes(["calendar-details-popover"])
                     .build();
                 new_pop.set_parent(canvas);
                 page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
@@ -40808,7 +41073,7 @@ impl MailPage {
             .icon_name(if task.completed { "object-select-symbolic" } else { "checkbox-checked-symbolic" })
             .pixel_size(14)
             .valign(gtk::Align::Center)
-            .css_classes(vec![if task.completed { "success" } else { "accent" }])
+            .css_classes([if task.completed { "success" } else { "accent" }])
             .build();
         header_row.append(&task_icon);
 
@@ -40818,7 +41083,7 @@ impl MailPage {
             .wrap_mode(pango::WrapMode::WordChar)
             .xalign(0.0)
             .hexpand(true)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .can_target(false)
             .build();
         header_row.append(&title_label);
@@ -40832,7 +41097,7 @@ impl MailPage {
         let status_label = gtk::Label::builder()
             .label(&status_str)
             .xalign(0.0)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .can_target(false)
             .build();
         content.append(&status_label);
@@ -40841,7 +41106,7 @@ impl MailPage {
             let due_label = gtk::Label::builder()
                 .label(&format!("{}: {}", gettext("Due"), task.due.trim()))
                 .xalign(0.0)
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .can_target(false)
                 .build();
             content.append(&due_label);
@@ -40858,7 +41123,7 @@ impl MailPage {
             let list_label = gtk::Label::builder()
                 .label(list_name)
                 .xalign(0.0)
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .can_target(false)
                 .build();
             content.append(&list_label);
@@ -40894,7 +41159,7 @@ impl MailPage {
             .spacing(4)
             .valign(gtk::Align::Center)
             .can_target(false)
-            .css_classes(vec![
+            .css_classes([
                 "mail-memo-scope-badge",
                 if is_team { "is-team" } else { "is-private" },
             ])
@@ -40963,7 +41228,7 @@ impl MailPage {
             let date_lbl = gtk::Label::builder()
                 .label(&formatted_date)
                 .valign(gtk::Align::Center)
-                .css_classes(vec!["memo-note-popover-date"])
+                .css_classes(["memo-note-popover-date"])
                 .build();
             header_row.append(&date_lbl);
         }
@@ -40985,7 +41250,7 @@ impl MailPage {
             .xalign(0.0)
             .selectable(false)
             .can_target(false)
-            .css_classes(vec!["memo-note-popover-body"])
+            .css_classes(["memo-note-popover-body"])
             .max_width_chars(38)
             .lines(10)
             .ellipsize(pango::EllipsizeMode::End)
@@ -41003,7 +41268,7 @@ impl MailPage {
                 .spacing(6)
                 .valign(gtk::Align::Center)
                 .can_target(false)
-                .css_classes(vec!["memo-note-linked-mail-pill"])
+                .css_classes(["memo-note-linked-mail-pill"])
                 .build();
             mail_context_row.append(
                 &gtk::Image::builder()
@@ -41054,7 +41319,7 @@ impl MailPage {
                         .focusable(false)
                         .has_arrow(true)
                         .position(gtk::PositionType::Left)
-                        .css_classes(vec!["calendar-details-popover", "memo-note-popover"])
+                        .css_classes(["calendar-details-popover", "memo-note-popover"])
                         .build();
                     new_pop.set_parent(canvas);
                     page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
@@ -41067,7 +41332,7 @@ impl MailPage {
                     .focusable(false)
                     .has_arrow(true)
                     .position(gtk::PositionType::Left)
-                    .css_classes(vec!["calendar-details-popover", "memo-note-popover"])
+                    .css_classes(["calendar-details-popover", "memo-note-popover"])
                     .build();
                 new_pop.set_parent(canvas);
                 page.imp().active_memo_hover_popover.replace(Some(new_pop.clone()));
@@ -41118,7 +41383,7 @@ impl MailPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
             .valign(gtk::Align::Center)
-            .css_classes(vec![
+            .css_classes([
                 "mail-memo-scope-badge",
                 if is_team { "is-team" } else { "is-private" },
             ])
@@ -41183,7 +41448,7 @@ impl MailPage {
             let date_lbl = gtk::Label::builder()
                 .label(&formatted_date)
                 .valign(gtk::Align::Center)
-                .css_classes(vec!["memo-note-popover-date"])
+                .css_classes(["memo-note-popover-date"])
                 .build();
             header_row.append(&date_lbl);
         }
@@ -41194,9 +41459,9 @@ impl MailPage {
 
         let edit_btn = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
-            .css_classes(vec!["flat", "circular", "mail-memo-action-btn"])
+            .css_classes(["flat", "circular", "mail-memo-action-btn"])
             .valign(gtk::Align::Center)
-            .tooltip_text(&gettext("Edit memo"))
+            .tooltip_text(gettext("Edit memo"))
             .build();
         let page_for_open = page_weak.clone();
         let popover_weak_open = popover.downgrade();
@@ -41227,14 +41492,14 @@ impl MailPage {
 
         let del_btn = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .css_classes(vec![
+            .css_classes([
                 "flat",
                 "circular",
                 "mail-memo-action-btn",
                 "mail-memo-delete-btn",
             ])
             .valign(gtk::Align::Center)
-            .tooltip_text(&gettext("Delete memo"))
+            .tooltip_text(gettext("Delete memo"))
             .build();
         let page_for_del = page_weak.clone();
         let pop_weak_del = popover.downgrade();
@@ -41266,7 +41531,7 @@ impl MailPage {
             .wrap_mode(pango::WrapMode::WordChar)
             .xalign(0.0)
             .selectable(true)
-            .css_classes(vec!["memo-note-popover-body"])
+            .css_classes(["memo-note-popover-body"])
             .max_width_chars(38)
             .lines(10)
             .ellipsize(pango::EllipsizeMode::End)
@@ -41308,10 +41573,10 @@ impl MailPage {
             );
             let show_mail_btn = gtk::Button::builder()
                 .child(&show_mail_box)
-                .css_classes(vec!["flat", "memo-note-linked-mail-btn"])
+                .css_classes(["flat", "memo-note-linked-mail-btn"])
                 .halign(gtk::Align::Fill)
                 .hexpand(true)
-                .tooltip_text(&gettext("Open corresponded email"))
+                .tooltip_text(gettext("Open corresponded email"))
                 .build();
             let page_for_mail = page_weak.clone();
             let pop_weak_mail = popover.downgrade();
@@ -41801,7 +42066,7 @@ impl MailPage {
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(8)
                 .valign(gtk::Align::Fill)
-                .css_classes(vec!["mail-memo-banner-row"])
+                .css_classes(["mail-memo-banner-row"])
                 .build();
 
             let is_team = crate::services::calendar_store_service::memo_is_team_shared(&memo);
@@ -41810,7 +42075,7 @@ impl MailPage {
                 .spacing(4)
                 .valign(gtk::Align::Fill)
                 .vexpand(true)
-                .css_classes(vec![
+                .css_classes([
                     "mail-memo-scope-badge",
                     if is_team { "is-team" } else { "is-private" },
                 ])
@@ -41856,8 +42121,8 @@ impl MailPage {
                 .xalign(0.0)
                 .hexpand(true)
                 .valign(gtk::Align::Center)
-                .tooltip_text(&gettext("Click to edit memo"))
-                .css_classes(vec!["mail-memo-banner-text"])
+                .tooltip_text(gettext("Click to edit memo"))
+                .css_classes(["mail-memo-banner-text"])
                 .build();
             text_label.set_cursor_from_name(Some("pointer"));
             let click_text = gtk::GestureClick::builder().button(1).build();
@@ -41873,9 +42138,9 @@ impl MailPage {
 
             let edit_btn = gtk::Button::builder()
                 .icon_name("document-edit-symbolic")
-                .tooltip_text(&gettext("Edit memo"))
+                .tooltip_text(gettext("Edit memo"))
                 .valign(gtk::Align::Center)
-                .css_classes(vec!["flat", "circular", "mail-memo-action-btn"])
+                .css_classes(["flat", "circular", "mail-memo-action-btn"])
                 .build();
             let page_for_edit = self.downgrade();
             let memo_for_edit = memo.clone();
@@ -41895,9 +42160,9 @@ impl MailPage {
 
             let delete_btn = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
-                .tooltip_text(&gettext("Delete memo"))
+                .tooltip_text(gettext("Delete memo"))
                 .valign(gtk::Align::Center)
-                .css_classes(vec![
+                .css_classes([
                     "flat",
                     "circular",
                     "mail-memo-action-btn",
@@ -42133,26 +42398,55 @@ impl MailPage {
         let Some(selection) = selection.as_ref() else {
             return MailSelectionAnchor::default();
         };
-        let index = self.imp().last_selected_mail_index.get()
-            .or_else(|| {
-                let sel = selection.selection();
-                (!sel.is_empty()).then(|| sel.minimum())
-            });
-        let id = index.and_then(|idx| {
-            selection.item(idx).and_then(|item| {
-                item.clone().downcast::<MailMessageObject>().ok()
-                    .or_else(|| {
-                        item.downcast::<gtk::TreeListRow>().ok()
-                            .and_then(|r| r.item())
-                            .and_then(|obj| obj.downcast::<MailMessageObject>().ok())
-                    })
-                    .map(|msg| msg.id())
+        let viewer_id = self
+            .imp()
+            .mail_viewer
+            .borrow()
+            .as_ref()
+            .and_then(|v| v.imp().current_message_id.borrow().clone());
+        let selected_id = self
+            .selected_message()
+            .map(|msg| msg.id())
+            .or(viewer_id);
+        let index = if let Some(ref target_id) = selected_id {
+            (0..selection.n_items()).find(|&idx| {
+                selection
+                    .item(idx)
+                    .and_downcast::<MailMessageObject>()
+                    .is_some_and(|m| m.id() == *target_id)
+            })
+        } else {
+            None
+        }
+        .or_else(|| {
+            if !self.imp().mail_threading.get() {
+                self.imp().last_selected_mail_index.get()
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            let sel = selection.selection();
+            (!sel.is_empty()).then(|| sel.minimum())
+        })
+        .or_else(|| self.imp().last_selected_mail_index.get());
+        let id = selected_id.or_else(|| {
+            index.and_then(|idx| {
+                selection.item(idx).and_then(|item| {
+                    item.clone()
+                        .downcast::<MailMessageObject>()
+                        .ok()
+                        .or_else(|| {
+                            item.downcast::<gtk::TreeListRow>()
+                                .ok()
+                                .and_then(|r| r.item())
+                                .and_then(|obj| obj.downcast::<MailMessageObject>().ok())
+                        })
+                        .map(|msg| msg.id())
+                })
             })
         });
-        MailSelectionAnchor {
-            id,
-            index,
-        }
+        MailSelectionAnchor { id, index }
     }
 
     fn select_message_after_reload(&self, previous: &MailSelectionAnchor) {
@@ -42186,19 +42480,109 @@ impl MailPage {
                 if let Some(uid_idx) = previous_id.rfind(':') {
                     let prev_uid = &previous_id[uid_idx + 1..];
                     let prev_prefix = &previous_id[..uid_idx];
-                    let prev_source = prev_prefix.strip_prefix("eds:").unwrap_or(prev_prefix);
-                    let prev_source = prev_source.split(':').next().unwrap_or(prev_source);
-                    for index in 0..selection.n_items() {
-                        let Some(message) = selection.item(index).and_downcast::<MailMessageObject>()
-                        else {
-                            continue;
-                        };
-                        if let Some(loc) = message.backend_location() {
-                            if loc.message_uid == prev_uid && account_sources_match(prev_source, &loc.source_uid) {
+                    let without_eds = prev_prefix.strip_prefix("eds:").unwrap_or(prev_prefix);
+                    if let Some(fld_idx) = without_eds.rfind(':') {
+                        let prev_source = &without_eds[..fld_idx];
+                        let prev_folder = &without_eds[fld_idx + 1..];
+                        for index in 0..selection.n_items() {
+                            let Some(message) = selection.item(index).and_downcast::<MailMessageObject>()
+                            else {
+                                continue;
+                            };
+                            if let Some(loc) = message.backend_location() {
+                                if loc.message_uid == prev_uid
+                                    && account_sources_match(prev_source, &loc.source_uid)
+                                    && folder_names_match(prev_folder, &loc.folder_name)
+                                {
+                                    target_index = Some(index);
+                                    found_id = Some(message.id().to_string());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if target_index.is_none() && self.imp().mail_threading.get() {
+                if let Some(thread_sel) = self.imp().thread_selection.borrow().as_ref().cloned() {
+                    for t_idx in 0..thread_sel.n_items() {
+                        let msg_opt = thread_sel.item(t_idx).and_then(|item| {
+                            item.clone()
+                                .downcast::<MailMessageObject>()
+                                .ok()
+                                .or_else(|| {
+                                    item.downcast::<gtk::TreeListRow>()
+                                        .ok()
+                                        .and_then(|r| r.item())
+                                        .and_then(|o| o.downcast::<MailMessageObject>().ok())
+                                })
+                        });
+                        if let Some(msg) = msg_opt {
+                            if msg.id() == previous_id {
+                                let prev_sync = self.imp().thread_selection_syncing.replace(true);
+                                selection.unselect_all();
+                                self.imp().thread_selection_syncing.set(prev_sync);
+                                self.select_single_thread_row(&thread_sel, t_idx);
+                                let active_folder = self.active_folder_selection();
+                                self.save_anchor_for_folder(
+                                    &active_folder,
+                                    MailSelectionAnchor {
+                                        id: Some(msg.id()),
+                                        index: Some(t_idx),
+                                    },
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if target_index.is_none()
+            && previous.id.is_none()
+            && previous.index.is_none()
+            && self.imp().mail_threading.get()
+        {
+            if let Some(thread_sel) = self.imp().thread_selection.borrow().as_ref().cloned() {
+                if thread_sel.n_items() > 0 {
+                    let top_msg = thread_sel.item(0).and_then(|item| {
+                        item.clone()
+                            .downcast::<MailMessageObject>()
+                            .ok()
+                            .or_else(|| {
+                                item.downcast::<gtk::TreeListRow>()
+                                    .ok()
+                                    .and_then(|r| r.item())
+                                    .and_then(|o| o.downcast::<MailMessageObject>().ok())
+                            })
+                    });
+                    if let Some(top_msg) = top_msg {
+                        let top_id = top_msg.id();
+                        for index in 0..selection.n_items() {
+                            if selection
+                                .item(index)
+                                .and_downcast::<MailMessageObject>()
+                                .is_some_and(|m| m.id() == top_id)
+                            {
                                 target_index = Some(index);
-                                found_id = Some(message.id().to_string());
+                                found_id = Some(top_id.clone());
                                 break;
                             }
+                        }
+                        if target_index.is_none() {
+                            let prev_sync = self.imp().thread_selection_syncing.replace(true);
+                            selection.unselect_all();
+                            self.imp().thread_selection_syncing.set(prev_sync);
+                            self.select_single_thread_row(&thread_sel, 0);
+                            let active_folder = self.active_folder_selection();
+                            self.save_anchor_for_folder(
+                                &active_folder,
+                                MailSelectionAnchor {
+                                    id: Some(top_id),
+                                    index: Some(0),
+                                },
+                            );
+                            return;
                         }
                     }
                 }
@@ -42208,7 +42592,6 @@ impl MailPage {
             fallback_selection_index(selection.n_items(), previous.index).unwrap_or(0)
         });
 
-        selection.select_item(index, true);
         self.imp().last_selected_mail_index.set(Some(index));
         self.imp().mail_selection_anchor.set(Some(index));
         let selected_id = found_id.or_else(|| {
@@ -42218,6 +42601,7 @@ impl MailPage {
                 .map(|message| message.id())
         });
         self.sync_thread_selection(selected_id.as_deref());
+        selection.select_item(index, true);
 
         let active_folder = self.active_folder_selection();
         self.save_anchor_for_folder(
@@ -42359,9 +42743,13 @@ impl MailPage {
                 return;
             };
             page.imp().mail_background_sync_in_flight.set(false);
-            let Ok(Ok(updated_folders)) = result else {
+            let Ok(Ok(mut updated_folders)) = result else {
                 return;
             };
+            updated_folders.retain(|f| {
+                let canon = Self::canonical_account_uid(&f.source_uid);
+                eds_service::is_source_enabled_for_service(canon, EdsSourceKind::Mail)
+            });
             if updated_folders.is_empty() {
                 return;
             }
@@ -42376,7 +42764,9 @@ impl MailPage {
                     HashMap::<(String, String), camel_mail_service::CamelFolderSummary>::new();
                 for f in existing.iter() {
                     let canon_src = Self::canonical_account_uid(&f.source_uid).to_string();
-                    folder_map.insert((canon_src, f.folder_name.clone()), f.clone());
+                    if eds_service::is_source_enabled_for_service(&canon_src, EdsSourceKind::Mail) {
+                        folder_map.insert((canon_src, f.folder_name.clone()), f.clone());
+                    }
                 }
                 for f in updated_folders {
                     let canon_src = Self::canonical_account_uid(&f.source_uid).to_string();
@@ -42655,6 +43045,12 @@ impl MailPage {
     }
 
     fn start_incremental_camel_update(&self, change: camel_mail_service::CamelChangeEvent) {
+        if !eds_service::is_source_enabled_for_service(
+            Self::canonical_account_uid(&change.source_uid),
+            EdsSourceKind::Mail,
+        ) {
+            return;
+        }
         match change.kind {
             camel_mail_service::CamelChangeKind::FolderDeleted => {
                 self.apply_camel_folder_deleted(&change);
@@ -42903,6 +43299,12 @@ impl MailPage {
                         });
 
                     let mut structure_changed = false;
+                    let latest_selection = page.selected_message_anchor();
+                    let effective_selection = if latest_selection.id.is_some() {
+                        latest_selection
+                    } else {
+                        previous_selection.clone()
+                    };
                     if is_active_folder {
                         if let Some(store) = page.imp().message_store.borrow().as_ref() {
                             if !removed_ids.is_empty() {
@@ -42915,9 +43317,10 @@ impl MailPage {
                         }
                     }
                     if structure_changed {
-                        page.invalidate_message_filters();
                         if let Some(store) = page.imp().message_store.borrow().as_ref().cloned() {
-                            page.begin_incremental_thread_refresh(store, previous_selection);
+                            page.begin_incremental_thread_refresh(store, effective_selection);
+                        } else {
+                            page.invalidate_message_filters();
                         }
                     } else {
                         let current_filter = page
@@ -43176,6 +43579,65 @@ impl MailPage {
             && eds_service::is_source_enabled_for_service(canon, EdsSourceKind::Mail)
     }
 
+    pub(crate) fn is_message_account_active(&self, msg: &MailMessageObject) -> bool {
+        if let Some(loc) = msg.backend_location() {
+            if !loc.source_uid.is_empty() {
+                return self.is_mail_account_active(&loc.source_uid);
+            }
+        }
+        if msg.id().starts_with("draft-store:") {
+            return true;
+        }
+        if let Some(raw_headers) = msg.raw_headers() {
+            let header_str = String::from_utf8_lossy(&raw_headers);
+            for line in header_str.lines() {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed
+                    .strip_prefix("X-Evolution-Source-Folder:")
+                    .or_else(|| trimmed.strip_prefix("X-Evolution-Fcc:"))
+                {
+                    if let Some(folder_uri) = rest.trim().strip_prefix("folder://") {
+                        if let Some((uid, _)) = folder_uri.split_once('/') {
+                            let uid = uid.trim();
+                            if !uid.is_empty()
+                                && uid != "local"
+                                && !self.is_mail_account_active(uid)
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                if let Some(delivered_to) = trimmed.strip_prefix("Delivered-To:") {
+                    let addr = delivered_to.trim();
+                    if eds_service::is_email_account_disabled_for_mail(addr)
+                        || self.is_mail_account_paused(addr)
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        for (_, email) in parse_email_recipients(&msg.recipient_to())
+            .into_iter()
+            .chain(parse_email_recipients(&msg.recipient_cc()))
+        {
+            if eds_service::is_email_account_disabled_for_mail(&email)
+                || self.is_mail_account_paused(&email)
+            {
+                return false;
+            }
+        }
+        let sender_email = msg.sender_email();
+        if !sender_email.trim().is_empty()
+            && (eds_service::is_email_account_disabled_for_mail(&sender_email)
+                || self.is_mail_account_paused(&sender_email))
+        {
+            return false;
+        }
+        true
+    }
+
     pub(crate) fn is_mail_account_paused(&self, source_uid: &str) -> bool {
         let canon = Self::canonical_account_uid(source_uid);
         if canon.is_empty() {
@@ -43260,9 +43722,9 @@ impl MailPage {
             display_name.trim()
         };
         if now_paused {
-            self.show_toast(&format!("Konto „{label_name}“ deaktiviert"));
+            self.show_toast(&gettext("Account “{name}” disabled").replace("{name}", &label_name));
         } else {
-            self.show_toast(&format!("Konto „{label_name}“ aktiviert"));
+            self.show_toast(&gettext("Account “{name}” enabled").replace("{name}", &label_name));
         }
     }
 
@@ -43412,13 +43874,7 @@ impl MailPage {
             let mut removed_ids = HashSet::new();
             for index in 0..store.n_items() {
                 if let Some(message) = store.item(index).and_downcast::<MailMessageObject>() {
-                    if message.backend_location().is_some_and(|loc| {
-                        !loc.source_uid.is_empty()
-                            && !eds_service::is_source_enabled_for_service(
-                                &loc.source_uid,
-                                EdsSourceKind::Mail,
-                            )
-                    }) {
+                    if !self.is_message_account_active(&message) {
                         removed_ids.insert(message.id());
                     }
                 }
@@ -43472,13 +43928,10 @@ impl MailPage {
             source_store.remove_all();
             let configured_accounts = AccountConfigStore::default().load();
             for profile in &configured_accounts {
-                let eds_uid =
-                    crate::services::account_config_service::eds_source_uid_for_email(&profile.email);
                 let canon = Self::canonical_account_uid(&profile.id);
                 if profile.enabled
                     && eds_service::is_source_enabled_for_service(canon, EdsSourceKind::Mail)
-                    && (eds_uid.is_empty()
-                        || eds_service::is_source_enabled_for_service(&eds_uid, EdsSourceKind::Mail))
+                    && !eds_service::is_email_account_disabled_for_mail(&profile.email)
                 {
                     source_store.append(&EdsSourceObject::from_account_profile(profile));
                 }
@@ -44185,6 +44638,10 @@ impl MailPage {
                             graph_next_links: HashMap::new(),
                             graph_search_next_cursor: None,
                         };
+                        local_messages.retain(|m| {
+                            local_folders.contains(&m.folder_id)
+                                && !parsed_mail_belongs_to_disabled_account(m)
+                        });
                         result = MailPageLoadResult::Combined {
                             camel,
                             local_messages: std::mem::take(local_messages),
@@ -44197,7 +44654,7 @@ impl MailPage {
                 }
             }
             // Supplement with persisted DraftStoreService drafts so drafts saved in the composer
-            // are always visible in the Drafts ("Entwürfe") folder even before/without backend sync.
+            // are always visible in the Drafts folder even before/without backend sync.
             if req_offset == 0
                 && req_folder_name
                     .as_deref()
@@ -44208,6 +44665,11 @@ impl MailPage {
                     .into_iter()
                     .filter(|d| {
                         draft_store_message_has_meaningful_content(d)
+                            && (d.source_uid.trim().is_empty()
+                                || eds_service::is_source_enabled_for_service(
+                                    Self::canonical_account_uid(&d.source_uid),
+                                    EdsSourceKind::Mail,
+                                ))
                             && req_source_uid.as_deref().is_none_or(|src| {
                                 d.source_uid.trim().is_empty()
                                     || account_sources_match(&d.source_uid, src)
@@ -44927,17 +45389,14 @@ impl MailPage {
             "Applying mail load to GTK models"
         );
         let previous_selection = if replace {
+            let current = self.selected_message_anchor();
             let active_folder = self.active_folder_selection();
             let mut anchor = self.anchor_for_folder(&active_folder);
-            if anchor.id.is_none() {
-                if let Some(msg) = self.selected_message() {
-                    anchor.id = Some(msg.id().to_string());
-                }
+            if current.id.is_some() {
+                anchor.id = current.id;
             }
-            if anchor.index.is_none() {
-                if let Some(idx) = self.imp().last_selected_mail_index.get() {
-                    anchor.index = Some(idx);
-                }
+            if current.index.is_some() {
+                anchor.index = current.index;
             }
             anchor
         } else {
@@ -45782,7 +46241,9 @@ impl MailPage {
                         .item(index as u32)
                         .and_downcast::<MailMessageObject>()
                     {
-                        state.messages.push(message);
+                        if self.is_message_account_active(&message) {
+                            state.messages.push(message);
+                        }
                     }
                 }
                 state.next_message = end;
@@ -46017,22 +46478,35 @@ impl MailPage {
                         break;
                     }
                 }
-                let roots_differ = common_prefix < old_len || common_prefix < new_len;
+                let mut common_suffix = 0usize;
+                while common_suffix < (old_len - common_prefix)
+                    && common_suffix < (new_len - common_prefix)
+                {
+                    let old_idx = old_len - 1 - common_suffix;
+                    let new_idx = new_len - 1 - common_suffix;
+                    if root_store.item(old_idx as u32).as_ref() == Some(&root_objects[new_idx]) {
+                        common_suffix += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let removed_count = old_len - common_prefix - common_suffix;
+                let added_slice = &root_objects[common_prefix..(new_len - common_suffix)];
+                let roots_differ = removed_count > 0 || !added_slice.is_empty();
+                let prev_syncing = self.imp().thread_selection_syncing.replace(true);
                 if roots_differ {
                     root_store.splice(
                         common_prefix as u32,
-                        (old_len - common_prefix) as u32,
-                        &root_objects[common_prefix..],
+                        removed_count as u32,
+                        added_slice,
                     );
                     if let Some(filter) = self.imp().thread_filter.borrow().as_ref() {
                         filter.changed(gtk::FilterChange::Different);
                     }
                     self.restore_expanded_threads();
                 }
-                if state.store.n_items() > 0 {
-                    let count = state.store.n_items();
-                    state.store.items_changed(0, count, count);
-                }
+                self.imp().thread_selection_syncing.set(prev_syncing);
+                self.queue_mail_table_draw();
                 if let Some(scroll_y) = latest_scroll_y {
                     if let Some(adj) = self.imp().list_vadjustment.borrow().as_ref() {
                         let max_val = (adj.upper() - adj.page_size()).max(0.0);
@@ -46053,8 +46527,10 @@ impl MailPage {
                 .then(|| self.imp().list_vadjustment.borrow().as_ref().map(|a| a.value()))
                 .flatten()
         });
-        self.restore_expanded_threads();
+        self.imp().thread_selection_syncing.set(true);
         self.invalidate_message_filters();
+        self.restore_expanded_threads();
+        self.imp().thread_selection_syncing.set(false);
 
         let selected_folder = self
             .imp()
@@ -46437,7 +46913,9 @@ impl MailPage {
                 } else {
                     data.folder_id.as_str()
                 };
-                let local = if data.folder_id == "all" {
+                let local = if !folders.is_empty() {
+                    (0, 0)
+                } else if data.folder_id == "all" {
                     local_counts
                         .map(|counts| {
                             counts
@@ -46497,10 +46975,14 @@ impl MailPage {
         }
 
         if let Some(unified_list) = self.imp().unified_folder_list.borrow().as_ref() {
-            let local_inbox_unread = local_counts
-                .and_then(|counts| counts.get("inbox").copied())
-                .map(|(u, _)| u)
-                .unwrap_or(0);
+            let local_inbox_unread = if folders.is_empty() {
+                local_counts
+                    .and_then(|counts| counts.get("inbox").copied())
+                    .map(|(u, _)| u)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
             let camel_inbox_unread = folders
                 .iter()
                 .filter(|f| {
@@ -46516,6 +46998,9 @@ impl MailPage {
                         .iter()
                         .filter(|(k, _)| {
                             let k = k.as_str();
+                            if !folders.is_empty() && !k.starts_with("custom:") {
+                                return false;
+                            }
                             k != "trash" && k != "junk" && k != "spam"
                         })
                         .fold(0_u32, |acc, (_, (u, _))| acc.saturating_add(*u))
@@ -46533,10 +47018,14 @@ impl MailPage {
                 .fold(0_u32, |acc, f| acc.saturating_add(f.unread_count));
             let unified_total_unread = local_total_unread.saturating_add(camel_total_unread);
 
-            let local_sent_unread = local_counts
-                .and_then(|counts| counts.get("sent").copied())
-                .map(|(u, _)| u)
-                .unwrap_or(0);
+            let local_sent_unread = if folders.is_empty() {
+                local_counts
+                    .and_then(|counts| counts.get("sent").copied())
+                    .map(|(u, _)| u)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
             let camel_sent_unread = folders
                 .iter()
                 .filter(|f| {
@@ -46646,7 +47135,7 @@ fn append_itip_invitation(attachment_bar: &gtk::Box, invitation: ItipInvitation)
     let row = adw::ActionRow::builder()
         .title(title)
         .subtitle(&details.join(" · "))
-        .css_classes(vec!["card"])
+        .css_classes(["card"])
         .build();
 
     if matches!(
@@ -46654,9 +47143,9 @@ fn append_itip_invitation(attachment_bar: &gtk::Box, invitation: ItipInvitation)
         ItipMethod::Request | ItipMethod::Publish | ItipMethod::Add
     ) {
         let import_button = gtk::Button::builder()
-            .label(&gettext("Import Locally"))
-            .tooltip_text(&gettext("Import this invitation into the app-owned calendar"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Import Locally"))
+            .tooltip_text(gettext("Import this invitation into the app-owned calendar"))
+            .css_classes(["suggested-action"])
             .valign(gtk::Align::Center)
             .build();
         row.add_suffix(&import_button);
@@ -46731,8 +47220,8 @@ fn append_itip_invitation(attachment_bar: &gtk::Box, invitation: ItipInvitation)
         }
     } else {
         let status = gtk::Label::builder()
-            .label(&gettext("Account synchronization required"))
-            .css_classes(vec!["dim-label", "caption"])
+            .label(gettext("Account synchronization required"))
+            .css_classes(["dim-label", "caption"])
             .valign(gtk::Align::Center)
             .build();
         row.add_suffix(&status);
@@ -46976,12 +47465,21 @@ fn show_mail_toast_with_folder_action<W: IsA<gtk::Widget>>(
     message: &str,
     folder: &std::path::Path,
 ) {
+    let parent_win_weak = widget
+        .root()
+        .and_downcast::<gtk::Window>()
+        .map(|w| w.downgrade());
     if let Some(overlay) = widget.ancestor(adw::ToastOverlay::static_type()).and_downcast::<adw::ToastOverlay>() {
         let toast = adw::Toast::new(message);
         toast.set_button_label(Some(&gettext("Open Folder")));
         let folder_path = folder.to_path_buf();
+        let win_weak = parent_win_weak.clone();
         toast.connect_button_clicked(move |_| {
-            let _ = crate::services::quick_preview_service::open_folder_in_file_manager(&folder_path);
+            let parent = win_weak.as_ref().and_then(|w| w.upgrade());
+            let _ = crate::services::quick_preview_service::open_folder_in_file_manager_with_parent(
+                &folder_path,
+                parent.as_ref(),
+            );
         });
         overlay.add_toast(toast);
         return;
@@ -46991,8 +47489,13 @@ fn show_mail_toast_with_folder_action<W: IsA<gtk::Widget>>(
             let toast = adw::Toast::new(message);
             toast.set_button_label(Some(&gettext("Open Folder")));
             let folder_path = folder.to_path_buf();
+            let win_weak = window.downgrade();
             toast.connect_button_clicked(move |_| {
-                let _ = crate::services::quick_preview_service::open_folder_in_file_manager(&folder_path);
+                let parent = win_weak.upgrade().map(|w| w.upcast::<gtk::Window>());
+                let _ = crate::services::quick_preview_service::open_folder_in_file_manager_with_parent(
+                    &folder_path,
+                    parent.as_ref(),
+                );
             });
             window.add_toast(&toast);
             return;
@@ -47541,7 +48044,7 @@ mod tests {
             configured_sources: 1,
             successful_sources: 0,
             failed_sources: 1,
-            warning: Some("OAuth-Anmeldung fehlgeschlagen".to_string()),
+            warning: Some("OAuth sign-in failed".to_string()),
             is_graph: false,
             search_query: None,
             graph_search_next_cursor: None,
@@ -47549,7 +48052,7 @@ mod tests {
         });
 
         assert!(status.contains(&gettext("{} account not synchronized").replace("{}", "1")));
-        assert!(status.contains("OAuth-Anmeldung fehlgeschlagen"));
+        assert!(status.contains("OAuth sign-in failed"));
     }
 
     #[test]
@@ -48075,7 +48578,7 @@ mod tests {
         };
         assert_eq!(
             displayed_message_search_status(&result),
-            format!("{}: 4", crate::i18n::gettext("Matches"))
+            format!("{}: 4", gettext("Matches"))
         );
         assert!(displayed_message_search_has_matches(&result));
 
@@ -48087,7 +48590,7 @@ mod tests {
         };
         assert_eq!(
             displayed_message_search_status(&not_found),
-            format!("{}: 0", crate::i18n::gettext("Matches"))
+            format!("{}: 0", gettext("Matches"))
         );
         assert!(!displayed_message_search_has_matches(&not_found));
     }
@@ -49775,37 +50278,37 @@ mod tests {
     fn test_folder_selection_title_and_icon() {
         let inbox = FolderSelection::from_folder_id("inbox");
         let (inbox_title, inbox_icon) = inbox.title_and_icon();
-        assert_eq!(inbox_title, crate::i18n::gettext("Inbox"));
+        assert_eq!(inbox_title, gettext("Inbox"));
         assert_eq!(inbox_icon, "mail-inbox-symbolic");
 
         let sent = FolderSelection::from_folder_id("sent");
         let (sent_title, sent_icon) = sent.title_and_icon();
-        assert_eq!(sent_title, crate::i18n::gettext("Sent"));
+        assert_eq!(sent_title, gettext("Sent"));
         assert_eq!(sent_icon, "mail-send-symbolic");
 
         let drafts = FolderSelection::from_folder_id("drafts");
         let (drafts_title, drafts_icon) = drafts.title_and_icon();
-        assert_eq!(drafts_title, crate::i18n::gettext("Drafts"));
+        assert_eq!(drafts_title, gettext("Drafts"));
         assert_eq!(drafts_icon, "mail-drafts-symbolic");
 
         let trash = FolderSelection::from_folder_id("trash");
         let (trash_title, trash_icon) = trash.title_and_icon();
-        assert_eq!(trash_title, crate::i18n::gettext("Trash"));
+        assert_eq!(trash_title, gettext("Trash"));
         assert_eq!(trash_icon, "user-trash-symbolic");
 
         let archive = FolderSelection::from_folder_id("archive");
         let (archive_title, archive_icon) = archive.title_and_icon();
-        assert_eq!(archive_title, crate::i18n::gettext("Archive"));
+        assert_eq!(archive_title, gettext("Archive"));
         assert_eq!(archive_icon, "folder-symbolic");
 
         let spam = FolderSelection::from_folder_id("spam");
         let (spam_title, spam_icon) = spam.title_and_icon();
-        assert_eq!(spam_title, crate::i18n::gettext("Junk"));
+        assert_eq!(spam_title, gettext("Junk"));
         assert_eq!(spam_icon, "mail-mark-junk-symbolic");
 
         let outbox = FolderSelection::from_folder_id("outbox");
         let (outbox_title, outbox_icon) = outbox.title_and_icon();
-        assert_eq!(outbox_title, crate::i18n::gettext("Outbox"));
+        assert_eq!(outbox_title, gettext("Outbox"));
         assert_eq!(outbox_icon, "mail-outbox-symbolic");
 
         let custom_inbox = FolderSelection {
@@ -49826,7 +50329,7 @@ mod tests {
             "Alle Nachrichten"
         );
         let spam_title = MailPage::clean_folder_display_title("[Gmail]/Spam");
-        assert_eq!(spam_title, crate::i18n::gettext("Junk"));
+        assert_eq!(spam_title, gettext("Junk"));
         assert_eq!(
             MailPage::clean_folder_display_title("[Google Mail]/Wichtig"),
             "Wichtig"
@@ -49836,11 +50339,11 @@ mod tests {
             "2026"
         );
         let t_inbox = MailPage::clean_folder_display_title("INBOX");
-        assert_eq!(t_inbox, crate::i18n::gettext("Inbox"));
+        assert_eq!(t_inbox, gettext("Inbox"));
         let t_inbox_lower = MailPage::clean_folder_display_title("inbox");
-        assert_eq!(t_inbox_lower, crate::i18n::gettext("Inbox"));
+        assert_eq!(t_inbox_lower, gettext("Inbox"));
         let t_post = MailPage::clean_folder_display_title("Posteingang");
-        assert_eq!(t_post, crate::i18n::gettext("Inbox"));
+        assert_eq!(t_post, gettext("Inbox"));
     }
 
     #[test]
@@ -50157,8 +50660,8 @@ mod tests {
         let inbox = FolderSelection::from_folder_id("inbox");
         let exp_3_102 = format!(
             "Posteingang: {}, {}",
-            crate::i18n::ngettext("1 unread", "{} unread", 3).replace("{}", "3"),
-            crate::i18n::ngettext("1 total", "{} total", 102).replace("{}", "102")
+            ngettext("1 unread", "{} unread", 3).replace("{}", "3"),
+            ngettext("1 total", "{} total", 102).replace("{}", "102")
         );
         assert_eq!(
             MailPage::format_drawer_folder_tooltip(&inbox, "Posteingang", 3, 102),
@@ -50166,8 +50669,8 @@ mod tests {
         );
         let exp_1_102 = format!(
             "Posteingang: {}, {}",
-            crate::i18n::ngettext("1 unread", "{} unread", 1).replace("{}", "1"),
-            crate::i18n::ngettext("1 total", "{} total", 102).replace("{}", "102")
+            ngettext("1 unread", "{} unread", 1).replace("{}", "1"),
+            ngettext("1 total", "{} total", 102).replace("{}", "102")
         );
         assert_eq!(
             MailPage::format_drawer_folder_tooltip(&inbox, "Posteingang", 1, 102),
@@ -50175,7 +50678,7 @@ mod tests {
         );
         let exp_102 = format!(
             "Posteingang: {}",
-            crate::i18n::ngettext("{} email", "{} emails", 102).replace("{}", "102")
+            ngettext("{} email", "{} emails", 102).replace("{}", "102")
         );
         assert_eq!(
             MailPage::format_drawer_folder_tooltip(&inbox, "Posteingang", 0, 102),
@@ -50183,18 +50686,18 @@ mod tests {
         );
         assert_eq!(
             MailPage::format_drawer_folder_tooltip(&inbox, "Posteingang", 0, 1),
-            format!("Posteingang: {}", crate::i18n::gettext("1 email"))
+            format!("Posteingang: {}", gettext("1 email"))
         );
         let empty_tip = MailPage::format_drawer_folder_tooltip(&inbox, "Posteingang", 0, 0);
         assert_eq!(
             empty_tip,
-            format!("Posteingang ({})", crate::i18n::gettext("No emails"))
+            format!("Posteingang ({})", gettext("No emails"))
         );
 
         let sent = FolderSelection::from_folder_id("sent");
         let exp_sent_55 = format!(
             "Gesendet: {}",
-            crate::i18n::ngettext("1 sent email", "{} sent emails", 55).replace("{}", "55")
+            ngettext("1 sent email", "{} sent emails", 55).replace("{}", "55")
         );
         assert_eq!(
             MailPage::format_drawer_folder_tooltip(&sent, "Gesendet", 0, 55),
@@ -50202,7 +50705,7 @@ mod tests {
         );
         let exp_sent_1 = format!(
             "Gesendet: {}",
-            crate::i18n::ngettext("1 sent email", "{} sent emails", 1).replace("{}", "1")
+            ngettext("1 sent email", "{} sent emails", 1).replace("{}", "1")
         );
         assert_eq!(
             MailPage::format_drawer_folder_tooltip(&sent, "Gesendet", 0, 1),
@@ -50212,7 +50715,7 @@ mod tests {
         let drafts = FolderSelection::from_folder_id("drafts");
         let exp_draft_4 = format!(
             "Entwürfe: {}",
-            crate::i18n::ngettext("1 draft", "{} drafts", 4).replace("{}", "4")
+            ngettext("1 draft", "{} drafts", 4).replace("{}", "4")
         );
         assert_eq!(
             MailPage::format_drawer_folder_tooltip(&drafts, "Entwürfe", 0, 4),
@@ -50220,7 +50723,7 @@ mod tests {
         );
         let exp_draft_1 = format!(
             "Entwürfe: {}",
-            crate::i18n::ngettext("1 draft", "{} drafts", 1).replace("{}", "1")
+            ngettext("1 draft", "{} drafts", 1).replace("{}", "1")
         );
         assert_eq!(
             MailPage::format_drawer_folder_tooltip(&drafts, "Entwürfe", 0, 1),
@@ -50230,7 +50733,7 @@ mod tests {
         let trash = FolderSelection::from_folder_id("trash");
         let exp_trash_12 = format!(
             "Papierkorb: {}",
-            crate::i18n::ngettext("1 deleted email", "{} deleted emails", 12).replace("{}", "12")
+            ngettext("1 deleted email", "{} deleted emails", 12).replace("{}", "12")
         );
         assert_eq!(
             MailPage::format_drawer_folder_tooltip(&trash, "Papierkorb", 0, 12),
@@ -50240,7 +50743,7 @@ mod tests {
         let spam = FolderSelection::from_folder_id("spam");
         let exp_spam_8 = format!(
             "Junk: {}",
-            crate::i18n::ngettext("1 junk email", "{} junk emails", 8).replace("{}", "8")
+            ngettext("1 junk email", "{} junk emails", 8).replace("{}", "8")
         );
         assert_eq!(
             MailPage::format_drawer_folder_tooltip(&spam, "Junk", 0, 8),
@@ -50251,7 +50754,7 @@ mod tests {
         custom.folder_name = Some("[Gmail]/Gesendet".to_string());
         assert_eq!(
             MailPage::format_drawer_folder_tooltip(&custom, "Gesendet", 0, 55),
-            format!("Gesendet ([Gmail]/Gesendet): {}", crate::i18n::ngettext("1 sent email", "{} sent emails", 55).replace("{}", "55"))
+            format!("Gesendet ([Gmail]/Gesendet): {}", ngettext("1 sent email", "{} sent emails", 55).replace("{}", "55"))
         );
     }
 
@@ -50709,18 +51212,18 @@ mod tests {
 
     #[test]
     fn test_format_month_short() {
-        assert_eq!(format_month_short(1), crate::i18n::gettext("Jan"));
-        assert_eq!(format_month_short(2), crate::i18n::gettext("Feb"));
-        assert_eq!(format_month_short(3), crate::i18n::gettext("Mar"));
-        assert_eq!(format_month_short(4), crate::i18n::gettext("Apr"));
-        assert_eq!(format_month_short(5), crate::i18n::gettext("May"));
-        assert_eq!(format_month_short(6), crate::i18n::gettext("Jun"));
-        assert_eq!(format_month_short(7), crate::i18n::gettext("Jul"));
-        assert_eq!(format_month_short(8), crate::i18n::gettext("Aug"));
-        assert_eq!(format_month_short(9), crate::i18n::gettext("Sep"));
-        assert_eq!(format_month_short(10), crate::i18n::gettext("Oct"));
-        assert_eq!(format_month_short(11), crate::i18n::gettext("Nov"));
-        assert_eq!(format_month_short(12), crate::i18n::gettext("Dec"));
+        assert_eq!(format_month_short(1), gettext("Jan"));
+        assert_eq!(format_month_short(2), gettext("Feb"));
+        assert_eq!(format_month_short(3), gettext("Mar"));
+        assert_eq!(format_month_short(4), gettext("Apr"));
+        assert_eq!(format_month_short(5), gettext("May"));
+        assert_eq!(format_month_short(6), gettext("Jun"));
+        assert_eq!(format_month_short(7), gettext("Jul"));
+        assert_eq!(format_month_short(8), gettext("Aug"));
+        assert_eq!(format_month_short(9), gettext("Sep"));
+        assert_eq!(format_month_short(10), gettext("Oct"));
+        assert_eq!(format_month_short(11), gettext("Nov"));
+        assert_eq!(format_month_short(12), gettext("Dec"));
         assert_eq!(format_month_short(13), "");
     }
 
@@ -53411,7 +53914,7 @@ mod tests {
         let yesterday = "2026-09-27T14:30:00+02:00";
         let res_yest = format_preview_header_date_with_now(yesterday, base_date);
         assert!(res_yest.contains("14:30"));
-        assert!(res_yest.contains(&crate::i18n::gettext("Yesterday")));
+        assert!(res_yest.contains(&gettext("Yesterday")));
 
         // 3. Past 2-6 days -> weekday + time
         let three_days_ago = "2026-09-25T14:30:00+02:00";
@@ -53668,12 +54171,12 @@ mod tests {
         let print_btn = page.imp().mail_print_button.borrow().as_ref().cloned().unwrap();
         let child = print_btn.child().expect("print button child");
         let label = child.downcast::<gtk::Label>().expect("should be label on desktop");
-        assert_eq!(label.label(), crate::i18n::gettext("Print"));
+        assert_eq!(label.label(), gettext("Print"));
 
         let delete_btn = page.imp().mail_delete_button.borrow().as_ref().cloned().unwrap();
         let child = delete_btn.child().expect("delete button child");
         let label = child.downcast::<gtk::Label>().expect("should be label on desktop");
-        assert_eq!(label.label(), crate::i18n::gettext("Delete"));
+        assert_eq!(label.label(), gettext("Delete"));
 
         let move_btn = page.imp().mail_move_button.borrow().as_ref().cloned().unwrap();
         let child = move_btn.child().expect("move button child");
@@ -54029,22 +54532,22 @@ mod tests {
         assert_eq!(sel_inbox.folder_id, "unified_inbox");
         assert_eq!(sel_inbox.source_uid, None);
         let (title, icon) = sel_inbox.title_and_icon();
-        assert_eq!(title, crate::i18n::gettext("All Inboxes"));
+        assert_eq!(title, gettext("All Inboxes"));
         assert_eq!(icon, "mail-inbox-symbolic");
 
         let sel_unread = FolderSelection::from_folder_id("unified_unread");
         let (title, icon) = sel_unread.title_and_icon();
-        assert_eq!(title, crate::i18n::gettext("All Unread"));
+        assert_eq!(title, gettext("All Unread"));
         assert_eq!(icon, "mail-unread-symbolic");
 
         let sel_flagged = FolderSelection::from_folder_id("unified_flagged");
         let (title, icon) = sel_flagged.title_and_icon();
-        assert_eq!(title, crate::i18n::gettext("All Flagged"));
+        assert_eq!(title, gettext("All Flagged"));
         assert_eq!(icon, "starred-symbolic");
 
         let sel_sent = FolderSelection::from_folder_id("unified_sent");
         let (title, icon) = sel_sent.title_and_icon();
-        assert_eq!(title, crate::i18n::gettext("All Sent"));
+        assert_eq!(title, gettext("All Sent"));
         assert_eq!(icon, "mail-send-symbolic");
 
         // 2. Message matching
@@ -54175,7 +54678,7 @@ mod tests {
         // 1. Dropdown tooltip must be "View options"
         assert_eq!(
             split_btn.dropdown_tooltip().as_str(),
-            crate::i18n::gettext("View options")
+            gettext("View options")
         );
 
         // 2. Synchronized state between Table view and List view:
@@ -54185,7 +54688,7 @@ mod tests {
             page.sync_view_split_button();
             assert_eq!(
                 split_btn.tooltip_text().unwrap_or_default().as_str(),
-                crate::i18n::gettext("List view")
+                gettext("List view")
             );
             assert_eq!(
                 split_btn.icon_name().unwrap_or_default().as_str(),
@@ -54197,7 +54700,7 @@ mod tests {
             page.sync_view_split_button();
             assert_eq!(
                 split_btn.tooltip_text().unwrap_or_default().as_str(),
-                crate::i18n::gettext("Table view")
+                gettext("Table view")
             );
             let icon = split_btn.icon_name().unwrap_or_default();
             assert!(
@@ -54239,7 +54742,7 @@ mod tests {
         let row_logos_container = gtk::ListBoxRow::builder()
             .activatable(false)
             .selectable(false)
-            .css_classes(vec!["view-options-revealer-row"])
+            .css_classes(["view-options-revealer-row"])
             .child(&revealer)
             .visible(false)
             .build();
@@ -55615,6 +56118,232 @@ mod tests {
         ];
         MailPage::render_message_content(&msg_itip, &mail_viewer, &attachment_bar, Some(&itip_banner), &[]);
         assert!(!attachment_bar.is_visible(), "Redundant .ics attachment should be hidden when rendered in ItipBanner");
+    }
+
+    #[gtk::test]
+    fn test_clicking_thread_group_root_updates_mail_preview() {
+        let _ = adw::init();
+        let page = MailPage::new();
+        page.imp().mail_threading.set(true);
+        if let Some(folder_sel) = page.imp().folder_selection.borrow().as_ref() {
+            folder_sel.replace(FolderSelection::from_folder_id("inbox"));
+        }
+
+        let store = page.imp().message_store.borrow().clone().expect("message_store");
+        let viewer = page.imp().mail_viewer.borrow().clone().expect("mail_viewer");
+
+        // Create a 2-message thread where the newest message (thread root with dropdown)
+        // is a Sent reply (cross-folder) and the child is in Inbox.
+        let root_sent = MailMessageObject::new(
+            "eds:acc:Sent:20",
+            "sent",
+            "Me",
+            "me@example.com",
+            "alice@example.com",
+            "",
+            "",
+            "",
+            "Re: Project Status",
+            Some("<msg-20@example.com>".to_string()),
+            vec!["<msg-10@example.com>".to_string()],
+            vec!["<msg-10@example.com>".to_string()],
+            "thread-1",
+            2,
+            0,
+            "Mon, 09 Nov 2026 12:00:00 +0000",
+            256,
+            "Latest reply snippet",
+            "<p>Latest reply body</p>",
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            Vec::new(),
+            None,
+            Vec::new(),
+        );
+        let child_inbox = MailMessageObject::new(
+            "eds:acc:Inbox:10",
+            "inbox",
+            "Alice",
+            "alice@example.com",
+            "me@example.com",
+            "",
+            "",
+            "",
+            "Project Status",
+            Some("<msg-10@example.com>".to_string()),
+            Vec::new(),
+            Vec::new(),
+            "thread-1",
+            2,
+            1,
+            "Mon, 09 Nov 2026 10:00:00 +0000",
+            256,
+            "Original inbox snippet",
+            "<p>Original inbox body</p>",
+            false,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            Vec::new(),
+            None,
+            Vec::new(),
+        );
+        store.append(&root_sent);
+        store.append(&child_inbox);
+
+        let root_store = page.imp().thread_root_store.borrow().clone().expect("thread_root_store");
+        root_store.append(&root_sent);
+
+        let children_store = gio::ListStore::new::<MailMessageObject>();
+        children_store.append(&child_inbox);
+        if let Some(children_map) = page.imp().thread_children.borrow().as_ref() {
+            children_map.borrow_mut().insert("thread-1".to_string(), children_store);
+        }
+        if let Some(members_map) = page.imp().thread_members.borrow().as_ref() {
+            members_map.borrow_mut().insert(
+                "thread-1".to_string(),
+                vec![root_sent.clone(), child_inbox.clone()],
+            );
+        }
+        page.imp().expanded_threads.borrow_mut().insert("thread-1".to_string());
+        page.invalidate_message_filters();
+        page.restore_expanded_threads();
+
+        let thread_sel = page.imp().thread_selection.borrow().clone().expect("thread_selection");
+        assert_eq!(thread_sel.n_items(), 2, "Expanded thread should have 2 rows (root + child)");
+
+        // 1. Select child (index 1, in Inbox) -> preview shows child_inbox
+        page.select_single_thread_row(&thread_sel, 1);
+        assert_eq!(
+            viewer.imp().current_message_id.borrow().as_deref(),
+            Some("eds:acc:Inbox:10")
+        );
+
+        // 2. Click first element of thread group (index 0, root with dropdown) -> preview MUST update to root_sent
+        page.select_single_thread_row(&thread_sel, 0);
+        assert_eq!(
+            viewer.imp().current_message_id.borrow().as_deref(),
+            Some("eds:acc:Sent:20"),
+            "Clicking the first element (root) of a thread group must update the mail preview"
+        );
+
+        // 3. Even if thread_sel already had index 0 selected while viewer showed child_inbox,
+        // clicking index 0 again must force preview to update to root_sent
+        viewer.imp().current_message_id.replace(Some("eds:acc:Inbox:10".to_string()));
+        page.select_single_thread_row(&thread_sel, 0);
+        assert_eq!(
+            viewer.imp().current_message_id.borrow().as_deref(),
+            Some("eds:acc:Sent:20"),
+            "Clicking an already-selected thread root when viewer shows a different message must re-sync preview"
+        );
+    }
+
+    #[gtk::test]
+    fn disabled_account_and_hidden_local_fallback_excluded_from_unread_and_search() {
+        let _ = adw::init();
+        let page = MailPage::new();
+        let store = page.imp().message_store.borrow().clone().expect("message_store");
+        store.remove_all();
+
+        // Mark "disabled@example.com" as a disabled/paused account
+        page.imp()
+            .dynamic_folder_expanded
+            .borrow_mut()
+            .insert("account-paused:disabled@example.com".to_string());
+
+        // Simulate active remote account in mail_folder_summaries
+        page.imp().mail_folder_summaries.replace(vec![CamelFolderSummary {
+            source_uid: "active-exchange".to_string(),
+            source_display_name: "Exchange".to_string(),
+            folder_name: "INBOX".to_string(),
+            display_name: "Inbox".to_string(),
+            folder_id: "inbox".to_string(),
+            unread_count: 0,
+            total_count: 1,
+            is_selectable: true,
+        }]);
+
+        // Add a local fallback .eml message in built-in "inbox" addressed to the disabled account
+        let local_lieferando = MailMessageObject::new(
+            "👍 OR 👎  for Re Castello_",
+            "inbox",
+            "Lieferando",
+            "no-reply@connect.lieferando.de",
+            "disabled@example.com",
+            "",
+            "",
+            "",
+            "👍 OR 👎 for Re Castello?",
+            Some("<lieferando@example.com>".to_string()),
+            Vec::new(),
+            Vec::new(),
+            "thread-lieferando",
+            1,
+            0,
+            "Mon, 09 Nov 2026 11:00:00 +0000",
+            512,
+            "Rate your order at Lieferando",
+            "<p>Rate your order at Lieferando</p>",
+            true,
+            false,
+            false,
+            MailFollowUpState::None,
+            MailFollowUpMetadata::default(),
+            Vec::new(),
+            None,
+            Vec::new(),
+        );
+        store.append(&local_lieferando);
+
+        // 1. Message addressed to disabled account must not be considered active
+        assert!(
+            !page.is_message_account_active(&local_lieferando),
+            "Local fallback message addressed to disabled account must not be active"
+        );
+
+        // 2. Local folder counts and total_inbox_unread_count must be 0
+        assert!(page.current_local_folder_counts().is_empty());
+        assert_eq!(page.total_inbox_unread_count(), 0);
+
+        // 3. Even if local_counts had a stray "inbox" unread entry, update_camel_folder_counts
+        // must not add built-in local "inbox" unread to All Inboxes when remote folders exist
+        if let Some(folder_list) = page.imp().folder_list.borrow().as_ref() {
+            let mut stray_local_counts = HashMap::new();
+            stray_local_counts.insert("inbox".to_string(), (1u32, 1u32));
+            let summaries = page.imp().mail_folder_summaries.borrow().clone();
+            page.update_camel_folder_counts(folder_list, &summaries, Some(&stray_local_counts));
+        }
+        if let Some(unified_list) = page.imp().unified_folder_list.borrow().as_ref() {
+            for index in 0..unified_list.observe_children().n_items() {
+                if let Some(row) = unified_list.row_at_index(index as i32).and_downcast::<gtk::ListBoxRow>() {
+                    let row_id = unsafe { row.data::<String>("folder-id").map(|p| p.as_ref().clone()) }.unwrap_or_default();
+                    if row_id == "unified_inbox" || row_id == "unified_unread" {
+                        if let Some(badge) = unsafe { row.data::<gtk::Label>("folder-badge").map(|p| p.as_ref()) } {
+                            assert!(!badge.is_visible(), "{row_id} badge must remain hidden when active remote accounts have 0 unread");
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Filtering by Unread or searching for "lieferando" must not return the disabled account's mail
+        if let Some(filter_state) = page.imp().message_filter_state.borrow().as_ref() {
+            filter_state.set(MessageFilter::Unread);
+        }
+        page.invalidate_message_filters();
+        let msg_sel = page.imp().message_selection.borrow().clone().expect("message_selection");
+        assert_eq!(msg_sel.n_items(), 0, "Unread filter must not show disabled account mail");
+
+        if let Some(filter_state) = page.imp().message_filter_state.borrow().as_ref() {
+            filter_state.set(MessageFilter::All);
+        }
+        page.handle_search_changed("lieferando");
+        page.invalidate_message_filters();
+        assert_eq!(msg_sel.n_items(), 0, "Search for 'lieferando' must not show disabled account mail");
     }
 }
 
