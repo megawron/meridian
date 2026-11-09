@@ -224,7 +224,7 @@ mod imp {
             if is_preview {
                 println!("\n╔═══════════════════════════════════════════════════════════════════════════════╗");
                 println!("║               MERIDIAN — LIBADWAITA PREFERENCES PREVIEW                     ║");
-                println!("║  Das weltbeste Einstellungsmenü (First Principles & GNOME HIG)                ║");
+                println!("║  World-Class Preferences Menu (First Principles & GNOME HIG)                  ║");
                 println!("║  NavigationSplitView · Live Search (<Ctrl>+F) · Responsive Breakpoint (<640sp)║");
                 println!("╚═══════════════════════════════════════════════════════════════════════════════╝\n");
                 let dialog = crate::dialogs::PreferencesDialog::new();

@@ -1356,7 +1356,14 @@ impl ECalService {
         unsafe {
             ffi::meridian_eds_ecal_free_source_capabilities(sources, count);
         }
-        let sources = parsed?;
+        let mut sources = parsed?;
+        sources.retain(|source| {
+            source.source_uid.is_empty()
+                || crate::services::eds_service::is_source_enabled_for_service(
+                    &source.source_uid,
+                    crate::services::eds_service::EdsSourceKind::Calendar,
+                )
+        });
         let mut identities = HashSet::new();
         if sources
             .iter()
@@ -2192,13 +2199,38 @@ pub(crate) fn evict_component_from_calendar_cache(uid: &str) {
     }
 }
 
+pub(crate) fn invalidate_calendar_load_cache() {
+    let mut updated = None;
+    if let Ok(mut guard) = MEMORY_CALENDAR_SNAPSHOT
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
+        if let Some(mut snap) = guard.take() {
+            filter_snapshot_enabled_sources(&mut snap);
+            updated = Some(snap.clone());
+            *guard = Some(snap);
+        }
+    }
+    if updated.is_none() {
+        if let Some(mut snap) = read_calendar_load_cache(&calendar_cache_path()) {
+            filter_snapshot_enabled_sources(&mut snap);
+            updated = Some(snap);
+        }
+    }
+    if let Some(ref snap) = updated {
+        let _ = write_calendar_load_cache(&calendar_cache_path(), snap);
+    }
+}
+
 pub(crate) fn load_calendar_snapshot_fast() -> CalendarSnapshot {
     if let Ok(guard) = MEMORY_CALENDAR_SNAPSHOT
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
     {
         if let Some(ref snapshot) = *guard {
-            return snapshot.clone();
+            let mut filtered = snapshot.clone();
+            filter_snapshot_enabled_sources(&mut filtered);
+            return filtered;
         }
     }
     if let Some(cached) = load_calendar_load_cache() {
@@ -2630,10 +2662,10 @@ mod change_tests {
             source_type: ECalComponentType::Task,
             kind: ECalChangeKind::Modified,
             source_uid: "tasks".to_string(),
-            source_display_name: "Meine Aufgaben".to_string(),
+            source_display_name: "My Tasks".to_string(),
             uid: "task-1".to_string(),
             component: Some(
-                "BEGIN:VTODO\r\nUID:task-1\r\nSUMMARY:Bericht\r\n".to_string()
+                "BEGIN:VTODO\r\nUID:task-1\r\nSUMMARY:Report\r\n".to_string()
                     + "DUE;VALUE=DATE:20260812\r\nEND:VTODO\r\n",
             ),
         };
@@ -2652,7 +2684,7 @@ mod change_tests {
             source_type: ECalComponentType::Memo,
             kind: ECalChangeKind::Removed,
             source_uid: "memos".to_string(),
-            source_display_name: "Notizen".to_string(),
+            source_display_name: "Memos".to_string(),
             uid: "memo-1".to_string(),
             component: None,
         };

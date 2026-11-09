@@ -1,3 +1,4 @@
+use crate::i18n::ngettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // EventDialog — Dialog for creating and editing calendar events.
@@ -5,7 +6,7 @@
 // Features:
 // - Summary / Title entry
 // - Location & Description
-// - Calendar Source dropdown (Persönlich, Arbeit, etc.)
+// - Calendar Source dropdown (Personal, Work, etc.)
 // - All-day toggle
 // - Start and End Date/Time selection
 
@@ -17,6 +18,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use crate::i18n::gettext;
 use crate::services::calendar_category_service::CalendarCategoryStore;
 use crate::services::calendar_store_service::{
     CalendarEventRecord, replace_ical_attachments,
@@ -305,8 +307,8 @@ pub(crate) fn calendar_group_sort_key(group: &str) -> (u8, &str) {
 fn create_date_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover) {
     let btn = gtk::Button::builder()
         .icon_name("x-office-calendar-symbolic")
-        .tooltip_text("Select date in calendar")
-        .css_classes(vec!["datetime-picker-button"])
+        .tooltip_text(gettext("Select date in calendar"))
+        .css_classes(["datetime-picker-button"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let cal = gtk::Calendar::new();
@@ -409,8 +411,8 @@ fn create_date_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover)
 fn create_time_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover) {
     let btn = gtk::Button::builder()
         .icon_name("alarm-symbolic")
-        .tooltip_text("Select time")
-        .css_classes(vec!["datetime-picker-button"])
+        .tooltip_text(gettext("Select time"))
+        .css_classes(["datetime-picker-button"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let scroll = gtk::ScrolledWindow::builder()
@@ -444,7 +446,7 @@ fn create_time_picker_popover(entry: &gtk::Entry) -> (gtk::Button, gtk::Popover)
                 let time_str = format_clock_minutes(m);
                 let time_btn = gtk::Button::builder()
                     .label(&time_str)
-                    .css_classes(vec!["flat"])
+                    .css_classes(["flat"])
                     .halign(gtk::Align::Fill)
                     .build();
                 let entry_weak_row = entry_weak.clone();
@@ -472,8 +474,8 @@ fn create_timezone_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
 ) -> (gtk::Button, gtk::Popover) {
     let btn = gtk::Button::builder()
         .icon_name("pan-down-symbolic")
-        .tooltip_text("Select timezone")
-        .css_classes(vec!["flat"])
+        .tooltip_text(gettext("Select timezone"))
+        .css_classes(["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let pop_box = gtk::Box::builder()
@@ -486,7 +488,7 @@ fn create_timezone_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
         .width_request(280)
         .build();
     let search_entry = gtk::SearchEntry::builder()
-        .placeholder_text("Search timezone…")
+        .placeholder_text(gettext("Search timezone…"))
         .hexpand(true)
         .build();
     pop_box.append(&search_entry);
@@ -563,7 +565,7 @@ fn create_timezone_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
             for (tz_id, tz_label) in timezones {
                 let tz_btn = gtk::Button::builder()
                     .label(*tz_label)
-                    .css_classes(vec!["flat"])
+                    .css_classes(["flat"])
                     .halign(gtk::Align::Fill)
                     .build();
                 if let Some(lbl) = tz_btn.child().and_downcast::<gtk::Label>() {
@@ -600,8 +602,8 @@ fn create_categories_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
 ) -> (gtk::Button, gtk::Popover) {
     let btn = gtk::Button::builder()
         .icon_name("pan-down-symbolic")
-        .tooltip_text("Select categories")
-        .css_classes(vec!["flat"])
+        .tooltip_text(gettext("Select categories"))
+        .css_classes(["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let scroll = gtk::ScrolledWindow::builder()
@@ -638,9 +640,9 @@ fn create_categories_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
             let cats = store.load();
             if cats.is_empty() {
                 let empty_lbl = gtk::Label::builder()
-                    .label("No saved categories")
+                    .label(gettext("No saved categories"))
                     .xalign(0.0)
-                    .css_classes(vec!["dim-label"])
+                    .css_classes(["dim-label"])
                     .build();
                 list_for_click.append(&empty_lbl);
             } else {
@@ -691,8 +693,8 @@ fn create_room_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
 ) -> (gtk::Button, gtk::Popover) {
     let btn = gtk::Button::builder()
         .icon_name("pan-down-symbolic")
-        .tooltip_text("Select meeting room")
-        .css_classes(vec!["flat"])
+        .tooltip_text(gettext("Select meeting room"))
+        .css_classes(["flat"])
         .build();
     let popover = gtk::Popover::builder().has_arrow(true).build();
     let scroll = gtk::ScrolledWindow::builder()
@@ -716,7 +718,7 @@ fn create_room_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
         .selection_mode(gtk::SelectionMode::None)
         .width_request(340)
         .hexpand(true)
-        .css_classes(vec!["boxed-list"])
+        .css_classes(["boxed-list"])
         .build();
 
     box_content.append(&list_box);
@@ -735,27 +737,27 @@ fn create_room_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
                 (
                     "Conference Room Spree".to_string(),
                     "spree-meeting@company.local".to_string(),
-                    "12 seats · Projector, Video Conferencing".to_string(),
+                    gettext("12 seats · Projector, Video Conferencing"),
                 ),
                 (
                     "Meeting Room Havel".to_string(),
                     "havel-meeting@company.local".to_string(),
-                    "6 seats · Display, Whiteboard".to_string(),
+                    gettext("6 seats · Display, Whiteboard"),
                 ),
                 (
                     "Meeting Room 1".to_string(),
                     "room-1@company.local".to_string(),
-                    "4 seats · TV, Speakerphone".to_string(),
+                    gettext("4 seats · TV, Speakerphone"),
                 ),
                 (
                     "Creative Lounge".to_string(),
                     "lounge@company.local".to_string(),
-                    "8 seats · Lounge seating, Mobile board".to_string(),
+                    gettext("8 seats · Lounge seating, Mobile board"),
                 ),
                 (
                     "Focus Pod".to_string(),
                     "focus-pod@company.local".to_string(),
-                    "1 seat · Soundproof booth".to_string(),
+                    gettext("1 seat · Soundproof booth"),
                 ),
             ];
 
@@ -772,7 +774,7 @@ fn create_room_picker_popover<E: IsA<gtk::Editable> + IsA<gtk::Widget>>(
                         } else {
                             email.clone()
                         };
-                        available_rooms.push((name, email, "Calendar resource".to_string()));
+                        available_rooms.push((name, email, gettext("Calendar resource")));
                     }
                 }
             }
@@ -939,7 +941,7 @@ fn update_day_schedule_timeline(
     }
 
     let Some(current_date) = parse_date_lenient(date_str) else {
-        timeline_window_title.set_subtitle("Invalid date");
+        timeline_window_title.set_subtitle(&gettext("Invalid date"));
         all_day_box.set_visible(false);
         conflict_badge.set_visible(false);
         return;
@@ -955,8 +957,9 @@ fn update_day_schedule_timeline(
         current_end_min
     };
 
+    let default_title = gettext("New Event");
     let display_title = if summary.trim().is_empty() {
-        "New Event"
+        &default_title
     } else {
         summary.trim()
     };
@@ -980,7 +983,7 @@ fn update_day_schedule_timeline(
         }
         if crate::views::calendar_page::event_occurs_on(ev, current_date) && ev.all_day {
             let ev_title = if ev.summary.trim().is_empty() {
-                crate::i18n::gettext("(Untitled)")
+                gettext("(Untitled)")
             } else {
                 ev.summary.trim().to_string()
             };
@@ -1043,16 +1046,16 @@ fn update_day_schedule_timeline(
                 classes.push("appointment-timeline-preview");
             }
             let display_title = if title.trim().is_empty() {
-                crate::i18n::gettext("(Untitled)")
+                gettext("(Untitled)")
             } else {
                 title.to_string()
             };
-            let mut tooltip = format!("{display_title}\n{}", crate::i18n::gettext("All Day"));
+            let mut tooltip = format!("{display_title}\n{}", gettext("All Day"));
             if *is_preview {
-                tooltip.push_str("\n(Click or drag on the timeline below to set a time)");
+                tooltip.push_str(&format!("\n({})", gettext("Click or drag on the timeline below to set a time")));
             }
             if !loc.trim().is_empty() {
-                tooltip.push_str(&format!("\n📍 Location: {}", loc.trim()));
+                tooltip.push_str(&format!("\n📍 {}: {}", gettext("Location"), loc.trim()));
             }
             if !desc.trim().is_empty() {
                 let desc_trimmed = desc.trim();
@@ -1062,7 +1065,7 @@ fn update_day_schedule_timeline(
                 } else {
                     desc_trimmed.to_string()
                 };
-                tooltip.push_str(&format!("\n\n📝 Notes:\n{short_desc}"));
+                tooltip.push_str(&format!("\n\n📝 {}:\n{short_desc}", gettext("Notes")));
             }
             let ev_label = gtk::Label::builder()
                 .label(&display_title)
@@ -1112,7 +1115,7 @@ fn update_day_schedule_timeline(
             let (ev_start, ev_end, _ev_time_text) =
                 crate::views::calendar_page::event_occurrence_times_for_date(ev, current_date, 30);
             let ev_title = if ev.summary.trim().is_empty() {
-                crate::i18n::gettext("(Untitled)")
+                gettext("(Untitled)")
             } else {
                 ev.summary.trim().to_string()
             };
@@ -1176,9 +1179,13 @@ fn update_day_schedule_timeline(
     } else {
         let count = conflicting_uids.len();
         let text = if count == 1 {
-            "⚠️ 1 conflict".to_string()
+            format!("⚠️ {}", gettext("1 conflict"))
         } else {
-            format!("⚠️ {count} conflicts")
+            format!(
+                "⚠️ {}",
+                ngettext("{count} conflict", "{count} conflicts", count as u32)
+                    .replace("{count}", &count.to_string())
+            )
         };
         conflict_badge.set_label(&text);
         conflict_badge.set_visible(true);
@@ -1249,24 +1256,26 @@ fn update_day_schedule_timeline(
 
             let is_dark = adw::StyleManager::default().is_dark();
 
+            let conflict_msg = format!("\n⚠️ {}", gettext("Overlaps with another event"));
+            let drag_msg = format!("\n↕ {}", gettext("Drag to move · Drag top/bottom edge to resize"));
             let mut tooltip = format!(
                 "{}\n{}–{}{}",
                 item.title,
                 format_clock_minutes(item.start_min),
                 format_clock_minutes(item.end_min),
                 if is_conflict {
-                    "\n⚠️ Overlaps with another event"
+                    conflict_msg.as_str()
                 } else if item.is_preview {
-                    "\n↕ Drag to move · Drag top/bottom edge to resize"
+                    drag_msg.as_str()
                 } else {
                     ""
                 }
             );
             if item.is_preview && is_conflict {
-                tooltip.push_str("\n↕ Drag to move · Drag top/bottom edge to resize");
+                tooltip.push_str(&drag_msg);
             }
             if !item.location.trim().is_empty() {
-                tooltip.push_str(&format!("\n📍 Location: {}", item.location.trim()));
+                tooltip.push_str(&format!("\n📍 {}: {}", gettext("Location"), item.location.trim()));
             }
             if !item.description.trim().is_empty() {
                 let desc_trimmed = item.description.trim();
@@ -1276,7 +1285,7 @@ fn update_day_schedule_timeline(
                 } else {
                     desc_trimmed.to_string()
                 };
-                tooltip.push_str(&format!("\n\n📝 Notes:\n{short_desc}"));
+                tooltip.push_str(&format!("\n\n📝 {}:\n{short_desc}", gettext("Notes")));
             }
 
             let mut css_classes = vec!["appointment-timeline-event"];
@@ -1328,13 +1337,13 @@ fn update_day_schedule_timeline(
                         .width_request(grip_w as i32)
                         .height_request(2)
                         .can_target(false)
-                        .css_classes(vec!["appointment-timeline-resize-grip"])
+                        .css_classes(["appointment-timeline-resize-grip"])
                         .build();
                     let bottom_grip = gtk::Box::builder()
                         .width_request(grip_w as i32)
                         .height_request(2)
                         .can_target(false)
-                        .css_classes(vec!["appointment-timeline-resize-grip"])
+                        .css_classes(["appointment-timeline-resize-grip"])
                         .build();
                     timeline_fixed.put(&top_grip, grip_x, y + 2.0);
                     timeline_fixed.put(&bottom_grip, grip_x, (y + h - 4.0).max(y + 4.0));
@@ -1373,7 +1382,7 @@ fn update_day_schedule_timeline(
 impl EventDialog {
     pub fn new() -> Self {
         glib::Object::builder()
-            .property("title", "Event — No Summary")
+            .property("title", gettext("Event — No Summary"))
             .property("content-width", 880)
             .property("content-height", 680)
             .build()
@@ -1381,7 +1390,7 @@ impl EventDialog {
 
     pub fn new_for_date(date: NaiveDate) -> Self {
         glib::Object::builder()
-            .property("title", "Event — No Summary")
+            .property("title", gettext("Event — No Summary"))
             .property("content-width", 880)
             .property("content-height", 680)
             .property("initial-date", date.format("%Y-%m-%d").to_string())
@@ -1417,8 +1426,8 @@ impl EventDialog {
         };
         let title_text = summary
             .filter(|s| !s.trim().is_empty())
-            .map(|s| format!("Event — {s}"))
-            .unwrap_or_else(|| "Event — No Summary".to_string());
+            .map(|s| format!("{} — {s}", gettext("Event")))
+            .unwrap_or_else(|| gettext("Event — No Summary"));
         let mut builder = glib::Object::builder()
             .property("title", title_text)
             .property("content-width", 880)
@@ -1448,8 +1457,8 @@ impl EventDialog {
     ) -> Self {
         let title_text = summary
             .filter(|s| !s.trim().is_empty())
-            .map(|s| format!("Event — {s}"))
-            .unwrap_or_else(|| "Event — No Summary".to_string());
+            .map(|s| format!("{} — {s}", gettext("Event")))
+            .unwrap_or_else(|| gettext("Event — No Summary"));
         let mut builder = glib::Object::builder()
             .property("title", title_text)
             .property("content-width", 880)
@@ -1469,9 +1478,9 @@ impl EventDialog {
     pub fn new_for_edit(event: &CalendarEventRecord) -> Self {
         let summary = ical_property(&event.component, "SUMMARY")
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "No Summary".to_string());
+            .unwrap_or_else(|| gettext("No Summary"));
         glib::Object::builder()
-            .property("title", &format!("Event — {summary}"))
+            .property("title", &format!("{} — {summary}", gettext("Event")))
             .property("content-width", 880)
             .property("content-height", 680)
             .property("edit-component", &event.component)
@@ -1557,8 +1566,8 @@ impl EventDialog {
 
         let btn_open_in_new_window = gtk::Button::builder()
             .icon_name("window-new-symbolic")
-            .tooltip_text("Open in new window")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Open in new window"))
+            .css_classes(["flat"])
             .visible(self.imp().is_modal.get())
             .build();
         btn_open_in_new_window.connect_clicked(glib::clone!(
@@ -1572,7 +1581,7 @@ impl EventDialog {
         self.imp().btn_open_in_new_window.replace(Some(btn_open_in_new_window));
 
         let btn_cancel = gtk::Button::builder()
-            .label("Cancel")
+            .label(gettext("Cancel"))
             .build();
         let dialog_weak_cancel = self.downgrade();
         btn_cancel.connect_clicked(move |_| {
@@ -1583,16 +1592,20 @@ impl EventDialog {
         form_header_bar.pack_start(&btn_cancel);
 
         let btn_save = gtk::Button::builder()
-            .label(if edit_uid.is_some() { "Save" } else { "Create" })
-            .css_classes(vec!["suggested-action"])
+            .label(&if edit_uid.is_some() {
+                gettext("Save")
+            } else {
+                gettext("Create")
+            })
+            .css_classes(["suggested-action"])
             .build();
         form_header_bar.pack_end(&btn_save);
 
         let window_title = adw::WindowTitle::builder()
-            .title(if edit_uid.is_some() {
-                "Edit Event"
+            .title(&if edit_uid.is_some() {
+                gettext("Edit Event")
             } else {
-                "New Event"
+                gettext("New Event")
             })
             .build();
         form_header_bar.set_title_widget(Some(&window_title));
@@ -1612,7 +1625,7 @@ impl EventDialog {
             .margin_end(16)
             .margin_top(16)
             .margin_bottom(16)
-            .css_classes(vec!["appointment-form-grid", "appointment-form-page"])
+            .css_classes(["appointment-form-grid", "appointment-form-page"])
             .build();
 
         let initial_events = crate::services::ecal_service::load_calendar_snapshot_fast().events;
@@ -1622,13 +1635,13 @@ impl EventDialog {
         let group_basic = adw::PreferencesGroup::new();
 
         let entry_title = adw::EntryRow::builder()
-            .title("Title")
+            .title(gettext("Title"))
             .show_apply_button(false)
             .build();
         group_basic.add(&entry_title);
 
         let row_location = adw::EntryRow::builder()
-            .title("Location")
+            .title(gettext("Location"))
             .show_apply_button(false)
             .build();
         group_basic.add(&row_location);
@@ -1656,19 +1669,19 @@ impl EventDialog {
             .build();
 
         let calendar_popover = gtk::Popover::builder()
-            .css_classes(vec!["calendar-picker-popover"])
+            .css_classes(["calendar-picker-popover"])
             .child(&calendar_scrolled)
             .has_arrow(true)
             .autohide(true)
             .build();
 
         let btn_calendar_chip = gtk::Box::builder()
-            .css_classes(vec!["calendar-picker-color-chip"])
+            .css_classes(["calendar-picker-color-chip"])
             .valign(gtk::Align::Center)
             .build();
 
         let btn_calendar_label = gtk::Label::builder()
-            .label("Local Calendar")
+            .label(gettext("Local Calendar"))
             .xalign(0.0)
             .build();
 
@@ -1685,13 +1698,13 @@ impl EventDialog {
         let btn_calendar = gtk::MenuButton::builder()
             .child(&btn_calendar_content)
             .popover(&calendar_popover)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         btn_calendar.set_sensitive(edit_uid.is_none());
 
         let row_calendar_action = adw::ActionRow::builder()
-            .title("Calendar")
+            .title(gettext("Calendar"))
             .activatable_widget(&btn_calendar)
             .build();
         row_calendar_action.add_suffix(&btn_calendar);
@@ -1745,24 +1758,24 @@ impl EventDialog {
 
         // ── Group 2: Date & Time, Recurrence & Reminders ──
         let group_time = adw::PreferencesGroup::builder()
-            .title("Date & Time")
+            .title(gettext("Date & Time"))
             .build();
 
         let row_allday = adw::SwitchRow::builder()
-            .title("All Day")
+            .title(gettext("All Day"))
             .active(false)
             .build();
         group_time.add(&row_allday);
 
         let row_start = adw::ActionRow::builder()
-            .title("Starts")
+            .title(gettext("Starts"))
             .build();
 
         let entry_start_date = gtk::Entry::builder()
             .width_chars(10)
             .max_width_chars(10)
             .text(&format_date_for_locale_entry(default_start.date()))
-            .tooltip_text("Date (DD.MM.YYYY, MM/DD/YYYY, or YYYY-MM-DD)")
+            .tooltip_text(gettext("Date (DD.MM.YYYY, MM/DD/YYYY, or YYYY-MM-DD)"))
             .valign(gtk::Align::Center)
             .build();
         let (btn_start_cal, _pop_start_cal) = create_date_picker_popover(&entry_start_date);
@@ -1770,7 +1783,7 @@ impl EventDialog {
         let start_date_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["linked", "datetime-input-group"])
+            .css_classes(["linked", "datetime-input-group"])
             .build();
         start_date_box.append(&entry_start_date);
         start_date_box.append(&btn_start_cal);
@@ -1779,7 +1792,7 @@ impl EventDialog {
             .width_chars(5)
             .max_width_chars(5)
             .text(&default_start.format("%H:%M").to_string())
-            .tooltip_text("Time (HH:MM)")
+            .tooltip_text(gettext("Time (HH:MM)"))
             .valign(gtk::Align::Center)
             .build();
         let (btn_start_time, _pop_start_time) = create_time_picker_popover(&entry_start_time);
@@ -1788,7 +1801,7 @@ impl EventDialog {
             .orientation(gtk::Orientation::Horizontal)
             .valign(gtk::Align::Center)
             .margin_start(6)
-            .css_classes(vec!["linked", "datetime-input-group"])
+            .css_classes(["linked", "datetime-input-group"])
             .build();
         start_time_box.append(&entry_start_time);
         start_time_box.append(&btn_start_time);
@@ -1798,14 +1811,14 @@ impl EventDialog {
         group_time.add(&row_start);
 
         let row_end = adw::ActionRow::builder()
-            .title("Ends")
+            .title(gettext("Ends"))
             .build();
 
         let entry_end_date = gtk::Entry::builder()
             .width_chars(10)
             .max_width_chars(10)
             .text(&format_date_for_locale_entry(default_end.date()))
-            .tooltip_text("Date (DD.MM.YYYY, MM/DD/YYYY, or YYYY-MM-DD)")
+            .tooltip_text(gettext("Date (DD.MM.YYYY, MM/DD/YYYY, or YYYY-MM-DD)"))
             .valign(gtk::Align::Center)
             .build();
         let (btn_end_cal, _pop_end_cal) = create_date_picker_popover(&entry_end_date);
@@ -1813,7 +1826,7 @@ impl EventDialog {
         let end_date_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["linked", "datetime-input-group"])
+            .css_classes(["linked", "datetime-input-group"])
             .build();
         end_date_box.append(&entry_end_date);
         end_date_box.append(&btn_end_cal);
@@ -1822,7 +1835,7 @@ impl EventDialog {
             .width_chars(5)
             .max_width_chars(5)
             .text(&default_end.format("%H:%M").to_string())
-            .tooltip_text("Time (HH:MM)")
+            .tooltip_text(gettext("Time (HH:MM)"))
             .valign(gtk::Align::Center)
             .build();
         let (btn_end_time, _pop_end_time) = create_time_picker_popover(&entry_end_time);
@@ -1831,7 +1844,7 @@ impl EventDialog {
             .orientation(gtk::Orientation::Horizontal)
             .valign(gtk::Align::Center)
             .margin_start(6)
-            .css_classes(vec!["linked", "datetime-input-group"])
+            .css_classes(["linked", "datetime-input-group"])
             .build();
         end_time_box.append(&entry_end_time);
         end_time_box.append(&btn_end_time);
@@ -1841,35 +1854,35 @@ impl EventDialog {
         group_time.add(&row_end);
 
         let recurrence_preset_model = gtk::StringList::new(&[
-            "None",
-            "Daily",
-            "Weekly",
-            "Biweekly",
-            "Monthly",
-            "Yearly",
-            "Custom…",
+            &gettext("None"),
+            &gettext("Daily"),
+            &gettext("Weekly"),
+            &gettext("Biweekly"),
+            &gettext("Monthly"),
+            &gettext("Yearly"),
+            &gettext("Custom…"),
         ]);
         let row_recurrence_preset = adw::ComboRow::builder()
-            .title("Repeat")
+            .title(gettext("Repeat"))
             .model(&recurrence_preset_model)
             .selected(0)
             .build();
         group_time.add(&row_recurrence_preset);
 
         let row_recurrence = adw::EntryRow::builder()
-            .title("Recurrence Rule (RRULE)")
+            .title(gettext("Recurrence Rule (RRULE)"))
             .show_apply_button(false)
             .visible(false)
             .build();
         group_time.add(&row_recurrence);
         let row_rdates = adw::EntryRow::builder()
-            .title("Additional Dates (RDATE)")
+            .title(gettext("Additional Dates (RDATE)"))
             .show_apply_button(false)
             .visible(false)
             .build();
         group_time.add(&row_rdates);
         let row_exdates = adw::EntryRow::builder()
-            .title("Excluded Dates (EXDATE)")
+            .title(gettext("Excluded Dates (EXDATE)"))
             .show_apply_button(false)
             .visible(false)
             .build();
@@ -1958,14 +1971,14 @@ impl EventDialog {
             }
         }
         let expander_alarms = adw::ExpanderRow::builder()
-            .title("Reminders")
+            .title(gettext("Reminders"))
             .subtitle(&alarm_editor.summary_label())
             .use_markup(false)
             .show_enable_switch(false)
             .build();
         let alarm_prefs_row = adw::PreferencesRow::builder()
             .activatable(false)
-            .css_classes(vec!["alarm-expander-container-row"])
+            .css_classes(["alarm-expander-container-row"])
             .child(alarm_editor.widget())
             .build();
         expander_alarms.add_row(&alarm_prefs_row);
@@ -1980,17 +1993,17 @@ impl EventDialog {
 
         // ── Group 3: Details & Options (Progressive Disclosure) ──
         let group_options = adw::PreferencesGroup::builder()
-            .title("Details")
+            .title(gettext("Details"))
             .build();
 
         let row_attendees = adw::EntryRow::builder()
-            .title("Attendees")
+            .title(gettext("Attendees"))
             .show_apply_button(false)
             .build();
         let btn_room_availability = gtk::Button::builder()
             .icon_name("x-office-calendar-symbolic")
-            .tooltip_text("Check Free/Busy Availability")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Check Free/Busy Availability"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         let entry_start_date_for_avail = entry_start_date.clone();
@@ -2005,13 +2018,13 @@ impl EventDialog {
         group_options.add(&row_attendees);
 
         let row_conference = adw::EntryRow::builder()
-            .title("Meeting Link")
+            .title(gettext("Meeting Link"))
             .show_apply_button(false)
             .build();
         let btn_open_web = gtk::Button::builder()
             .icon_name("web-browser-symbolic")
-            .tooltip_text("Open link in browser")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Open link in browser"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         let row_conference_weak = row_conference.downgrade();
@@ -2032,28 +2045,28 @@ impl EventDialog {
         group_options.add(&row_conference);
 
         let expander_advanced = adw::ExpanderRow::builder()
-            .title("More Options")
-            .subtitle("Status, timezone, room, categories, and privacy")
+            .title(gettext("More Options"))
+            .subtitle(gettext("Status, timezone, room, categories, and privacy"))
             .use_markup(false)
             .show_enable_switch(false)
             .build();
 
         let status_model = gtk::StringList::new(&[
-            "None",
-            "Confirmed",
-            "Tentative",
-            "Cancelled",
+            &gettext("None"),
+            &gettext("Confirmed"),
+            &gettext("Tentative"),
+            &gettext("Cancelled"),
         ]);
         let dropdown_status = adw::ComboRow::builder()
-            .title("Status")
+            .title(gettext("Status"))
             .model(&status_model)
             .selected(1)
             .build();
         expander_advanced.add_row(&dropdown_status);
 
-        let transparency_model = gtk::StringList::new(&["Busy", "Free"]);
+        let transparency_model = gtk::StringList::new(&[&gettext("Busy"), &gettext("Free")]);
         let dropdown_transparency = adw::ComboRow::builder()
-            .title("Availability")
+            .title(gettext("Availability"))
             .model(&transparency_model)
             .selected(0)
             .build();
@@ -2061,7 +2074,7 @@ impl EventDialog {
 
         let default_tz = crate::services::ical_time_service::default_calendar_timezone_id();
         let entry_tz = adw::EntryRow::builder()
-            .title("Timezone")
+            .title(gettext("Timezone"))
             .text(&default_tz)
             .show_apply_button(false)
             .build();
@@ -2069,8 +2082,8 @@ impl EventDialog {
         btn_tz.set_valign(gtk::Align::Center);
         let btn_diff_end_tz = gtk::ToggleButton::builder()
             .icon_name("airplane-mode-symbolic")
-            .tooltip_text("Different end timezone (e.g. for flights across timezones)")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Different end timezone (e.g. for flights across timezones)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         entry_tz.add_suffix(&btn_tz);
@@ -2079,7 +2092,7 @@ impl EventDialog {
         expander_advanced.add_row(&entry_tz);
 
         let entry_end_tz = adw::EntryRow::builder()
-            .title("Arrival Timezone")
+            .title(gettext("Arrival Timezone"))
             .text(&default_tz)
             .show_apply_button(false)
             .visible(false)
@@ -2103,7 +2116,7 @@ impl EventDialog {
         });
 
         let entry_room = adw::EntryRow::builder()
-            .title("Meeting Room")
+            .title(gettext("Meeting Room"))
             .show_apply_button(false)
             .build();
         let (btn_room, _pop_room) = create_room_picker_popover(
@@ -2116,7 +2129,7 @@ impl EventDialog {
         expander_advanced.add_row(&entry_room);
 
         let entry_categories = adw::EntryRow::builder()
-            .title("Categories")
+            .title(gettext("Categories"))
             .show_apply_button(false)
             .build();
         let (btn_categories, _pop_categories) = create_categories_picker_popover(&entry_categories);
@@ -2125,8 +2138,8 @@ impl EventDialog {
         expander_advanced.add_row(&entry_categories);
 
         let row_private = adw::SwitchRow::builder()
-            .title("Private Event")
-            .subtitle("Mark as private")
+            .title(gettext("Private Event"))
+            .subtitle(gettext("Mark as private"))
             .build();
         expander_advanced.add_row(&row_private);
 
@@ -2135,11 +2148,11 @@ impl EventDialog {
 
         // ── Group 4: Notes ──
         let group_desc = adw::PreferencesGroup::builder()
-            .title("Notes")
+            .title(gettext("Notes"))
             .build();
 
         let desc_overlay = gtk::Overlay::builder()
-            .css_classes(vec!["card", "appointment-notes-card"])
+            .css_classes(["card", "appointment-notes-card"])
             .hexpand(true)
             .vexpand(true)
             .build();
@@ -2158,16 +2171,16 @@ impl EventDialog {
             .bottom_margin(12)
             .hexpand(true)
             .vexpand(true)
-            .css_classes(vec!["appointment-notes-view"])
+            .css_classes(["appointment-notes-view"])
             .build();
         let desc_placeholder = gtk::Label::builder()
-            .label("Add notes or description…")
+            .label(gettext("Add notes or description…"))
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Start)
             .margin_start(14)
             .margin_top(12)
             .can_target(false)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         let desc_placeholder_for_buf = desc_placeholder.clone();
         text_desc.buffer().connect_changed(move |buf| {
@@ -2190,7 +2203,7 @@ impl EventDialog {
 
         // Right: Day Schedule Timeline inside sidebar panel
         let timeline_window_title = adw::WindowTitle::builder()
-            .title("Day Schedule")
+            .title(gettext("Day Schedule"))
             .subtitle(&default_start.format("%A, %b %d, %Y").to_string())
             .build();
 
@@ -2207,7 +2220,7 @@ impl EventDialog {
         timeline_toolbar_view.add_css_class("appointment-timeline-container");
 
         let conflict_badge = gtk::Label::builder()
-            .css_classes(vec!["appointment-timeline-conflict-badge"])
+            .css_classes(["appointment-timeline-conflict-badge"])
             .halign(gtk::Align::Center)
             .margin_top(4)
             .margin_bottom(4)
@@ -2252,7 +2265,7 @@ impl EventDialog {
                 .width_request(250)
                 .hexpand(false)
                 .can_target(false)
-                .css_classes(vec!["appointment-timeline-hour-row"])
+                .css_classes(["appointment-timeline-hour-row"])
                 .build();
             let lbl = gtk::Label::builder()
                 .label(&format!("{h}⁰⁰"))
@@ -2260,7 +2273,7 @@ impl EventDialog {
                 .halign(gtk::Align::End)
                 .valign(gtk::Align::Start)
                 .can_target(false)
-                .css_classes(vec!["appointment-timeline-hour-label"])
+                .css_classes(["appointment-timeline-hour-label"])
                 .build();
             let sep = gtk::Separator::builder()
                 .orientation(gtk::Orientation::Horizontal)
@@ -2689,22 +2702,23 @@ impl EventDialog {
             let trimmed = text.trim();
             if let Some(dialog) = dialog_weak_title.upgrade() {
                 if trimmed.is_empty() {
-                    dialog.set_title("Event — No Summary");
+                    dialog.set_title(&gettext("Event — No Summary"));
                     window_title_clone.set_subtitle("");
                 } else {
-                    dialog.set_title(&format!("Event — {trimmed}"));
+                    dialog.set_title(&format!("{} — {trimmed}", gettext("Event")));
                     window_title_clone.set_subtitle(trimmed);
                 }
             }
             if let Some(slot) = preview_slot_for_title.borrow().as_ref() {
+                let default_display = gettext("New Event");
                 let display = if trimmed.is_empty() {
-                    "New Event"
+                    &default_display
                 } else {
                     trimmed
                 };
                 if slot.is_all_day {
                     slot.label.set_label(display);
-                    slot.label.set_tooltip_text(Some(&format!("{display}\nAll Day")));
+                    slot.label.set_tooltip_text(Some(&format!("{display}\n{}", gettext("All Day"))));
                 } else {
                     let (markup, _, _) = format_timeline_timed_event_markup(
                         display,
@@ -2744,11 +2758,11 @@ impl EventDialog {
             let trimmed = summary.trim();
             if trimmed.is_empty() {
                 entry_title.set_text("");
-                self.set_title("Event — No Summary");
+                self.set_title(&gettext("Event — No Summary"));
                 window_title.set_subtitle("");
             } else {
                 entry_title.set_text(trimmed);
-                self.set_title(&format!("Event — {trimmed}"));
+                self.set_title(&format!("{} — {trimmed}", gettext("Event")));
                 window_title.set_subtitle(trimmed);
             }
             row_location.set_text(
@@ -2870,7 +2884,7 @@ impl EventDialog {
             let trimmed = summary.trim();
             if !trimmed.is_empty() {
                 entry_title.set_text(trimmed);
-                self.set_title(&format!("Event — {trimmed}"));
+                self.set_title(&format!("{} — {trimmed}", gettext("Event")));
                 window_title.set_subtitle(trimmed);
             }
         }
@@ -3042,7 +3056,7 @@ impl EventDialog {
                         let header_label = gtk::Label::builder()
                             .label(&current_group)
                             .xalign(0.0)
-                            .css_classes(vec!["calendar-picker-group-label"])
+                            .css_classes(["calendar-picker-group-label"])
                             .margin_start(10)
                             .margin_end(10)
                             .margin_top(if is_first_group { 4 } else { 10 })
@@ -3053,7 +3067,7 @@ impl EventDialog {
                     }
 
                     let item_btn = gtk::Button::builder()
-                        .css_classes(vec!["flat", "calendar-picker-item-button"])
+                        .css_classes(["flat", "calendar-picker-item-button"])
                         .build();
 
                     let row_box = gtk::Box::builder()
@@ -3064,7 +3078,7 @@ impl EventDialog {
                         .build();
 
                     let chip = gtk::Box::builder()
-                        .css_classes(vec!["calendar-picker-color-chip"])
+                        .css_classes(["calendar-picker-color-chip"])
                         .valign(gtk::Align::Center)
                         .build();
                     let prov = gtk::CssProvider::new();
@@ -3227,7 +3241,7 @@ impl EventDialog {
                 } else {
                     let source_uid = selected_source_uid.borrow().clone();
                     if source_uid.is_empty() {
-                        dialog.show_toast("No active calendar is selected");
+                        dialog.show_toast(&gettext("No active calendar is selected"));
                         return;
                     }
                     source_uid
@@ -3400,9 +3414,9 @@ impl EventDialog {
                     match result {
                         Ok(result) => {
                             let message = if was_edit {
-                                format!("Event updated ({})", result.uid)
+                                format!("{} ({})", gettext("Event updated"), result.uid)
                             } else {
-                                format!("Event saved ({})", result.uid)
+                                format!("{} ({})", gettext("Event saved"), result.uid)
                             };
                             dialog.show_toast(&message);
                             dialog.imp().edit_uid.replace(Some(result.uid.clone()));
@@ -3415,7 +3429,7 @@ impl EventDialog {
                             }
                         }
                         Err(error) => dialog
-                            .show_toast(&format!("Could not save event: {error}")),
+                            .show_toast(&format!("{}: {error}", gettext("Could not save event"))),
                     }
                 });
             })
@@ -3580,11 +3594,11 @@ impl EventDialog {
                 let summary = if has_title {
                     raw_title.trim().to_string()
                 } else {
-                    "No Summary".to_string()
+                    gettext("No Summary")
                 };
 
                 let mut builder = glib::Object::builder()
-                    .property("title", format!("Event — {summary}"))
+                    .property("title", format!("{} — {summary}", gettext("Event")))
                     .property("content-width", 880)
                     .property("content-height", 680)
                     .property("edit-component", &component);
@@ -3597,7 +3611,7 @@ impl EventDialog {
                 builder.build()
             } else {
                 let mut builder = glib::Object::builder()
-                    .property("title", "Event — No Summary")
+                    .property("title", gettext("Event — No Summary"))
                     .property("content-width", 880)
                     .property("content-height", 680)
                     .property("initial-start", format!("{start_date_iso} {}", split_entry_start_time.text().trim()))
@@ -3658,19 +3672,19 @@ fn format_alarm_display_label(alarm: &Alarm) -> String {
         } => {
             if *offset_seconds == 0 {
                 match relation {
-                    AlarmRelation::Start => "At time of event".to_string(),
-                    AlarmRelation::End => "At end of event".to_string(),
+                    AlarmRelation::Start => gettext("At time of event"),
+                    AlarmRelation::End => gettext("At end of event"),
                 }
             } else {
                 let raw = alarm.trigger.label();
                 match relation {
                     AlarmRelation::Start => raw.strip_suffix(" start").unwrap_or(&raw).to_string(),
-                    AlarmRelation::End => format!("{raw} of event"),
+                    AlarmRelation::End => format!("{raw} {}", gettext("of event")),
                 }
             }
         }
-        AlarmTrigger::Absolute { value, .. } => format!("On {value}"),
-        AlarmTrigger::Unknown { .. } => "Custom trigger".to_string(),
+        AlarmTrigger::Absolute { value, .. } => format!("{} {value}", gettext("On")),
+        AlarmTrigger::Unknown { .. } => gettext("Custom trigger"),
     };
     match &alarm.action {
         AlarmAction::Display => trigger_text,
@@ -3730,9 +3744,14 @@ impl AlarmEditor {
     pub(crate) fn summary_label(&self) -> String {
         let alarms = self.alarms.borrow();
         match alarms.len() {
-            0 => "None".to_string(),
+            0 => gettext("None"),
             1 => format_alarm_display_label(&alarms[0]),
-            n => format!("{} (+{} more)", format_alarm_display_label(&alarms[0]), n - 1),
+            n => format!(
+                "{} (+{} {})",
+                format_alarm_display_label(&alarms[0]),
+                n - 1,
+                gettext("more")
+            ),
         }
     }
 
@@ -3776,17 +3795,18 @@ impl AlarmEditor {
                     .as_deref()
                     .filter(|m| !m.trim().is_empty())
                     .unwrap_or("")
+                    .to_string()
             } else {
-                "Preserved from calendar; not executed automatically"
+                gettext("Preserved from calendar; not executed automatically")
             };
             let row = adw::ActionRow::builder()
                 .title(format_alarm_display_label(alarm))
-                .subtitle(subtitle)
+                .subtitle(&subtitle)
                 .activatable(true)
                 .build();
             let bell_icon = gtk::Image::builder()
                 .icon_name("alarm-symbolic")
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build();
             row.add_prefix(&bell_icon);
 
@@ -3798,8 +3818,8 @@ impl AlarmEditor {
             if len > 1 {
                 let up_btn = gtk::Button::builder()
                     .icon_name("go-up-symbolic")
-                    .tooltip_text("Move up")
-                    .css_classes(vec!["flat"])
+                    .tooltip_text(gettext("Move up"))
+                    .css_classes(["flat"])
                     .valign(gtk::Align::Center)
                     .sensitive(idx > 0)
                     .build();
@@ -3814,8 +3834,8 @@ impl AlarmEditor {
 
                 let down_btn = gtk::Button::builder()
                     .icon_name("go-down-symbolic")
-                    .tooltip_text("Move down")
-                    .css_classes(vec!["flat"])
+                    .tooltip_text(gettext("Move down"))
+                    .css_classes(["flat"])
                     .valign(gtk::Align::Center)
                     .sensitive(idx + 1 < len)
                     .build();
@@ -3831,8 +3851,8 @@ impl AlarmEditor {
 
             let remove_btn = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
-                .tooltip_text("Remove reminder")
-                .css_classes(vec!["flat"])
+                .tooltip_text(gettext("Remove reminder"))
+                .css_classes(["flat"])
                 .valign(gtk::Align::Center)
                 .build();
             let editor_for_remove = self.clone();
@@ -3848,7 +3868,7 @@ impl AlarmEditor {
         }
 
         let add_row = adw::ActionRow::builder()
-            .title("Add Reminder…")
+            .title(gettext("Add Reminder…"))
             .activatable(true)
             .build();
         let add_icon = gtk::Image::from_icon_name("list-add-symbolic");
@@ -3871,10 +3891,10 @@ impl AlarmEditor {
             .clone()
             .unwrap_or_else(|| Alarm::new_display_relative(AlarmRelation::Start, -15 * 60, None));
         let window = adw::Dialog::builder()
-            .title(if index.is_some() {
-                "Edit Reminder"
+            .title(&if index.is_some() {
+                gettext("Edit Reminder")
             } else {
-                "Add Reminder"
+                gettext("Add Reminder")
             })
             .content_width(440)
             .content_height(460)
@@ -3885,7 +3905,7 @@ impl AlarmEditor {
         header.set_show_end_title_buttons(false);
 
         let cancel_btn = gtk::Button::builder()
-            .label("Cancel")
+            .label(gettext("Cancel"))
             .build();
         let window_for_cancel = window.clone();
         cancel_btn.connect_clicked(move |_| {
@@ -3894,8 +3914,8 @@ impl AlarmEditor {
         header.pack_start(&cancel_btn);
 
         let save = gtk::Button::builder()
-            .label("Save")
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         header.pack_end(&save);
         toolbar.add_top_bar(&header);
@@ -3933,20 +3953,20 @@ impl AlarmEditor {
             None, // Custom
         ];
         let preset_model = gtk::StringList::new(&[
-            "At time of event",
-            "5 minutes before",
-            "10 minutes before",
-            "15 minutes before",
-            "30 minutes before",
-            "1 hour before",
-            "2 hours before",
-            "1 day before",
-            "2 days before",
-            "1 week before",
-            "Custom…",
+            &gettext("At time of event"),
+            &gettext("5 minutes before"),
+            &gettext("10 minutes before"),
+            &gettext("15 minutes before"),
+            &gettext("30 minutes before"),
+            &gettext("1 hour before"),
+            &gettext("2 hours before"),
+            &gettext("1 day before"),
+            &gettext("2 days before"),
+            &gettext("1 week before"),
+            &gettext("Custom…"),
         ]);
         let preset_row = adw::ComboRow::builder()
-            .title("When")
+            .title(gettext("When"))
             .model(&preset_model)
             .build();
         let initial_preset_idx = match &initial.trigger {
@@ -3978,17 +3998,17 @@ impl AlarmEditor {
         let action_labels = action_values
             .iter()
             .map(|act| match act {
-                AlarmAction::Display => "Notification".to_string(),
-                AlarmAction::Audio => "Sound".to_string(),
-                AlarmAction::Email => "Email".to_string(),
-                AlarmAction::Procedure => "Custom Command".to_string(),
-                AlarmAction::Unknown(v) => format!("Custom ({v})"),
+                AlarmAction::Display => gettext("Notification"),
+                AlarmAction::Audio => gettext("Sound"),
+                AlarmAction::Email => gettext("Email"),
+                AlarmAction::Procedure => gettext("Custom Command"),
+                AlarmAction::Unknown(v) => format!("{}: {v}", gettext("Custom")),
             })
             .collect::<Vec<_>>();
         let action_label_refs = action_labels.iter().map(String::as_str).collect::<Vec<_>>();
         let action_model = gtk::StringList::new(&action_label_refs);
         let action_row = adw::ComboRow::builder()
-            .title("Type")
+            .title(gettext("Type"))
             .model(&action_model)
             .build();
         let action_index = action_values
@@ -4005,15 +4025,19 @@ impl AlarmEditor {
             }
             values
         });
-        let trigger_model = gtk::StringList::new(
-            &[
-                "Relative to event",
-                "Specific date & time",
-                "Preserved trigger",
-            ][..trigger_values.len()],
-        );
+        let trigger_strings = [
+            gettext("Relative to event"),
+            gettext("Specific date & time"),
+            gettext("Preserved trigger"),
+        ];
+        let trigger_labels = trigger_strings
+            .iter()
+            .take(trigger_values.len())
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>();
+        let trigger_model = gtk::StringList::new(&trigger_labels);
         let trigger_row = adw::ComboRow::builder()
-            .title("Trigger Mode")
+            .title(gettext("Trigger Mode"))
             .model(&trigger_model)
             .build();
         let trigger_index = match initial.trigger {
@@ -4028,37 +4052,36 @@ impl AlarmEditor {
         content.append(&general_group);
 
         let safety_note = gtk::Label::builder()
-            .label(
-                "Sound, Email, and Custom Command reminders are preserved in the calendar file but not executed automatically.",
+            .label(gettext("Sound, Email, and Custom Command reminders are preserved in the calendar file but not executed automatically."),
             )
             .halign(gtk::Align::Start)
             .wrap(true)
-            .css_classes(vec!["warning", "dim-label"])
+            .css_classes(["warning", "dim-label"])
             .build();
         safety_note.set_visible(!initial.action.is_safe_to_notify());
         content.append(&safety_note);
 
         // ── Group 2: Custom Relative or Absolute Timing ──
         let relative_group = adw::PreferencesGroup::builder()
-            .title("Custom Timing")
+            .title(gettext("Custom Timing"))
             .build();
         let offset_row = adw::SpinRow::with_range(0.0, 10_000_000.0, 1.0);
-        offset_row.set_title("Offset");
+        offset_row.set_title(&gettext("Offset"));
         offset_row.set_digits(0);
         offset_row.set_snap_to_ticks(true);
-        let unit_model = gtk::StringList::new(&["Minutes", "Hours", "Days"]);
+        let unit_model = gtk::StringList::new(&[&gettext("Minutes"), &gettext("Hours"), &gettext("Days")]);
         let unit_row = adw::ComboRow::builder()
-            .title("Unit")
+            .title(gettext("Unit"))
             .model(&unit_model)
             .build();
-        let direction_model = gtk::StringList::new(&["Before", "After"]);
+        let direction_model = gtk::StringList::new(&[&gettext("Before"), &gettext("After")]);
         let direction_row = adw::ComboRow::builder()
-            .title("Direction")
+            .title(gettext("Direction"))
             .model(&direction_model)
             .build();
-        let relative_to_model = gtk::StringList::new(&["Event start", "Event end"]);
+        let relative_to_model = gtk::StringList::new(&[&gettext("Event start"), &gettext("Event end")]);
         let relative_to_row = adw::ComboRow::builder()
-            .title("Relative to")
+            .title(gettext("Relative to"))
             .model(&relative_to_model)
             .build();
         relative_group.add(&offset_row);
@@ -4068,20 +4091,20 @@ impl AlarmEditor {
         content.append(&relative_group);
 
         let absolute_group = adw::PreferencesGroup::builder()
-            .title("Specific Date & Time")
+            .title(gettext("Specific Date & Time"))
             .build();
         let absolute_entry = adw::EntryRow::builder()
-            .title("Timestamp (YYYYMMDDTHHMMSSZ)")
+            .title(gettext("Timestamp (YYYYMMDDTHHMMSSZ)"))
             .build();
-        absolute_entry.set_tooltip_text(Some("YYYYMMDDTHHMMSSZ or YYYYMMDDTHHMMSS"));
+        absolute_entry.set_tooltip_text(Some(&gettext("YYYYMMDDTHHMMSSZ or YYYYMMDDTHHMMSS")));
         absolute_group.add(&absolute_entry);
         content.append(&absolute_group);
 
         let unknown_trigger_label = gtk::Label::builder()
-            .label("The imported trigger will be preserved unchanged when saving.")
+            .label(gettext("The imported trigger will be preserved unchanged when saving."))
             .halign(gtk::Align::Start)
             .wrap(true)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         content.append(&unknown_trigger_label);
 
@@ -4168,14 +4191,14 @@ impl AlarmEditor {
             || !initial.attachments.is_empty()
             || !initial.attendees.is_empty();
         let advanced_expander = adw::ExpanderRow::builder()
-            .title("More Options")
-            .subtitle("Custom message and repeat interval")
+            .title(gettext("More Options"))
+            .subtitle(gettext("Custom message and repeat interval"))
             .show_enable_switch(false)
             .expanded(has_advanced_initial)
             .build();
 
         let message_entry = adw::EntryRow::builder()
-            .title("Custom Message")
+            .title(gettext("Custom Message"))
             .show_apply_button(false)
             .build();
         if let Some(message) = initial.message.as_deref() {
@@ -4184,19 +4207,19 @@ impl AlarmEditor {
         advanced_expander.add_row(&message_entry);
 
         let repeat_row = adw::SpinRow::with_range(0.0, 4_096.0, 1.0);
-        repeat_row.set_title("Repeat Count");
+        repeat_row.set_title(&gettext("Repeat Count"));
         repeat_row.set_digits(0);
         repeat_row.set_snap_to_ticks(true);
         repeat_row.set_value(initial.repeat.unwrap_or(0) as f64);
         advanced_expander.add_row(&repeat_row);
 
         let repeat_interval_row = adw::SpinRow::with_range(0.0, 10_000_000.0, 1.0);
-        repeat_interval_row.set_title("Repeat Interval");
+        repeat_interval_row.set_title(&gettext("Repeat Interval"));
         repeat_interval_row.set_digits(0);
         repeat_interval_row.set_snap_to_ticks(true);
-        let repeat_unit_model = gtk::StringList::new(&["Minutes", "Hours", "Days"]);
+        let repeat_unit_model = gtk::StringList::new(&[&gettext("Minutes"), &gettext("Hours"), &gettext("Days")]);
         let repeat_unit_row = adw::ComboRow::builder()
-            .title("Interval Unit")
+            .title(gettext("Interval Unit"))
             .model(&repeat_unit_model)
             .build();
         if let Some(duration) = &initial.duration {
@@ -4210,7 +4233,7 @@ impl AlarmEditor {
         advanced_expander.add_row(&repeat_unit_row);
 
         let attachments_entry = adw::EntryRow::builder()
-            .title("Sound / Action URI")
+            .title(gettext("Sound / Action URI"))
             .show_apply_button(false)
             .visible(
                 matches!(initial.action, AlarmAction::Audio | AlarmAction::Procedure)
@@ -4221,7 +4244,7 @@ impl AlarmEditor {
         advanced_expander.add_row(&attachments_entry);
 
         let attendees_entry = adw::EntryRow::builder()
-            .title("Email Recipients")
+            .title(gettext("Email Recipients"))
             .show_apply_button(false)
             .visible(matches!(initial.action, AlarmAction::Email) || !initial.attendees.is_empty())
             .build();
@@ -4607,18 +4630,18 @@ pub(crate) fn build_event_component(
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
-        return Err("An event requires a title".to_string());
+        return Err(gettext("An event requires a title"));
     }
     let start_value = parse_event_datetime(start, all_day, "Starts")?;
     let end_value = parse_event_datetime(end, all_day, "Ends")?;
     if !all_day && end_value <= start_value {
-        return Err("End time must be after start time".to_string());
+        return Err(gettext("End time must be after start time"));
     }
     let status = match status.to_ascii_uppercase().as_str() {
         "TENTATIVE" => "TENTATIVE",
         "CANCELLED" => "CANCELLED",
         "CONFIRMED" => "CONFIRMED",
-        _ => return Err("Invalid event status".to_string()),
+        _ => return Err(gettext("Invalid event status")),
     };
     for (field, value) in [
         ("RRULE", recurrence),
@@ -4632,7 +4655,7 @@ pub(crate) fn build_event_component(
             .chars()
             .any(|character| character == '\r' || character == '\n')
         {
-            return Err(format!("{field} contains invalid line breaks"));
+            return Err(format!("{field}: {}", gettext("contains invalid line breaks")));
         }
     }
 
@@ -4751,18 +4774,18 @@ pub(crate) fn update_existing_event_component(
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
-        return Err("An event requires a title".to_string());
+        return Err(gettext("An event requires a title"));
     }
     let start_value = parse_event_datetime(start, all_day, "Starts")?;
     let end_value = parse_event_datetime(end, all_day, "Ends")?;
     if !all_day && end_value <= start_value {
-        return Err("End time must be after start time".to_string());
+        return Err(gettext("End time must be after start time"));
     }
     let status = match status.to_ascii_uppercase().as_str() {
         "TENTATIVE" => "TENTATIVE",
         "CANCELLED" => "CANCELLED",
         "CONFIRMED" => "CONFIRMED",
-        _ => return Err("Invalid event status".to_string()),
+        _ => return Err(gettext("Invalid event status")),
     };
     for (field, value) in [
         ("RRULE", recurrence),
@@ -4776,7 +4799,7 @@ pub(crate) fn update_existing_event_component(
             .chars()
             .any(|character| character == '\r' || character == '\n')
         {
-            return Err(format!("{field} contains invalid line breaks"));
+            return Err(format!("{field}: {}", gettext("contains invalid line breaks")));
         }
     }
 
@@ -5088,11 +5111,11 @@ fn parse_event_datetime(value: &str, all_day: bool, field_name: &str) -> Result<
     if all_day {
         return NaiveDate::parse_from_str(value, "%Y-%m-%d")
             .map(|date| date.format("%Y%m%d").to_string())
-            .map_err(|_| format!("{field_name}: expected YYYY-MM-DD"));
+            .map_err(|_| format!("{field_name}: {}", gettext("expected YYYY-MM-DD")));
     }
     NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M")
         .map(|date_time| date_time.format("%Y%m%dT%H%M%S").to_string())
-        .map_err(|_| format!("{field_name}: expected YYYY-MM-DD HH:MM"))
+        .map_err(|_| format!("{field_name}: {}", gettext("expected YYYY-MM-DD HH:MM")))
 }
 
 fn normalize_timezone_input(raw: &str) -> Result<Option<String>, String> {
@@ -5110,7 +5133,7 @@ fn normalize_timezone_input(raw: &str) -> Result<Option<String>, String> {
         return Ok(Some("UTC".to_string()));
     }
     if glib::TimeZone::from_identifier(Some(trimmed)).is_none() {
-        return Err(format!("Invalid timezone: {trimmed}"));
+        return Err(format!("{}: {trimmed}", gettext("Invalid timezone")));
     }
     Ok(Some(trimmed.to_string()))
 }
@@ -5146,7 +5169,7 @@ fn prepare_end_val_for_timezones(
             crate::services::ical_time_service::property_local_timestamp(&end_prop, &end_ical, 0),
         ) {
             if e_ts <= s_ts {
-                return Err("End time (including timezone) must be after start time".to_string());
+                return Err(gettext("End time (including timezone) must be after start time"));
             }
             if end_ical <= start_ical {
                 if let Ok(dt) = NaiveDateTime::parse_from_str(start_val.trim(), "%Y-%m-%d %H:%M") {

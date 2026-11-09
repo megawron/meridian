@@ -14,6 +14,7 @@ use gtk::glib;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::i18n::gettext;
 use crate::services::contact_store_service::ContactStoreService;
 use crate::services::ebook_service::EBookService;
 use crate::services::ebook_service::{EBookContactRecord, load_contacts_prefer_eds};
@@ -104,7 +105,7 @@ glib::wrapper! {
 impl ContactDialog {
     pub fn new() -> Self {
         glib::Object::builder()
-            .property("title", "New Contact")
+            .property("title", gettext("New Contact"))
             .property("content-width", 560)
             .property("content-height", 560)
             .build()
@@ -112,7 +113,7 @@ impl ContactDialog {
 
     pub(crate) fn new_for_list() -> Self {
         glib::Object::builder()
-            .property("title", "New Contact List")
+            .property("title", gettext("New Contact List"))
             .property("content-width", 620)
             .property("content-height", 620)
             .property("list-mode", true)
@@ -121,7 +122,7 @@ impl ContactDialog {
 
     pub(crate) fn new_for_edit(record: &EBookContactRecord) -> Self {
         glib::Object::builder()
-            .property("title", "Edit Contact")
+            .property("title", gettext("Edit Contact"))
             .property("content-width", 560)
             .property("content-height", 600)
             .property("edit-vcard", &record.vcard)
@@ -134,7 +135,7 @@ impl ContactDialog {
     pub(crate) fn new_for_email(name: &str, email: &str) -> Self {
         let seed = VCardContact::new(name.trim(), email.trim(), "", "").to_vcard_string();
         glib::Object::builder()
-            .property("title", "Add Sender to Address Book")
+            .property("title", gettext("Add Sender to Address Book"))
             .property("content-width", 560)
             .property("content-height", 560)
             .property("edit-vcard", seed)
@@ -156,7 +157,7 @@ impl ContactDialog {
         header_bar.set_show_start_title_buttons(false);
         header_bar.set_show_end_title_buttons(false);
         let btn_cancel = gtk::Button::builder()
-            .label("Cancel")
+            .label(gettext("Cancel"))
             .build();
         let dialog_weak_for_cancel = self.downgrade();
         btn_cancel.connect_clicked(move |_| {
@@ -167,8 +168,8 @@ impl ContactDialog {
         header_bar.pack_start(&btn_cancel);
 
         let btn_save = gtk::Button::builder()
-            .label("Save")
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         header_bar.pack_end(&btn_save);
         toolbar_view.add_top_bar(&header_bar);
@@ -197,7 +198,7 @@ impl ContactDialog {
 
         let avatar = adw::Avatar::builder()
             .size(72)
-            .text("New Contact")
+            .text(&gettext("New Contact"))
             .show_initials(true)
             .build();
         name_box.append(&avatar);
@@ -206,35 +207,35 @@ impl ContactDialog {
         // Group 1: General Info (Clean & Focused like GNOME Contacts)
         let group_general = adw::PreferencesGroup::new();
 
-        let row_name = adw::EntryRow::builder().title("Full Name").build();
+        let row_name = adw::EntryRow::builder().title(gettext("Full Name")).build();
         let name_details_toggle = gtk::ToggleButton::builder()
             .icon_name("pan-down-symbolic")
-            .tooltip_text("Show/hide structured name fields")
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Show/hide structured name fields"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         row_name.add_suffix(&name_details_toggle);
         group_general.add(&row_name);
 
-        let row_given_name = adw::EntryRow::builder().title("First Name").build();
+        let row_given_name = adw::EntryRow::builder().title(gettext("First Name")).build();
         row_given_name.set_visible(false);
         group_general.add(&row_given_name);
 
-        let row_family_name = adw::EntryRow::builder().title("Last Name").build();
+        let row_family_name = adw::EntryRow::builder().title(gettext("Last Name")).build();
         row_family_name.set_visible(false);
         group_general.add(&row_family_name);
 
         let row_additional_name = adw::EntryRow::builder()
-            .title("Middle Name")
+            .title(gettext("Middle Name"))
             .build();
         row_additional_name.set_visible(false);
         group_general.add(&row_additional_name);
 
-        let row_name_prefix = adw::EntryRow::builder().title("Name Prefix").build();
+        let row_name_prefix = adw::EntryRow::builder().title(gettext("Name Prefix")).build();
         row_name_prefix.set_visible(false);
         group_general.add(&row_name_prefix);
 
-        let row_name_suffix = adw::EntryRow::builder().title("Name Suffix").build();
+        let row_name_suffix = adw::EntryRow::builder().title(gettext("Name Suffix")).build();
         row_name_suffix.set_visible(false);
         group_general.add(&row_name_suffix);
 
@@ -264,55 +265,55 @@ impl ContactDialog {
             row_name.connect_changed(move |entry| {
                 let text = entry.text();
                 let trimmed = text.trim();
-                avatar.set_text(Some(if trimmed.is_empty() {
-                    "New Contact"
+                if trimmed.is_empty() {
+                    avatar.set_text(Some(&gettext("New Contact")));
                 } else {
-                    trimmed
-                }));
+                    avatar.set_text(Some(trimmed));
+                }
             });
         }
 
-        let source_model = gtk::StringList::new(&["Loading address books…"]);
+        let source_model = gtk::StringList::new(&[&gettext("Loading address books…")]);
         let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_row = adw::ComboRow::builder()
-            .title("Address Book")
+            .title(gettext("Address Book"))
             .model(&source_model)
             .build();
         source_row.set_sensitive(edit_uid.is_none());
         group_general.add(&source_row);
 
         let row_org = adw::EntryRow::builder()
-            .title("Company / Organization")
+            .title(gettext("Company / Organization"))
             .build();
         group_general.add(&row_org);
 
-        let row_title = adw::EntryRow::builder().title("Job Title").build();
+        let row_title = adw::EntryRow::builder().title(gettext("Job Title")).build();
         group_general.add(&row_title);
 
         content_box.append(&group_general);
 
         // Group 2: Contact Methods (Progressive Email & Phone rows)
         let group_contact = adw::PreferencesGroup::builder()
-            .title("Contact Information")
+            .title(gettext("Contact Information"))
             .build();
 
-        let row_email1 = adw::EntryRow::builder().title("Email (Personal)").build();
+        let row_email1 = adw::EntryRow::builder().title(gettext("Email (Personal)")).build();
         row_email1.set_input_purpose(gtk::InputPurpose::Email);
         let btn_add_email = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Add another email address")
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Add another email address"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         row_email1.add_suffix(&btn_add_email);
         group_contact.add(&row_email1);
 
-        let row_email2 = adw::EntryRow::builder().title("Email (Work)").build();
+        let row_email2 = adw::EntryRow::builder().title(gettext("Email (Work)")).build();
         row_email2.set_input_purpose(gtk::InputPurpose::Email);
         row_email2.set_visible(false);
         group_contact.add(&row_email2);
 
-        let row_email3 = adw::EntryRow::builder().title("Email (Other)").build();
+        let row_email3 = adw::EntryRow::builder().title(gettext("Email (Other)")).build();
         row_email3.set_input_purpose(gtk::InputPurpose::Email);
         row_email3.set_visible(false);
         group_contact.add(&row_email3);
@@ -335,23 +336,23 @@ impl ContactDialog {
             });
         }
 
-        let row_phone = adw::EntryRow::builder().title("Phone (Mobile)").build();
+        let row_phone = adw::EntryRow::builder().title(gettext("Phone (Mobile)")).build();
         row_phone.set_input_purpose(gtk::InputPurpose::Phone);
         let btn_add_phone = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Add another phone number")
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Add another phone number"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         row_phone.add_suffix(&btn_add_phone);
         group_contact.add(&row_phone);
 
-        let row_phone_work = adw::EntryRow::builder().title("Phone (Work)").build();
+        let row_phone_work = adw::EntryRow::builder().title(gettext("Phone (Work)")).build();
         row_phone_work.set_input_purpose(gtk::InputPurpose::Phone);
         row_phone_work.set_visible(false);
         group_contact.add(&row_phone_work);
 
-        let row_phone_home = adw::EntryRow::builder().title("Phone (Home)").build();
+        let row_phone_home = adw::EntryRow::builder().title(gettext("Phone (Home)")).build();
         row_phone_home.set_input_purpose(gtk::InputPurpose::Phone);
         row_phone_home.set_visible(false);
         group_contact.add(&row_phone_home);
@@ -379,7 +380,7 @@ impl ContactDialog {
         }
 
         let row_sip = adw::EntryRow::builder()
-            .title("SIP / VoIP Address")
+            .title(gettext("SIP / VoIP Address"))
             .build();
         group_contact.add(&row_sip);
 
@@ -387,27 +388,27 @@ impl ContactDialog {
 
         // Group 3: Primary Extras (Address, Note, Website, Birthday)
         let group_extra = adw::PreferencesGroup::builder()
-            .title("Additional Information")
+            .title(gettext("Additional Information"))
             .build();
 
-        let row_address = adw::EntryRow::builder().title("Home Address").build();
+        let row_address = adw::EntryRow::builder().title(gettext("Home Address")).build();
         let btn_add_address = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Add another address")
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Add another address"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         row_address.add_suffix(&btn_add_address);
         group_extra.add(&row_address);
 
         let row_address_work = adw::EntryRow::builder()
-            .title("Work Address")
+            .title(gettext("Work Address"))
             .build();
         row_address_work.set_visible(false);
         group_extra.add(&row_address_work);
 
         let row_address_other = adw::EntryRow::builder()
-            .title("Other Address")
+            .title(gettext("Other Address"))
             .build();
         row_address_other.set_visible(false);
         group_extra.add(&row_address_other);
@@ -434,112 +435,112 @@ impl ContactDialog {
             });
         }
 
-        let row_url = adw::EntryRow::builder().title("Website").build();
+        let row_url = adw::EntryRow::builder().title(gettext("Website")).build();
         row_url.set_input_purpose(gtk::InputPurpose::Url);
         group_extra.add(&row_url);
 
         let row_birthday = adw::EntryRow::builder()
-            .title("Birthday (YYYY-MM-DD)")
+            .title(gettext("Birthday (YYYY-MM-DD)"))
             .build();
         attach_entry_row_date_picker(&row_birthday);
         group_extra.add(&row_birthday);
 
-        let row_note = adw::EntryRow::builder().title("Note").build();
+        let row_note = adw::EntryRow::builder().title(gettext("Note")).build();
         group_extra.add(&row_note);
 
         // Progressive Enhancement: Expandable row for secondary & advanced fields
         let expander_more = adw::ExpanderRow::builder()
-            .title("More Details")
-            .subtitle("Nickname, anniversary, categories, messenger, and advanced fields")
+            .title(gettext("More Details"))
+            .subtitle(gettext("Nickname, anniversary, categories, messenger, and advanced fields"))
             .show_enable_switch(false)
             .build();
 
-        let row_nickname = adw::EntryRow::builder().title("Nickname").build();
+        let row_nickname = adw::EntryRow::builder().title(gettext("Nickname")).build();
         expander_more.add_row(&row_nickname);
 
         let row_anniversary = adw::EntryRow::builder()
-            .title("Anniversary (YYYY-MM-DD)")
+            .title(gettext("Anniversary (YYYY-MM-DD)"))
             .build();
         attach_entry_row_date_picker(&row_anniversary);
         expander_more.add_row(&row_anniversary);
 
         let row_categories = adw::EntryRow::builder()
-            .title("Categories (comma-separated)")
+            .title(gettext("Categories (comma-separated)"))
             .build();
         expander_more.add_row(&row_categories);
 
         let row_impp = adw::EntryRow::builder()
-            .title("Instant Messaging (IMPP)")
+            .title(gettext("Instant Messaging (IMPP)"))
             .build();
         expander_more.add_row(&row_impp);
 
-        let row_role = adw::EntryRow::builder().title("Role").build();
+        let row_role = adw::EntryRow::builder().title(gettext("Role")).build();
         expander_more.add_row(&row_role);
 
-        let row_evolution_manager = adw::EntryRow::builder().title("Manager").build();
+        let row_evolution_manager = adw::EntryRow::builder().title(gettext("Manager")).build();
         expander_more.add_row(&row_evolution_manager);
 
-        let row_evolution_assistant = adw::EntryRow::builder().title("Assistant").build();
+        let row_evolution_assistant = adw::EntryRow::builder().title(gettext("Assistant")).build();
         expander_more.add_row(&row_evolution_assistant);
 
-        let row_evolution_spouse = adw::EntryRow::builder().title("Spouse / Partner").build();
+        let row_evolution_spouse = adw::EntryRow::builder().title(gettext("Spouse / Partner")).build();
         expander_more.add_row(&row_evolution_spouse);
 
         let row_related = adw::EntryRow::builder()
-            .title("Related Contacts (comma-separated)")
+            .title(gettext("Related Contacts (comma-separated)"))
             .build();
         expander_more.add_row(&row_related);
 
-        let row_gender = adw::EntryRow::builder().title("Gender").build();
+        let row_gender = adw::EntryRow::builder().title(gettext("Gender")).build();
         expander_more.add_row(&row_gender);
 
-        let row_timezone = adw::EntryRow::builder().title("Time Zone").build();
+        let row_timezone = adw::EntryRow::builder().title(gettext("Time Zone")).build();
         expander_more.add_row(&row_timezone);
 
         let row_geo = adw::EntryRow::builder()
-            .title("Geo Position (lat;lon)")
+            .title(gettext("Geo Position (lat;lon)"))
             .build();
         expander_more.add_row(&row_geo);
 
         let row_photo = adw::EntryRow::builder()
-            .title("Photo (URI or Base64)")
+            .title(gettext("Photo (URI or Base64)"))
             .build();
         row_photo.set_input_purpose(gtk::InputPurpose::Url);
         expander_more.add_row(&row_photo);
 
-        let row_evolution_blog_url = adw::EntryRow::builder().title("Blog URL").build();
+        let row_evolution_blog_url = adw::EntryRow::builder().title(gettext("Blog URL")).build();
         row_evolution_blog_url.set_input_purpose(gtk::InputPurpose::Url);
         expander_more.add_row(&row_evolution_blog_url);
 
-        let row_evolution_video_url = adw::EntryRow::builder().title("Video URL").build();
+        let row_evolution_video_url = adw::EntryRow::builder().title(gettext("Video URL")).build();
         row_evolution_video_url.set_input_purpose(gtk::InputPurpose::Url);
         expander_more.add_row(&row_evolution_video_url);
 
         let row_evolution_file_as = adw::EntryRow::builder()
-            .title("File As / Sort Name")
+            .title(gettext("File As / Sort Name"))
             .build();
         expander_more.add_row(&row_evolution_file_as);
 
         let row_evolution_wants_html = adw::SwitchRow::builder()
-            .title("Prefer HTML Mail")
-            .subtitle("Prefer sending messages to this contact as HTML")
+            .title(gettext("Prefer HTML Mail"))
+            .subtitle(gettext("Prefer sending messages to this contact as HTML"))
             .build();
         expander_more.add_row(&row_evolution_wants_html);
 
         let row_certs = adw::EntryRow::builder()
-            .title("S/MIME Certificate")
+            .title(gettext("S/MIME Certificate"))
             .build();
         expander_more.add_row(&row_certs);
 
         group_extra.add(&expander_more);
 
         let row_evolution_list = adw::SwitchRow::builder()
-            .title("Mailing List")
-            .subtitle("Treat contact as a list")
+            .title(gettext("Mailing List"))
+            .subtitle(gettext("Treat contact as a list"))
             .build();
-        let row_evolution_list_name = adw::EntryRow::builder().title("List Name").build();
+        let row_evolution_list_name = adw::EntryRow::builder().title(gettext("List Name")).build();
         let row_evolution_list_show_addresses = adw::SwitchRow::builder()
-            .title("Show list addresses")
+            .title(gettext("Show list addresses"))
             .build();
         // List editing has a dedicated member-aware UI. Keep these widgets
         // only as compatibility storage for the existing individual vCard
@@ -1034,7 +1035,7 @@ impl ContactDialog {
             };
             let selected = source_row.selected() as usize;
             let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
-                dialog.show_toast("No active address book selected");
+                dialog.show_toast(&gettext("No active address book selected"));
                 return;
             };
             let extended_fields = ContactVCardFields {
@@ -1191,7 +1192,7 @@ impl ContactDialog {
         header_bar.set_show_start_title_buttons(false);
         header_bar.set_show_end_title_buttons(false);
         let cancel_button = gtk::Button::builder()
-            .label("Cancel")
+            .label(gettext("Cancel"))
             .build();
         let dialog_weak_for_cancel = self.downgrade();
         cancel_button.connect_clicked(move |_| {
@@ -1201,8 +1202,8 @@ impl ContactDialog {
         });
         header_bar.pack_start(&cancel_button);
         let save_button = gtk::Button::builder()
-            .label("Save")
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         header_bar.pack_end(&save_button);
         toolbar_view.add_top_bar(&header_bar);
@@ -1216,55 +1217,55 @@ impl ContactDialog {
             .margin_bottom(20)
             .build();
         let list_group = adw::PreferencesGroup::builder()
-            .title("Contact List")
-            .description("Distribution lists can contain local contacts and external addresses.")
+            .title(gettext("Contact List"))
+            .description(gettext("Distribution lists can contain local contacts and external addresses."))
             .build();
-        let name_row = adw::EntryRow::builder().title("List Name").build();
+        let name_row = adw::EntryRow::builder().title(gettext("List Name")).build();
         name_row.set_text(&initial_name);
         list_group.add(&name_row);
 
-        let source_model = gtk::StringList::new(&["Loading address books…"]);
+        let source_model = gtk::StringList::new(&[&gettext("Loading address books…")]);
         let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_row = adw::ComboRow::builder()
-            .title("Address Book")
+            .title(gettext("Address Book"))
             .model(&source_model)
             .build();
         source_row.set_sensitive(edit_uid.is_none());
         list_group.add(&source_row);
 
         let show_addresses = adw::SwitchRow::builder()
-            .title("Show member addresses")
-            .subtitle("When disabled, recipient addresses in the list are kept private.")
+            .title(gettext("Show member addresses"))
+            .subtitle(gettext("When disabled, recipient addresses in the list are kept private."))
             .active(initial_show_addresses)
             .build();
         list_group.add(&show_addresses);
         content_box.append(&list_group);
 
         let member_group = adw::PreferencesGroup::builder()
-            .title("Members")
-            .description("Invalid or unresolvable members remain visible and must be removed or replaced before saving.")
+            .title(gettext("Members"))
+            .description(gettext("Invalid or unresolvable members remain visible and must be removed or replaced before saving."))
             .build();
         let external_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .build();
         let external_entry = gtk::Entry::builder()
-            .placeholder_text("Name <address@example.org> or address@example.org")
+            .placeholder_text(gettext("Name <address@example.org> or address@example.org"))
             .hexpand(true)
             .build();
         let add_external = gtk::Button::builder()
-            .label("Add External Address")
+            .label(gettext("Add External Address"))
             .build();
         external_box.append(&external_entry);
         external_box.append(&add_external);
         member_group.add(&external_box);
 
-        let local_model = gtk::StringList::new(&["Loading address book contacts…"]);
+        let local_model = gtk::StringList::new(&[&gettext("Loading address book contacts…")]);
         let local_dropdown =
             gtk::DropDown::new(Some(local_model.clone()), None::<&gtk::Expression>);
         local_dropdown.set_hexpand(true);
         let add_local = gtk::Button::builder()
-            .label("Add Local Contact")
+            .label(gettext("Add Local Contact"))
             .build();
         let local_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -1275,12 +1276,12 @@ impl ContactDialog {
         local_box.append(&add_local);
         member_group.add(&local_box);
 
-        let nested_model = gtk::StringList::new(&["Loading contact lists…"]);
+        let nested_model = gtk::StringList::new(&[&gettext("Loading contact lists…")]);
         let nested_dropdown =
             gtk::DropDown::new(Some(nested_model.clone()), None::<&gtk::Expression>);
         nested_dropdown.set_hexpand(true);
         let add_nested = gtk::Button::builder()
-            .label("Add Contact List")
+            .label(gettext("Add Contact List"))
             .build();
         let nested_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -1314,14 +1315,14 @@ impl ContactDialog {
                 parse_list_recipient_input(&external_entry_for_external.text())
             else {
                 if let Some(dialog) = dialog_weak_for_external.upgrade() {
-                    dialog.show_toast("Please enter a valid external email address");
+                    dialog.show_toast(&gettext("Please enter a valid external email address"));
                 }
                 return;
             };
             let member = VCardListMember::external_address(&email, &display_name);
             if !member.is_valid() {
                 if let Some(dialog) = dialog_weak_for_external.upgrade() {
-                    dialog.show_toast("The external address is invalid");
+                    dialog.show_toast(&gettext("The external address is invalid"));
                 }
                 return;
             }
@@ -1331,7 +1332,7 @@ impl ContactDialog {
                 .any(|existing| existing.email.eq_ignore_ascii_case(&member.email))
             {
                 if let Some(dialog) = dialog_weak_for_external.upgrade() {
-                    dialog.show_toast("This address is already a member of the list");
+                    dialog.show_toast(&gettext("This address is already a member of the list"));
                 }
                 return;
             }
@@ -1358,13 +1359,13 @@ impl ContactDialog {
                 .cloned()
             else {
                 if let Some(dialog) = dialog_weak_for_local.upgrade() {
-                    dialog.show_toast("No local contact is selected");
+                    dialog.show_toast(&gettext("No local contact is selected"));
                 }
                 return;
             };
             let Some((email_num, email)) = first_contact_email_with_index(&record.contact) else {
                 if let Some(dialog) = dialog_weak_for_local.upgrade() {
-                    dialog.show_toast("The local contact has no email address");
+                    dialog.show_toast(&gettext("The local contact has no email address"));
                 }
                 return;
             };
@@ -1382,7 +1383,7 @@ impl ContactDialog {
                     && existing.email_num == member.email_num
             }) {
                 if let Some(dialog) = dialog_weak_for_local.upgrade() {
-                    dialog.show_toast("This contact is already a member of the list");
+                    dialog.show_toast(&gettext("This contact is already a member of the list"));
                 }
                 return;
             }
@@ -1407,13 +1408,13 @@ impl ContactDialog {
                 .cloned()
             else {
                 if let Some(dialog) = dialog_weak_for_nested.upgrade() {
-                    dialog.show_toast("No nestable contact list is selected");
+                    dialog.show_toast(&gettext("No nestable contact list is selected"));
                 }
                 return;
             };
             if edit_uid_for_nested.as_deref() == Some(record.uid.as_str()) {
                 if let Some(dialog) = dialog_weak_for_nested.upgrade() {
-                    dialog.show_toast("A contact list cannot contain itself");
+                    dialog.show_toast(&gettext("A contact list cannot contain itself"));
                 }
                 return;
             }
@@ -1426,7 +1427,7 @@ impl ContactDialog {
                     )
             }) {
                 if let Some(dialog) = dialog_weak_for_nested.upgrade() {
-                    dialog.show_toast("This contact list is already a member of the list");
+                    dialog.show_toast(&gettext("This contact list is already a member of the list"));
                 }
                 return;
             }
@@ -1555,7 +1556,7 @@ impl ContactDialog {
             };
             let name = name_row.text().trim().to_string();
             if name.is_empty() {
-                dialog.show_toast("A contact list requires a name");
+                dialog.show_toast(&gettext("A contact list requires a name"));
                 return;
             }
             if let Some((index, error)) = members_for_save
@@ -1564,7 +1565,7 @@ impl ContactDialog {
                 .enumerate()
                 .find_map(|(index, member)| member.validation_error().map(|error| (index, error)))
             {
-                dialog.show_toast(&format!("Member {} is {error}", index + 1));
+                dialog.show_toast(&format!("{} {} is {error}", gettext("Member"), index + 1));
                 return;
             }
             if let Some(current_uid) = edit_uid_for_save.as_deref() {
@@ -1582,13 +1583,13 @@ impl ContactDialog {
                         )
                 });
                 if has_cycle {
-                    dialog.show_toast("Nested contact lists must not form a cycle");
+                    dialog.show_toast(&gettext("Nested contact lists must not form a cycle"));
                     return;
                 }
             }
             let selected = source_row.selected() as usize;
             let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() else {
-                dialog.show_toast("No active address book selected");
+                dialog.show_toast(&gettext("No active address book selected"));
                 return;
             };
             let mut contact = original_contact_for_save.clone().unwrap_or_else(|| {
@@ -1714,7 +1715,7 @@ impl ContactDialog {
         self.connect_close_attempt(move |_| {
             if let Some(dialog) = dialog_weak.upgrade() {
                 if dialog.imp().save_in_progress.get() {
-                    dialog.show_toast("Save in progress – please wait a moment");
+                    dialog.show_toast(&gettext("Save in progress – please wait a moment"));
                 }
             }
         });
@@ -1733,8 +1734,8 @@ fn attach_entry_row_date_picker(entry_row: &adw::EntryRow) {
         .build();
     let cal = gtk::Calendar::new();
     let clear_btn = gtk::Button::builder()
-        .label("Clear Date")
-        .css_classes(vec!["flat"])
+        .label(gettext("Clear Date"))
+        .css_classes(["flat"])
         .build();
     pop_box.append(&cal);
     pop_box.append(&clear_btn);
@@ -1742,8 +1743,8 @@ fn attach_entry_row_date_picker(entry_row: &adw::EntryRow) {
 
     let btn = gtk::MenuButton::builder()
         .icon_name("x-office-calendar-symbolic")
-        .tooltip_text("Select date in calendar")
-        .css_classes(vec!["flat", "circular"])
+        .tooltip_text(gettext("Select date in calendar"))
+        .css_classes(["flat", "circular"])
         .valign(gtk::Align::Center)
         .popover(&popover)
         .build();
@@ -1868,21 +1869,21 @@ fn refresh_list_member_rows(
         }
         let remove_button = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Remove member")
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Remove member"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         let move_up = gtk::Button::builder()
             .icon_name("go-up-symbolic")
-            .tooltip_text("Move member up")
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Move member up"))
+            .css_classes(["flat", "circular"])
             .sensitive(index > 0)
             .valign(gtk::Align::Center)
             .build();
         let move_down = gtk::Button::builder()
             .icon_name("go-down-symbolic")
-            .tooltip_text("Move member down")
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Move member down"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         let member_actions = gtk::Box::builder()

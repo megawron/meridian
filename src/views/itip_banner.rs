@@ -174,7 +174,7 @@ impl ItipBanner {
         let banner_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
-            .css_classes(vec!["itip-banner"])
+            .css_classes(["itip-banner"])
             .hexpand(true)
             .vexpand(true)
             .margin_start(0)
@@ -198,14 +198,14 @@ impl ItipBanner {
         let icon = gtk::Image::builder()
             .icon_name("system-users-symbolic")
             .pixel_size(24)
-            .css_classes(vec!["accent"])
+            .css_classes(["accent"])
             .valign(gtk::Align::Center)
             .build();
         header_row.append(&icon);
 
         let lbl_header_prompt = gtk::Label::builder()
-            .label(&gettext("Meeting Invitation"))
-            .css_classes(vec!["heading", "itip-header-prompt"])
+            .label(gettext("Meeting Invitation"))
+            .css_classes(["heading", "itip-header-prompt"])
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
@@ -216,13 +216,13 @@ impl ItipBanner {
         header_row.append(&lbl_header_prompt);
 
         let lbl_method = gtk::Label::builder()
-            .label(&gettext("Meeting Invitation"))
+            .label(gettext("Meeting Invitation"))
             .visible(false)
             .build();
 
         let lbl_status_badge = gtk::Label::builder()
-            .label(&gettext("Response Pending"))
-            .css_classes(vec!["itip-status-badge", "pending"])
+            .label(gettext("Response Pending"))
+            .css_classes(["itip-status-badge", "pending"])
             .valign(gtk::Align::Center)
             .single_line_mode(true)
             .build();
@@ -249,7 +249,7 @@ impl ItipBanner {
             .spacing(0)
             .hexpand(true)
             .valign(gtk::Align::Fill)
-            .css_classes(vec![details_zoom_class.as_str()])
+            .css_classes([details_zoom_class.as_str()])
             .build();
 
         let details_info_box = gtk::Box::builder()
@@ -264,8 +264,8 @@ impl ItipBanner {
 
         // 1. Event Title (hidden in UI because the Mail Header directly above already shows the subject prominently; kept for state/test compatibility)
         let lbl_title = gtk::Label::builder()
-            .label(&gettext("Event"))
-            .css_classes(vec!["title-3"])
+            .label(gettext("Event"))
+            .css_classes(["title-3"])
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
@@ -286,7 +286,7 @@ impl ItipBanner {
             .icon_name("alarm-symbolic")
             .valign(gtk::Align::Start)
             .margin_top(2)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         let lbl_time = gtk::Label::builder()
             .label("")
@@ -296,7 +296,7 @@ impl ItipBanner {
             .wrap(true)
             .wrap_mode(pango::WrapMode::WordChar)
             .width_chars(1)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .build();
         time_row.append(&time_icon);
         time_row.append(&lbl_time);
@@ -312,7 +312,7 @@ impl ItipBanner {
             .icon_name("object-select-symbolic")
             .valign(gtk::Align::Start)
             .margin_top(2)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         let lbl_conflict = gtk::Label::builder()
             .label("")
@@ -322,7 +322,7 @@ impl ItipBanner {
             .wrap(true)
             .wrap_mode(pango::WrapMode::WordChar)
             .width_chars(1)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
         conflict_row.append(&conflict_icon);
         conflict_row.append(&lbl_conflict);
@@ -338,7 +338,7 @@ impl ItipBanner {
             .icon_name("media-playlist-repeat-symbolic")
             .valign(gtk::Align::Start)
             .margin_top(2)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         let lbl_recurrence = gtk::Label::builder()
             .label("")
@@ -348,7 +348,7 @@ impl ItipBanner {
             .wrap(true)
             .wrap_mode(pango::WrapMode::WordChar)
             .width_chars(1)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
         recurrence_row.append(&rec_icon);
         recurrence_row.append(&lbl_recurrence);
@@ -362,13 +362,13 @@ impl ItipBanner {
             .halign(gtk::Align::Start)
             .hexpand(false)
             .visible(false)
-            .css_classes(vec!["itip-location-row", "itip-location-interactive"])
+            .css_classes(["itip-location-row", "itip-location-interactive"])
             .build();
         let loc_icon = gtk::Image::builder()
             .icon_name("find-location-symbolic")
             .valign(gtk::Align::Start)
             .margin_top(2)
-            .css_classes(vec!["dim-label", "itip-location-icon"])
+            .css_classes(["dim-label", "itip-location-icon"])
             .build();
         let lbl_location = gtk::Label::builder()
             .label("")
@@ -376,7 +376,7 @@ impl ItipBanner {
             .xalign(0.0)
             .hexpand(false)
             .ellipsize(pango::EllipsizeMode::End)
-            .css_classes(vec!["body", "itip-location-label"])
+            .css_classes(["body", "itip-location-label"])
             .build();
         location_row.append(&loc_icon);
         location_row.append(&lbl_location);
@@ -394,7 +394,7 @@ impl ItipBanner {
         let location_map_frame = gtk::Frame::builder()
             .height_request(152)
             .hexpand(true)
-            .css_classes(vec!["itip-location-map-frame"])
+            .css_classes(["itip-location-map-frame"])
             .build();
         location_map_frame.set_overflow(gtk::Overflow::Hidden);
         loc_pop_vbox.append(&location_map_frame);
@@ -415,18 +415,18 @@ impl ItipBanner {
             .single_line_mode(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
         let location_map_copy_btn = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
-            .tooltip_text(&gettext("Copy location"))
-            .css_classes(vec!["flat", "circular", "itip-map-action-btn"])
+            .tooltip_text(gettext("Copy location"))
+            .css_classes(["flat", "circular", "itip-map-action-btn"])
             .valign(gtk::Align::Center)
             .build();
         let location_map_open_btn = gtk::Button::builder()
             .icon_name("web-browser-symbolic")
-            .tooltip_text(&gettext("Open in Map"))
-            .css_classes(vec!["flat", "circular", "itip-map-action-btn"])
+            .tooltip_text(gettext("Open in Map"))
+            .css_classes(["flat", "circular", "itip-map-action-btn"])
             .valign(gtk::Align::Center)
             .build();
         loc_pop_footer.append(&location_map_lbl);
@@ -439,7 +439,7 @@ impl ItipBanner {
             .position(gtk::PositionType::Bottom)
             .has_arrow(false)
             .autohide(false)
-            .css_classes(vec!["itip-location-map-popover"])
+            .css_classes(["itip-location-map-popover"])
             .build();
         location_map_popover.set_parent(&location_row);
         {
@@ -549,7 +549,7 @@ impl ItipBanner {
                                     .vexpand(true)
                                     .width_request(268)
                                     .height_request(152)
-                                    .css_classes(vec!["itip-location-map-webview"])
+                                    .css_classes(["itip-location-map-webview"])
                                     .build();
                                 frame_c.set_child(Some(&view));
                                 *wv_c.borrow_mut() = Some(view);
@@ -653,7 +653,7 @@ impl ItipBanner {
             .icon_name("avatar-default-symbolic")
             .valign(gtk::Align::Start)
             .margin_top(2)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         let lbl_organizer = gtk::Label::builder()
             .label("")
@@ -662,7 +662,7 @@ impl ItipBanner {
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
-            .css_classes(vec!["caption"])
+            .css_classes(["caption"])
             .build();
         organizer_row.append(&org_icon);
         organizer_row.append(&lbl_organizer);
@@ -678,7 +678,7 @@ impl ItipBanner {
             .icon_name("system-users-symbolic")
             .valign(gtk::Align::Start)
             .margin_top(2)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         let lbl_attendees = gtk::Label::builder()
             .label("")
@@ -690,7 +690,7 @@ impl ItipBanner {
             .ellipsize(pango::EllipsizeMode::End)
             .lines(2)
             .width_chars(1)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
         attendees_row.append(&att_icon);
         attendees_row.append(&lbl_attendees);
@@ -707,16 +707,16 @@ impl ItipBanner {
             .margin_end(8)
             .margin_top(2)
             .margin_bottom(8)
-            .css_classes(vec!["card", "mail-preview-card", "itip-sender-message-box"])
+            .css_classes(["card", "mail-preview-card", "itip-sender-message-box"])
             .visible(false)
             .build();
         let lbl_sender_message_title = gtk::Label::builder()
-            .label(&gettext("Message from sender:"))
+            .label(gettext("Message from sender:"))
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
             .width_chars(1)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
         sender_message_box.append(&lbl_sender_message_title);
         let lbl_sender_message = gtk::Label::builder()
@@ -728,7 +728,7 @@ impl ItipBanner {
             .wrap_mode(pango::WrapMode::WordChar)
             .width_chars(1)
             .can_focus(false)
-            .css_classes(vec!["body", "itip-sender-message-text"])
+            .css_classes(["body", "itip-sender-message-text"])
             .build();
         sender_message_box.append(&lbl_sender_message);
         details_vbox.append(&sender_message_box);
@@ -746,7 +746,7 @@ impl ItipBanner {
         let calendar_status_icon = gtk::Image::builder()
             .icon_name("dialog-information-symbolic")
             .pixel_size(18)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         let lbl_calendar_status = gtk::Label::builder()
             .label("")
@@ -762,7 +762,7 @@ impl ItipBanner {
             .build();
         let cal_select_lbl = gtk::Label::builder()
             .label(&format!("{}:", gettext("Calendar")))
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
         cal_select_box.append(&cal_select_lbl);
         let calendar_dropdown = gtk::DropDown::builder()
@@ -772,27 +772,27 @@ impl ItipBanner {
         cal_select_box.append(&calendar_dropdown);
 
         let chk_send_reply = gtk::CheckButton::builder()
-            .label(&gettext("Send reply to organizer"))
+            .label(gettext("Send reply to organizer"))
             .active(true)
             .build();
 
         let chk_show_free = gtk::CheckButton::builder()
-            .label(&gettext("Show time as free"))
+            .label(gettext("Show time as free"))
             .active(false)
             .build();
         let chk_preserve_reminder = gtk::CheckButton::builder()
-            .label(&gettext("Preserve my reminder"))
+            .label(gettext("Preserve my reminder"))
             .active(true)
             .build();
 
         let btn_import_as_event = gtk::Button::builder()
-            .label(&gettext("Import as Event"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Import as Event"))
+            .css_classes(["flat"])
             .halign(gtk::Align::Start)
             .build();
         let lbl_import_hint = gtk::Label::builder()
-            .label(&gettext("Imported event will have removed the organizer and all the attendees."))
-            .css_classes(vec!["caption", "dim-label"])
+            .label(gettext("Imported event will have removed the organizer and all the attendees."))
+            .css_classes(["caption", "dim-label"])
             .wrap(true)
             .wrap_mode(pango::WrapMode::WordChar)
             .halign(gtk::Align::Fill)
@@ -812,18 +812,18 @@ impl ItipBanner {
             .margin_bottom(6)
             .build();
         let lbl_comment = gtk::Label::builder()
-            .label(&gettext("Add a note to your response:"))
+            .label(gettext("Add a note to your response:"))
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
             .width_chars(1)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
         comment_box.append(&lbl_comment);
         let comment_view = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
             .height_request(48)
-            .css_classes(vec!["itip-comment-view"])
+            .css_classes(["itip-comment-view"])
             .build();
         comment_box.append(&comment_view);
 
@@ -879,7 +879,7 @@ impl ItipBanner {
             .build();
         chip_pop_outer.append(&calendar_chip_scrolled);
         let calendar_chip_popover = gtk::Popover::builder()
-            .css_classes(vec!["calendar-picker-popover", "composer-dropdown"])
+            .css_classes(["calendar-picker-popover", "composer-dropdown"])
             .child(&chip_pop_outer)
             .has_arrow(false)
             .autohide(true)
@@ -906,11 +906,11 @@ impl ItipBanner {
             .height_request(16)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["itip-calendar-color-dot"])
+            .css_classes(["itip-calendar-color-dot"])
             .build();
         apply_calendar_dot_style(&lbl_calendar_dot, "#3584e4");
         let lbl_calendar_chip_name = gtk::Label::builder()
-            .label(&gettext("Personal Calendar"))
+            .label(gettext("Personal Calendar"))
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .hexpand(true)
@@ -922,7 +922,7 @@ impl ItipBanner {
         let chip_chevron = gtk::Image::builder()
             .icon_name("pan-down-symbolic")
             .pixel_size(12)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .valign(gtk::Align::Center)
             .build();
         chip_inner_box.append(&lbl_calendar_dot);
@@ -932,8 +932,8 @@ impl ItipBanner {
         let btn_target_calendar = gtk::MenuButton::builder()
             .child(&chip_inner_box)
             .popover(&calendar_chip_popover)
-            .tooltip_text(&gettext("Target Calendar"))
-            .css_classes(vec!["flat", "itip-calendar-chip"])
+            .tooltip_text(gettext("Target Calendar"))
+            .css_classes(["flat", "itip-calendar-chip"])
             .hexpand(true)
             .halign(gtk::Align::Fill)
             .valign(gtk::Align::Center)
@@ -942,9 +942,9 @@ impl ItipBanner {
         secondary_bar_box.append(&btn_target_calendar);
 
         let btn_open_calendar = gtk::Button::builder()
-            .label(&gettext("Open in Calendar"))
-            .css_classes(vec!["flat"])
-            .tooltip_text(&gettext("Switch to calendar and show date"))
+            .label(gettext("Open in Calendar"))
+            .css_classes(["flat"])
+            .tooltip_text(gettext("Switch to calendar and show date"))
             .visible(false)
             .build();
 
@@ -960,7 +960,7 @@ impl ItipBanner {
             .valign(gtk::Align::Center)
             .build();
         let btn_comment_lbl = gtk::Label::builder()
-            .label(&gettext("Comment"))
+            .label(gettext("Comment"))
             .single_line_mode(true)
             .valign(gtk::Align::Center)
             .build();
@@ -969,8 +969,8 @@ impl ItipBanner {
 
         let btn_toggle_comment = gtk::ToggleButton::builder()
             .child(&comment_btn_inner)
-            .css_classes(vec!["flat"])
-            .tooltip_text(&gettext("Add a comment to your response"))
+            .css_classes(["flat"])
+            .tooltip_text(gettext("Add a comment to your response"))
             .valign(gtk::Align::Center)
             .build();
         let rev_comment = comment_revealer.clone();
@@ -1073,9 +1073,9 @@ impl ItipBanner {
             .build();
 
         let opts_lbl = gtk::Label::builder()
-            .label(&gettext("Options"))
+            .label(gettext("Options"))
             .halign(gtk::Align::Start)
-            .css_classes(vec!["heading", "dim-label"])
+            .css_classes(["heading", "dim-label"])
             .build();
         pop_box.append(&opts_lbl);
         pop_box.append(&chk_send_reply);
@@ -1097,8 +1097,8 @@ impl ItipBanner {
         let btn_more_options = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
             .popover(&more_popover)
-            .tooltip_text(&gettext("More options"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("More options"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         action_box_request.append(&btn_more_options);
@@ -1113,10 +1113,10 @@ impl ItipBanner {
             .visible(false)
             .build();
         let btn_remove = gtk::Button::builder()
-            .label(&gettext("Remove from Calendar"))
-            .css_classes(vec!["destructive-action"])
+            .label(gettext("Remove from Calendar"))
+            .css_classes(["destructive-action"])
             .valign(gtk::Align::Center)
-            .tooltip_text(&gettext("Remove cancelled event from your calendar"))
+            .tooltip_text(gettext("Remove cancelled event from your calendar"))
             .build();
         let cancel_inline_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -1127,13 +1127,13 @@ impl ItipBanner {
         let cancel_inline_icon = gtk::Image::builder()
             .icon_name("process-stop-symbolic")
             .pixel_size(16)
-            .css_classes(vec!["error"])
+            .css_classes(["error"])
             .valign(gtk::Align::Center)
             .build();
         let lbl_cancel_inline = gtk::Label::builder()
-            .label(&gettext("Meeting has been cancelled"))
-            .tooltip_text(&gettext("Meeting has been cancelled"))
-            .css_classes(vec!["caption", "heading", "dim-label"])
+            .label(gettext("Meeting has been cancelled"))
+            .tooltip_text(gettext("Meeting has been cancelled"))
+            .css_classes(["caption", "heading", "dim-label"])
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
@@ -1157,10 +1157,10 @@ impl ItipBanner {
             .visible(false)
             .build();
         let btn_update = gtk::Button::builder()
-            .label(&gettext("Update Calendar"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Update Calendar"))
+            .css_classes(["suggested-action"])
             .valign(gtk::Align::Center)
-            .tooltip_text(&gettext("Update attendee status in existing calendar event"))
+            .tooltip_text(gettext("Update attendee status in existing calendar event"))
             .build();
         let reply_inline_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -1171,13 +1171,13 @@ impl ItipBanner {
         let reply_inline_icon = gtk::Image::builder()
             .icon_name("mail-reply-sender-symbolic")
             .pixel_size(16)
-            .css_classes(vec!["accent"])
+            .css_classes(["accent"])
             .valign(gtk::Align::Center)
             .build();
         let lbl_reply_inline = gtk::Label::builder()
-            .label(&gettext("Response to Meeting Invitation"))
-            .tooltip_text(&gettext("Response to Meeting Invitation"))
-            .css_classes(vec!["caption", "heading", "dim-label"])
+            .label(gettext("Response to Meeting Invitation"))
+            .tooltip_text(gettext("Response to Meeting Invitation"))
+            .css_classes(["caption", "heading", "dim-label"])
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .hexpand(true)
@@ -1200,9 +1200,9 @@ impl ItipBanner {
             .visible(false)
             .build();
         let btn_import = gtk::Button::builder()
-            .label(&gettext("Add to Calendar"))
-            .css_classes(vec!["suggested-action"])
-            .tooltip_text(&gettext("Add published event to calendar"))
+            .label(gettext("Add to Calendar"))
+            .css_classes(["suggested-action"])
+            .tooltip_text(gettext("Add published event to calendar"))
             .build();
         action_box_publish.append(&btn_import);
         primary_actions_row.append(&action_box_publish);
@@ -1217,7 +1217,7 @@ impl ItipBanner {
             .spacing(0)
             .width_request(280)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["itip-day-timeline-container", "calendar-time-grid"])
+            .css_classes(["itip-day-timeline-container", "calendar-time-grid"])
             .visible(false)
             .build();
 
@@ -1227,7 +1227,7 @@ impl ItipBanner {
             .spacing(8)
             .hexpand(true)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["calendar-header-grid", "itip-timeline-header"])
+            .css_classes(["calendar-header-grid", "itip-timeline-header"])
             .visible(false)
             .build();
 
@@ -1238,13 +1238,13 @@ impl ItipBanner {
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .build();
         timeline_top_bar.append(&lbl_timeline_date);
 
         let lbl_timeline_badge = gtk::Label::builder()
             .label("")
-            .css_classes(vec!["appointment-timeline-conflict-badge"])
+            .css_classes(["appointment-timeline-conflict-badge"])
             .visible(false)
             .build();
         // NOTE: lbl_timeline_badge is kept for test compatibility; conflicts are shown directly under the event time in details_info_box.
@@ -1253,7 +1253,7 @@ impl ItipBanner {
         let timeline_all_day_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(3)
-            .css_classes(vec!["calendar-allday-row", "itip-timeline-allday-row"])
+            .css_classes(["calendar-allday-row", "itip-timeline-allday-row"])
             .visible(false)
             .build();
         timeline_side_box.append(&timeline_all_day_box);
@@ -1264,7 +1264,7 @@ impl ItipBanner {
             .propagate_natural_height(false)
             .height_request(340)
             .vexpand(true)
-            .css_classes(vec!["itip-timeline-scrolled"])
+            .css_classes(["itip-timeline-scrolled"])
             .build();
 
         let timeline_overlay = gtk::Overlay::new();
@@ -1284,14 +1284,14 @@ impl ItipBanner {
                 .spacing(0)
                 .height_request(HOUR_HEIGHT as i32)
                 .hexpand(true)
-                .css_classes(vec!["appointment-timeline-hour-row", "itip-timeline-hour-row"])
+                .css_classes(["appointment-timeline-hour-row", "itip-timeline-hour-row"])
                 .build();
             let gutter_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
                 .width_request(44)
                 .height_request(HOUR_HEIGHT as i32)
                 .valign(gtk::Align::Fill)
-                .css_classes(vec!["calendar-time-gutter", "itip-time-gutter"])
+                .css_classes(["calendar-time-gutter", "itip-time-gutter"])
                 .build();
             let lbl = gtk::Label::builder()
                 .use_markup(true)
@@ -1299,7 +1299,7 @@ impl ItipBanner {
                 .halign(gtk::Align::End)
                 .valign(gtk::Align::Start)
                 .margin_top(2)
-                .css_classes(vec!["calendar-time-gutter-label", "itip-time-gutter-label"])
+                .css_classes(["calendar-time-gutter-label", "itip-time-gutter-label"])
                 .build();
             gutter_box.append(&lbl);
 
@@ -1307,7 +1307,7 @@ impl ItipBanner {
                 .orientation(gtk::Orientation::Vertical)
                 .hexpand(true)
                 .valign(gtk::Align::Fill)
-                .css_classes(vec!["itip-timeline-hour-slot"])
+                .css_classes(["itip-timeline-hour-slot"])
                 .build();
             let sep_hour = gtk::Separator::builder()
                 .orientation(gtk::Orientation::Horizontal)
@@ -2108,7 +2108,7 @@ impl ItipBanner {
                 if last_group.is_some() {
                     let sep = gtk::Separator::builder()
                         .orientation(gtk::Orientation::Horizontal)
-                        .css_classes(vec!["itip-calendar-group-sep"])
+                        .css_classes(["itip-calendar-group-sep"])
                         .build();
                     self.calendar_chip_list_box.append(&sep);
                 }
@@ -2116,7 +2116,7 @@ impl ItipBanner {
                     .label(&group_name)
                     .halign(gtk::Align::Start)
                     .xalign(0.0)
-                    .css_classes(vec!["itip-calendar-group-header"])
+                    .css_classes(["itip-calendar-group-header"])
                     .build();
                 self.calendar_chip_list_box.append(&hdr);
                 last_group = Some(group_name.clone());
@@ -2134,7 +2134,7 @@ impl ItipBanner {
                 .height_request(16)
                 .halign(gtk::Align::Center)
                 .valign(gtk::Align::Center)
-                .css_classes(vec!["itip-calendar-color-dot"])
+                .css_classes(["itip-calendar-color-dot"])
                 .build();
             apply_calendar_dot_style(&dot, &color);
 
@@ -2147,14 +2147,14 @@ impl ItipBanner {
                 .margin_bottom(2)
                 .hexpand(true)
                 .valign(gtk::Align::Fill)
-                .css_classes(vec!["itip-calendar-row-label", text_contrast_class])
+                .css_classes(["itip-calendar-row-label", text_contrast_class])
                 .build();
 
             let check = gtk::Image::builder()
                 .icon_name("object-select-symbolic")
                 .pixel_size(14)
                 .opacity(if is_selected { 1.0 } else { 0.0 })
-                .css_classes(vec!["accent"])
+                .css_classes(["accent"])
                 .valign(gtk::Align::Center)
                 .build();
 
@@ -3173,7 +3173,7 @@ impl ItipBanner {
                 .xalign(0.0)
                 .halign(gtk::Align::Fill)
                 .ellipsize(pango::EllipsizeMode::End)
-                .css_classes(vec![
+                .css_classes([
                     "appointment-timeline-event",
                     "appointment-timeline-preview",
                     "itip-timeline-target-all-day",
@@ -3202,7 +3202,7 @@ impl ItipBanner {
                     .xalign(0.0)
                     .halign(gtk::Align::Fill)
                     .ellipsize(pango::EllipsizeMode::End)
-                    .css_classes(vec!["appointment-timeline-event", &color_class])
+                    .css_classes(["appointment-timeline-event", &color_class])
                     .tooltip_text(&format!("{title}\n{}", gettext("All Day")))
                     .build();
                 self.timeline_all_day_box.append(&chip);
@@ -4420,7 +4420,7 @@ mod tests {
                 source_uid: "local-calendar".to_string(),
                 source_display_name: "Calendar".to_string(),
                 component: "".to_string(),
-                summary: "Abgesagt: Besprechung".to_string(),
+                summary: "Canceled: Meeting".to_string(),
                 start: "2026-10-16 09:00".to_string(),
                 end: "2026-10-16 09:30".to_string(),
                 location: "Konferenzraum".to_string(),
@@ -4494,7 +4494,7 @@ mod tests {
         );
         assert_eq!(
             banner.lbl_status_badge.text(),
-            crate::i18n::gettext("Response Pending")
+            gettext("Response Pending")
         );
         assert!(
             banner.action_box_request.is_visible(),
@@ -4639,7 +4639,7 @@ mod tests {
             source_uid: "local-calendar".to_string(),
             source_display_name: "Calendar".to_string(),
             component: "".to_string(),
-            summary: "Wöchentliches Meeting".to_string(),
+            summary: "Weekly Meeting".to_string(),
             start: "2026-10-16 15:00".to_string(),
             end: "2026-10-16 16:00".to_string(),
             location: "".to_string(),
@@ -4655,7 +4655,7 @@ mod tests {
         banner.update_conflicts_and_timeline(&target_ev, &snapshot_conflict);
         assert!(banner.timeline_side_box.is_visible(), "Timeline side strip should be directly visible");
         assert!(banner.lbl_timeline_badge.is_visible(), "Timeline conflict badge should be visible on conflict");
-        assert!(banner.lbl_conflict.text().contains("Wöchentliches Meeting"));
+        assert!(banner.lbl_conflict.text().contains("Weekly Meeting"));
 
         // 2. Snapshot without conflict
         let snapshot_free = CalendarSnapshot {
@@ -4676,7 +4676,7 @@ mod tests {
         assert_eq!(d1, NaiveDate::from_ymd_opt(2026, 12, 24).unwrap());
 
         // Completely invalid string falls back to today without panic
-        let d_invalid = parse_start_date("kein-datum-vorhanden");
+        let d_invalid = parse_start_date("no-date-present");
         assert_eq!(d_invalid, chrono::Local::now().date_naive());
 
         let d2 = parse_start_date("2026-10-16T14:30:00Z");
@@ -4693,7 +4693,7 @@ mod tests {
         assert_eq!(date2, NaiveDate::from_ymd_opt(2026, 10, 16).unwrap());
         assert_eq!(min2, Some(9 * 60));
 
-        let (_, min_invalid) = extract_date_and_minutes("keine-uhrzeit");
+        let (_, min_invalid) = extract_date_and_minutes("no-time-present");
         assert_eq!(min_invalid, None);
 
         let (_, min_weird) = extract_date_and_minutes("Gin, Jazz & Glitzer – Welcome to the 20s");
@@ -4718,18 +4718,18 @@ mod tests {
         assert_eq!(banner.comment_text(), None);
 
         // 2. Setting sender message body
-        banner.set_email_body(Some("Hallo Martin, können wir das kurz besprechen?"));
+        banner.set_email_body(Some("Hello Martin, can we discuss this briefly?"));
         assert!(banner.sender_message_box.is_visible());
         assert_eq!(
             banner.lbl_sender_message.text(),
-            "Hallo Martin, können wir das kurz besprechen?"
+            "Hello Martin, can we discuss this briefly?"
         );
 
         // 3. Comment view text extraction
-        banner.comment_view.buffer().set_text("Ich komme 5 Minuten später");
+        banner.comment_view.buffer().set_text("I will be 5 minutes late");
         assert_eq!(
             banner.comment_text(),
-            Some("Ich komme 5 Minuten später".to_string())
+            Some("I will be 5 minutes late".to_string())
         );
 
         // 4. Clearing email body

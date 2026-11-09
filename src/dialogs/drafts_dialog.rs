@@ -13,6 +13,7 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use std::cell::RefCell;
 
+use crate::i18n::gettext;
 use crate::services::draft_store_service::{DraftMessage, DraftStoreService};
 
 mod imp {
@@ -51,7 +52,7 @@ glib::wrapper! {
 impl DraftsDialog {
     pub fn new() -> Self {
         glib::Object::builder()
-            .property("title", "Local Drafts")
+            .property("title", gettext("Local Drafts"))
             .property("content-width", 720)
             .property("content-height", 560)
             .build()
@@ -63,15 +64,15 @@ impl DraftsDialog {
 
         let refresh_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text("Refresh drafts")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Refresh drafts"))
+            .css_classes(["flat"])
             .build();
         header_bar.pack_start(&refresh_button);
 
         let new_button = gtk::Button::builder()
-            .label("New Message")
+            .label(gettext("New Message"))
             .icon_name("mail-message-new-symbolic")
-            .css_classes(vec!["suggested-action"])
+            .css_classes(["suggested-action"])
             .build();
         header_bar.pack_end(&new_button);
         toolbar_view.add_top_bar(&header_bar);
@@ -83,11 +84,11 @@ impl DraftsDialog {
             .margin_end(16)
             .margin_top(16)
             .margin_bottom(8)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(["boxed-list"])
             .margin_start(16)
             .margin_end(16)
             .margin_bottom(16)
@@ -136,16 +137,16 @@ impl DraftsDialog {
 
         if drafts.is_empty() {
             self.set_status(
-                "No local drafts available. Drafts are saved automatically \
-                 once the composer contains content.",
+                &gettext("No local drafts available. Drafts are saved automatically once the composer contains content."),
             );
             return;
         }
 
         self.set_status(&format!(
-            "{} local draft{} — synchronized drafts are managed separately on Linux.",
+            "{} {} — {}",
             drafts.len(),
-            if drafts.len() == 1 { "" } else { "s" },
+            if drafts.len() == 1 { gettext("local draft") } else { gettext("local drafts") },
+            gettext("synchronized drafts are managed separately on Linux.")
         ));
         for draft in drafts {
             self.append_draft_row(&list, draft);
@@ -154,7 +155,7 @@ impl DraftsDialog {
 
     fn append_draft_row(&self, list: &gtk::ListBox, draft: DraftMessage) {
         let title = if draft.subject.trim().is_empty() {
-            "(No Subject)".to_string()
+            gettext("(No Subject)")
         } else {
             draft.subject.clone()
         };
@@ -167,14 +168,14 @@ impl DraftsDialog {
 
         let open_button = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
-            .tooltip_text("Open draft")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Open draft"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         let delete_button = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Delete draft")
-            .css_classes(vec!["flat", "destructive-action"])
+            .tooltip_text(gettext("Delete draft"))
+            .css_classes(["flat", "destructive-action"])
             .valign(gtk::Align::Center)
             .build();
         row.add_suffix(&open_button);
@@ -224,14 +225,14 @@ impl DraftsDialog {
     fn delete_draft(&self, id: &str) {
         match DraftStoreService::default().delete(id) {
             Ok(true) => {
-                self.show_parent_toast("Draft deleted");
+                self.show_parent_toast(&gettext("Draft deleted"));
                 self.reload();
             }
             Ok(false) => {
                 self.reload();
             }
             Err(error) => {
-                self.show_parent_toast(&format!("Could not delete draft: {error}"))
+                self.show_parent_toast(&format!("{}: {error}", gettext("Could not delete draft")))
             }
         }
     }
@@ -260,30 +261,30 @@ impl Default for DraftsDialog {
 fn draft_summary(draft: &DraftMessage) -> String {
     let mut parts = Vec::new();
     if let Some(method) = draft.calendar_method.as_deref() {
-        parts.push(format!("iTIP response: {method}"));
+        parts.push(format!("{}: {method}", gettext("iTIP response")));
     }
     if !draft.to.trim().is_empty() {
-        parts.push(format!("To: {}", draft.to.trim()));
+        parts.push(format!("{}: {}", gettext("To"), draft.to.trim()));
     }
     if !draft.cc.trim().is_empty() {
-        parts.push(format!("Cc: {}", draft.cc.trim()));
+        parts.push(format!("{}: {}", gettext("Cc"), draft.cc.trim()));
     }
     if !draft.updated_at.trim().is_empty() {
-        parts.push(format!("modified: {}", draft.updated_at.trim()));
+        parts.push(format!("{}: {}", gettext("modified"), draft.updated_at.trim()));
     }
     if !draft.attachments.is_empty() {
         parts.push(format!(
-            "{} attachment{}",
+            "{} {}",
             draft.attachments.len(),
             if draft.attachments.len() == 1 {
-                ""
+                gettext("attachment")
             } else {
-                "s"
+                gettext("attachments")
             }
         ));
     }
     if parts.is_empty() {
-        "Empty local draft".to_string()
+        gettext("Empty local draft")
     } else {
         parts.join(" · ")
     }

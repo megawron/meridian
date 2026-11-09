@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Contact export service supporting vCard (.vcf), CSV (.csv), and LDIF (.ldif)
@@ -36,7 +37,7 @@ impl ContactExportFormat {
     pub fn display_label(&self) -> String {
         match self {
             Self::VCard => "vCard (.vcf)".to_string(),
-            Self::Csv => crate::i18n::gettext("Comma-Separated Values (.csv)"),
+            Self::Csv => gettext("Comma-Separated Values (.csv)"),
             Self::Ldif => "LDAP Data Interchange Format (.ldif)".to_string(),
         }
     }
@@ -129,7 +130,7 @@ pub fn export_contacts(
     options: Option<ContactCsvOptions>,
 ) -> Result<String, String> {
     if contacts.is_empty() {
-        return Err(crate::i18n::gettext("No contacts selected for export"));
+        return Err(gettext("No contacts selected for export"));
     }
 
     match format {

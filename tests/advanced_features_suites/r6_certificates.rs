@@ -372,7 +372,7 @@ fn r6_test_preferences_dialog_dynamic_smime_combo_reload_contract() {
     assert_eq!(store.list_by_category(CertCategory::Authorities).len(), 0);
 
     // Simulated dropdown label models matching preferences_dialog.rs:4974 & 5016
-    let mut signer_labels = vec!["Nicht festgelegt".to_string()];
+    let mut signer_labels = vec!["Not set".to_string()];
     let mut ca_labels = vec!["System-Vertrauensspeicher (Standard)".to_string()];
     assert_eq!(signer_labels.len(), 1);
     assert_eq!(ca_labels.len(), 1);
@@ -412,7 +412,7 @@ fn r6_test_preferences_dialog_dynamic_smime_combo_reload_contract() {
 
     // 4. Dialog is closed -> connect_close_request fires refresh_smime_selectors()
     let personal_certs = store.list_by_category(CertCategory::Personal);
-    signer_labels = vec!["Nicht festgelegt".to_string()];
+    signer_labels = vec!["Not set".to_string()];
     for cert in &personal_certs {
         let label = cert.subject_cn.clone();
         signer_labels.push(label);
@@ -452,7 +452,7 @@ fn r6_test_preferences_dialog_dynamic_smime_combo_reload_contract() {
     // 6. Remove certificate from store and simulate reload
     store.records.remove(&user_id);
     let updated_personal = store.list_by_category(CertCategory::Personal);
-    signer_labels = vec!["Nicht festgelegt".to_string()];
+    signer_labels = vec!["Not set".to_string()];
     for cert in &updated_personal {
         signer_labels.push(cert.subject_cn.clone());
     }

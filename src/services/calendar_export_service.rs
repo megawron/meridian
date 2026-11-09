@@ -495,7 +495,7 @@ mod tests {
             CalendarEventRecord {
                 uid: "event-1@evolution.example".to_string(),
                 source_uid: "local-calendar".to_string(),
-                source_display_name: "Persönlich".to_string(),
+                source_display_name: "Personal".to_string(),
                 component: "BEGIN:VEVENT\r\nUID:event-1@evolution.example\r\nSUMMARY:Team Meeting\r\nLOCATION:Conference Room\r\nDESCRIPTION:Weekly sync, discuss roadmap\r\nCATEGORIES:Work,Planning\r\nDTSTART:20260910T090000Z\r\nDTEND:20260910T100000Z\r\nPRIORITY:1\r\nURL:https://meet.example.com/sync\r\nATTENDEE;CN=Ada:mailto:ada@example.com\r\nEND:VEVENT".to_string(),
                 summary: "Team Meeting".to_string(),
                 start: "20260910T090000Z".to_string(),
@@ -507,7 +507,7 @@ mod tests {
             CalendarEventRecord {
                 uid: "event-2@evolution.example".to_string(),
                 source_uid: "local-calendar".to_string(),
-                source_display_name: "Persönlich".to_string(),
+                source_display_name: "Personal".to_string(),
                 component: "BEGIN:VEVENT\r\nUID:event-2@evolution.example\r\nSUMMARY:Doctor Appointment\r\nLOCATION:Downtown Clinic\r\nDESCRIPTION:Annual checkup\r\nCATEGORIES:Personal\r\nDTSTART:20260912T140000Z\r\nDTEND:20260912T150000Z\r\nEND:VEVENT".to_string(),
                 summary: "Doctor Appointment".to_string(),
                 start: "20260912T140000Z".to_string(),

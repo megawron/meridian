@@ -126,4 +126,44 @@ mod tests {
         }
         init_i18n();
     }
+
+    #[test]
+    fn test_all_linguas_catalogs_present() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = if manifest_dir.join("po").exists() {
+            manifest_dir
+        } else {
+            manifest_dir
+                .parent()
+                .expect("project root must exist")
+                .to_path_buf()
+        };
+        let linguas_path = repo_root.join("po").join("LINGUAS");
+        let linguas_content =
+            std::fs::read_to_string(&linguas_path).expect("po/LINGUAS must exist");
+        let langs: Vec<&str> = linguas_content
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+
+        assert_eq!(langs, vec!["de", "es", "fr", "ko", "zh_CN"]);
+
+        for lang in langs {
+            let po_path = repo_root.join("po").join(format!("{lang}.po"));
+            assert!(po_path.exists(), "Missing PO catalog: {}", po_path.display());
+
+            let mo_path = repo_root
+                .join("data")
+                .join("locale")
+                .join(lang)
+                .join("LC_MESSAGES")
+                .join("meridian.mo");
+            assert!(
+                mo_path.exists(),
+                "Missing compiled MO catalog: {}",
+                mo_path.display()
+            );
+        }
+    }
 }

@@ -11,7 +11,7 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 /// Certificate category matching upstream Evolution tabs:
-/// "Ihre Zertifikate" (Personal), "Kontakte" (Contact), and "Zertifizierungsstellen" (Authority).
+/// "Your Certificates" (Personal), "Contacts" (Contact), and "Certificate Authorities" (Authority).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CertCategory {
     Personal,

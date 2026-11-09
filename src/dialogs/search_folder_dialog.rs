@@ -312,8 +312,8 @@ impl SearchFolderDialog {
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
         let save = gtk::Button::builder()
-            .label(&gettext("Save"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         header.pack_end(&save);
         toolbar.add_top_bar(&header);
@@ -328,11 +328,11 @@ impl SearchFolderDialog {
             .build();
 
         let group = adw::PreferencesGroup::builder()
-            .title(&gettext("Search Folder Properties"))
+            .title(gettext("Search Folder Properties"))
             .build();
 
         let name = adw::EntryRow::builder()
-            .title(&gettext("Folder Name"))
+            .title(gettext("Folder Name"))
             .text(self.imp().initial_name.borrow().as_str())
             .build();
         name.add_prefix(&gtk::Image::from_icon_name("folder-saved-search-symbolic"));
@@ -340,7 +340,7 @@ impl SearchFolderDialog {
 
         let initial_query = self.imp().initial_query.borrow().clone();
         let query = adw::EntryRow::builder()
-            .title(&gettext("Search Query"))
+            .title(gettext("Search Query"))
             .text(initial_query)
             .build();
         query.add_prefix(&gtk::Image::from_icon_name("system-search-symbolic"));
@@ -357,7 +357,7 @@ impl SearchFolderDialog {
         ];
         let field_slices: Vec<&str> = field_labels.iter().map(|s| s.as_str()).collect();
         let field_selector = adw::ComboRow::builder()
-            .title(&gettext("Search Field"))
+            .title(gettext("Search Field"))
             .model(&gtk::StringList::new(&field_slices))
             .selected(field_index(self.imp().field.get()))
             .build();
@@ -372,7 +372,7 @@ impl SearchFolderDialog {
         ];
         let scope_slices: Vec<&str> = scope_labels.iter().map(|s| s.as_str()).collect();
         let scope_selector = adw::ComboRow::builder()
-            .title(&gettext("Search Scope"))
+            .title(gettext("Search Scope"))
             .model(&gtk::StringList::new(&scope_slices))
             .selected(scope_index(self.imp().scope.get()))
             .build();
@@ -380,7 +380,7 @@ impl SearchFolderDialog {
         group.add(&scope_selector);
 
         let target_row = adw::ActionRow::builder()
-            .title(&gettext("Target"))
+            .title(gettext("Target"))
             .subtitle(&target_description(
                 self.imp().scope.get(),
                 self.imp().folder_id.borrow().as_deref(),

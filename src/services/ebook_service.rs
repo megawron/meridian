@@ -1405,18 +1405,18 @@ mod change_tests {
         let event = EBookChangeEvent {
             kind: EBookChangeKind::Modified,
             source_uid: "address-book".to_string(),
-            source_display_name: "Privat".to_string(),
+            source_display_name: "Personal".to_string(),
             uid: "contact-1".to_string(),
             vcard: Some(
                 "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:contact-1\r\n".to_string()
-                    + "FN:Max Mustermann\r\nEMAIL:max@example.test\r\nEND:VCARD\r\n",
+                    + "FN:John Doe\r\nEMAIL:max@example.test\r\nEND:VCARD\r\n",
             ),
         };
 
         let contact = parse_change_record(&event).expect("vCard should parse");
         assert_eq!(contact.uid, "contact-1");
         assert_eq!(contact.source_uid, "address-book");
-        assert_eq!(contact.contact.fn_name, "Max Mustermann");
+        assert_eq!(contact.contact.fn_name, "John Doe");
         assert_eq!(contact.contact.email, "max@example.test");
     }
 
@@ -1425,7 +1425,7 @@ mod change_tests {
         let event = EBookChangeEvent {
             kind: EBookChangeKind::Removed,
             source_uid: "address-book".to_string(),
-            source_display_name: "Privat".to_string(),
+            source_display_name: "Personal".to_string(),
             uid: "contact-1".to_string(),
             vcard: None,
         };
@@ -1441,7 +1441,7 @@ mod merge_tests {
     fn record(source_uid: &str, uid: &str, vcard: &str) -> EBookContactRecord {
         EBookContactRecord {
             source_uid: source_uid.to_string(),
-            source_display_name: "Testadressbuch".to_string(),
+            source_display_name: "Test Address Book".to_string(),
             uid: uid.to_string(),
             vcard: vcard.to_string(),
             contact: VCardContact::parse_vcard_string(vcard).expect("test vCard should parse"),

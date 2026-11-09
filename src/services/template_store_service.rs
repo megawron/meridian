@@ -131,9 +131,9 @@ mod tests {
         let store = TemplateStore::new(root.join("templates.json"));
         let template = MailTemplate {
             id: "template-1".to_string(),
-            name: "Begrüßung".to_string(),
-            subject: "Willkommen".to_string(),
-            body_html: "<p>Hallo</p>".to_string(),
+            name: "Greeting".to_string(),
+            subject: "Welcome".to_string(),
+            body_html: "<p>Hello</p>".to_string(),
         };
         store
             .upsert(template.clone())

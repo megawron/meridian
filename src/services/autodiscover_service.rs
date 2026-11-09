@@ -61,7 +61,7 @@ impl TlsMode {
     /// Maps to index in AccountSetupDialog's `row_security` DropDown:
     /// 0 -> SSL / TLS (Port 993 / 995)
     /// 1 -> STARTTLS (Port 143 / 110)
-    /// 2 -> Keine Verschlüsselung
+    /// 2 -> No encryption
     pub fn row_security_index(self) -> u32 {
         match self {
             Self::SslTls => 0,

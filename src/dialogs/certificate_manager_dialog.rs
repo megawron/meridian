@@ -4,7 +4,7 @@
 //
 // Features:
 // - Full Libadwaita HeaderBar with search filtering and view switcher.
-// - 3 tabs (AdwViewStack): "Ihre Zertifikate", "Kontakte", "Zertifizierungsstellen".
+// - 3 tabs (AdwViewStack): "Your Certificates", "Contacts", "Authorities".
 // - Boxed lists displaying CN, email, issuer, expiration badges, and trust tags.
 // - CertificateDetailsDialog: Subject, Issuer, Validity, SHA-256 Fingerprint, Key Usage, PEM view.
 // - CertificateTrustDialog: Trust level selector and purpose toggles (SSL, S/MIME, Code signing).
@@ -52,7 +52,7 @@ pub struct CertificateManagerDialog {
 impl CertificateManagerDialog {
     pub fn new<W: IsA<gtk::Widget>>(parent: Option<&W>) -> Self {
         let dialog = adw::Dialog::builder()
-            .title(&gettext("Certificate Management"))
+            .title(gettext("Certificate Management"))
             .content_width(720)
             .content_height(480)
             .build();
@@ -71,13 +71,13 @@ impl CertificateManagerDialog {
 
         let btn_add_header = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Import Certificate…"))
+            .tooltip_text(gettext("Import Certificate…"))
             .build();
         header_bar.pack_start(&btn_add_header);
 
         let search_toggle = gtk::ToggleButton::builder()
             .icon_name("system-search-symbolic")
-            .tooltip_text(&gettext("Search certificates (Ctrl+F)"))
+            .tooltip_text(gettext("Search certificates (Ctrl+F)"))
             .build();
         header_bar.pack_start(&search_toggle);
 
@@ -97,7 +97,7 @@ impl CertificateManagerDialog {
         // ── Search Bar Revealer ───────────────────────────────────────────────
         let search_bar = gtk::SearchBar::new();
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text(&gettext("Search certificates by name, email, issuer, or fingerprint…"))
+            .placeholder_text(gettext("Search certificates by name, email, issuer, or fingerprint…"))
             .hexpand(true)
             .build();
         search_bar.set_child(Some(&search_entry));
@@ -131,36 +131,36 @@ impl CertificateManagerDialog {
         action_bar.set_margin_bottom(0);
 
         let btn_export = gtk::Button::builder()
-            .label(&gettext("Export…"))
+            .label(gettext("Export…"))
             .icon_name("document-save-symbolic")
             .sensitive(false)
-            .tooltip_text(&gettext("Export selected certificate"))
+            .tooltip_text(gettext("Export selected certificate"))
             .build();
         action_bar.pack_start(&btn_export);
 
         let btn_details = gtk::Button::builder()
-            .label(&gettext("View Details…"))
+            .label(gettext("View Details…"))
             .icon_name("dialog-information-symbolic")
-            .css_classes(vec!["suggested-action"])
+            .css_classes(["suggested-action"])
             .sensitive(false)
-            .tooltip_text(&gettext("View complete certificate properties and PEM"))
+            .tooltip_text(gettext("View complete certificate properties and PEM"))
             .build();
         action_bar.pack_end(&btn_details);
 
         let btn_trust = gtk::Button::builder()
-            .label(&gettext("Edit Trust…"))
+            .label(gettext("Edit Trust…"))
             .icon_name("channel-secure-symbolic")
             .sensitive(false)
-            .tooltip_text(&gettext("Adjust trust level and purposes"))
+            .tooltip_text(gettext("Adjust trust level and purposes"))
             .build();
         action_bar.pack_end(&btn_trust);
 
         let btn_delete = gtk::Button::builder()
-            .label(&gettext("Delete"))
+            .label(gettext("Delete"))
             .icon_name("user-trash-symbolic")
-            .css_classes(vec!["destructive-action"])
+            .css_classes(["destructive-action"])
             .sensitive(false)
-            .tooltip_text(&gettext("Remove selected certificate from storage"))
+            .tooltip_text(gettext("Remove selected certificate from storage"))
             .build();
         action_bar.pack_end(&btn_delete);
 
@@ -315,7 +315,7 @@ fn create_category_tab() -> (gtk::Stack, gtk::ListBox, gtk::Stack) {
 
     let list_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::Single)
-        .css_classes(vec!["boxed-list"])
+        .css_classes(["boxed-list"])
         .vexpand(true)
         .hexpand(true)
         .build();
@@ -324,8 +324,8 @@ fn create_category_tab() -> (gtk::Stack, gtk::ListBox, gtk::Stack) {
     scrolled.set_child(Some(&content_box));
 
     let empty_page = adw::StatusPage::builder()
-        .title(&gettext("No Certificates"))
-        .css_classes(vec!["compact"])
+        .title(gettext("No Certificates"))
+        .css_classes(["compact"])
         .vexpand(true)
         .hexpand(true)
         .valign(gtk::Align::Center)
@@ -480,7 +480,7 @@ fn populate_list_box(
         if cert.has_private_key {
             let key_badge = gtk::Image::builder()
                 .icon_name("dialog-password-symbolic")
-                .tooltip_text(&gettext("Private key present"))
+                .tooltip_text(gettext("Private key present"))
                 .build();
             badge_box.append(&key_badge);
         }
@@ -498,7 +498,7 @@ fn populate_list_box(
         };
         let lbl_trust = gtk::Label::builder()
             .label(&trust_label)
-            .css_classes(vec!["caption", trust_class])
+            .css_classes(["caption", trust_class])
             .build();
         badge_box.append(&lbl_trust);
 
@@ -510,7 +510,7 @@ fn populate_list_box(
         };
         let lbl_exp = gtk::Label::builder()
             .label(&exp_label)
-            .css_classes(vec!["caption", exp_class])
+            .css_classes(["caption", exp_class])
             .build();
         badge_box.append(&lbl_exp);
 
@@ -599,7 +599,7 @@ fn delete_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
 fn import_certificate_file(state: &Rc<RefCell<ManagerState>>) {
     let dialog = state.borrow().dialog.clone();
     let file_dialog = gtk::FileDialog::builder()
-        .title(&gettext("Import Certificate"))
+        .title(gettext("Import Certificate"))
         .modal(true)
         .build();
 
@@ -677,7 +677,7 @@ fn export_selected_certificate(state: &Rc<RefCell<ManagerState>>) {
     let Some(cert) = CertificateService::get_certificate(&id) else { return };
 
     let file_dialog = gtk::FileDialog::builder()
-        .title(&gettext("Export Certificate"))
+        .title(gettext("Export Certificate"))
         .modal(true)
         .initial_name(&format!("{}.pem", cert.display_name.replace(' ', "_")))
         .build();
@@ -749,7 +749,7 @@ pub struct CertificateDetailsDialog {
 impl CertificateDetailsDialog {
     pub fn new(cert: &CertificateRecord) -> Self {
         let dialog = adw::Dialog::builder()
-            .title(&gettext("Certificate Details"))
+            .title(gettext("Certificate Details"))
             .content_width(620)
             .content_height(680)
             .build();
@@ -761,12 +761,12 @@ impl CertificateDetailsDialog {
 
         let header_bar = adw::HeaderBar::new();
         let title_widget = adw::WindowTitle::builder()
-            .title(&gettext("Certificate Details"))
+            .title(gettext("Certificate Details"))
             .subtitle(&cert.display_name)
             .build();
         header_bar.set_title_widget(Some(&title_widget));
 
-        let btn_close = gtk::Button::builder().label(&gettext("Close")).build();
+        let btn_close = gtk::Button::builder().label(gettext("Close")).build();
         let dlg_close = dialog.downgrade();
         btn_close.connect_clicked(move |_| {
             if let Some(dlg) = dlg_close.upgrade() {
@@ -780,7 +780,7 @@ impl CertificateDetailsDialog {
 
         // Group 1: Subject
         let group_subject = adw::PreferencesGroup::builder()
-            .title(&gettext("Issued to (Subject)"))
+            .title(gettext("Issued to (Subject)"))
             .build();
         add_detail_row(&group_subject, &gettext("Common Name (CN)"), &cert.subject_cn, true);
         if !cert.subject_email.is_empty() {
@@ -796,7 +796,7 @@ impl CertificateDetailsDialog {
 
         // Group 2: Issuer
         let group_issuer = adw::PreferencesGroup::builder()
-            .title(&gettext("Issued by (Issuer)"))
+            .title(gettext("Issued by (Issuer)"))
             .build();
         add_detail_row(&group_issuer, &gettext("Issuer CN"), &cert.issuer_cn, true);
         if !cert.issuer_org.is_empty() {
@@ -806,12 +806,12 @@ impl CertificateDetailsDialog {
 
         // Group 3: Validity
         let group_validity = adw::PreferencesGroup::builder()
-            .title(&gettext("Validity Period"))
+            .title(gettext("Validity Period"))
             .build();
         add_detail_row(&group_validity, &gettext("Valid From"), &cert.not_before, false);
         add_detail_row(&group_validity, &gettext("Valid To"), &cert.not_after, false);
         let status_row = adw::ActionRow::builder()
-            .title(&gettext("Status"))
+            .title(gettext("Status"))
             .build();
         let (status_text, status_class) = if cert.is_expired {
             (gettext("Expired"), "error")
@@ -821,7 +821,7 @@ impl CertificateDetailsDialog {
         let status_badge = gtk::Label::builder()
             .label(&status_text)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["caption", status_class])
+            .css_classes(["caption", status_class])
             .build();
         status_row.add_suffix(&status_badge);
         group_validity.add(&status_row);
@@ -829,7 +829,7 @@ impl CertificateDetailsDialog {
 
         // Group 4: Key & Security Identifiers
         let group_key = adw::PreferencesGroup::builder()
-            .title(&gettext("Key & Security Features"))
+            .title(gettext("Key & Security Features"))
             .build();
         add_detail_row(&group_key, &gettext("Serial Number"), &cert.serial_hex, true);
         add_detail_row(&group_key, &gettext("SHA-256 Fingerprint"), &cert.sha256_fingerprint, true);
@@ -846,7 +846,7 @@ impl CertificateDetailsDialog {
             gettext("Not present")
         };
         let key_row = adw::ActionRow::builder()
-            .title(&gettext("Private Key"))
+            .title(gettext("Private Key"))
             .subtitle(&priv_key_str)
             .build();
         if cert.has_private_key {
@@ -856,7 +856,7 @@ impl CertificateDetailsDialog {
 
         // Key Usage Expander
         let expander_usage = adw::ExpanderRow::builder()
-            .title(&gettext("Key Usage"))
+            .title(gettext("Key Usage"))
             .subtitle(cert.key_usage_flags.summary())
             .build();
         add_usage_subrow(&expander_usage, &gettext("Digital Signature"), cert.key_usage_flags.digital_signature);
@@ -876,7 +876,7 @@ impl CertificateDetailsDialog {
 
         // Group 5: Raw PEM Data
         let group_pem = adw::PreferencesGroup::builder()
-            .title(&gettext("Raw Data (PEM Format)"))
+            .title(gettext("Raw Data (PEM Format)"))
             .build();
 
         let pem_box = gtk::Box::builder()
@@ -901,13 +901,13 @@ impl CertificateDetailsDialog {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .min_content_height(140)
             .max_content_height(180)
-            .css_classes(vec!["card"])
+            .css_classes(["card"])
             .child(&text_view)
             .build();
         pem_box.append(&scrolled_pem);
 
         let btn_copy_pem = gtk::Button::builder()
-            .label(&gettext("Copy to Clipboard"))
+            .label(gettext("Copy to Clipboard"))
             .icon_name("edit-copy-symbolic")
             .halign(gtk::Align::End)
             .build();
@@ -955,8 +955,8 @@ fn add_detail_row(group: &adw::PreferencesGroup, title: &str, value: &str, copya
         let copy_btn = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
             .valign(gtk::Align::Center)
-            .css_classes(vec!["flat"])
-            .tooltip_text(&gettext("Copy value"))
+            .css_classes(["flat"])
+            .tooltip_text(gettext("Copy value"))
             .build();
         let val_clone = value.to_string();
         copy_btn.connect_clicked(move |button| {
@@ -974,7 +974,7 @@ fn add_usage_subrow(expander: &adw::ExpanderRow, title: &str, enabled: bool) {
         .build();
     let badge = gtk::Label::builder()
         .label(&if enabled { gettext("Yes") } else { gettext("No") })
-        .css_classes(vec!["caption", if enabled { "success" } else { "dim-label" }])
+        .css_classes(["caption", if enabled { "success" } else { "dim-label" }])
         .valign(gtk::Align::Center)
         .build();
     subrow.add_suffix(&badge);
@@ -996,7 +996,7 @@ impl CertificateTrustDialog {
         F: Fn(TrustLevel, bool, bool, bool) + 'static,
     {
         let dialog = adw::Dialog::builder()
-            .title(&gettext("Edit Certificate Trust"))
+            .title(gettext("Edit Certificate Trust"))
             .content_width(540)
             .content_height(480)
             .build();
@@ -1007,15 +1007,15 @@ impl CertificateTrustDialog {
         let header_bar = adw::HeaderBar::new();
 
         let title_widget = adw::WindowTitle::builder()
-            .title(&gettext("Certificate Trust"))
+            .title(gettext("Certificate Trust"))
             .subtitle(&cert.display_name)
             .build();
         header_bar.set_title_widget(Some(&title_widget));
 
-        let btn_cancel = gtk::Button::builder().label(&gettext("Cancel")).build();
+        let btn_cancel = gtk::Button::builder().label(gettext("Cancel")).build();
         let btn_save = gtk::Button::builder()
-            .label(&gettext("Save"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
 
         header_bar.pack_start(&btn_cancel);
@@ -1026,7 +1026,7 @@ impl CertificateTrustDialog {
 
         // Trust Level Combo
         let group_level = adw::PreferencesGroup::builder()
-            .title(&gettext("Trust Level"))
+            .title(gettext("Trust Level"))
             .build();
 
         let trust_item_always = gettext("Always trust");
@@ -1043,7 +1043,7 @@ impl CertificateTrustDialog {
         ];
         let model = gtk::StringList::new(&trust_items);
         let combo_trust = adw::ComboRow::builder()
-            .title(&gettext("Trust"))
+            .title(gettext("Trust"))
             .model(&model)
             .build();
 
@@ -1061,23 +1061,23 @@ impl CertificateTrustDialog {
 
         // Purpose Toggles (CA Usage)
         let group_purposes = adw::PreferencesGroup::builder()
-            .title(&gettext("Key Purposes"))
+            .title(gettext("Key Purposes"))
             .build();
 
         let switch_ssl = adw::SwitchRow::builder()
-            .title(&gettext("Websites (SSL/TLS)"))
+            .title(gettext("Websites (SSL/TLS)"))
             .active(cert.key_usage_flags.server_auth)
             .build();
         group_purposes.add(&switch_ssl);
 
         let switch_email = adw::SwitchRow::builder()
-            .title(&gettext("Email Users (S/MIME)"))
+            .title(gettext("Email Users (S/MIME)"))
             .active(cert.key_usage_flags.email_protection)
             .build();
         group_purposes.add(&switch_email);
 
         let switch_code = adw::SwitchRow::builder()
-            .title(&gettext("Software Developers (Code Signing)"))
+            .title(gettext("Software Developers (Code Signing)"))
             .active(cert.key_usage_flags.code_signing)
             .build();
         group_purposes.add(&switch_code);
@@ -1151,7 +1151,7 @@ impl PassphrasePromptDialog {
     {
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("certificate");
         let dialog = adw::Dialog::builder()
-            .title(&gettext("Passphrase Required"))
+            .title(gettext("Passphrase Required"))
             .content_width(440)
             .content_height(240)
             .build();
@@ -1162,15 +1162,15 @@ impl PassphrasePromptDialog {
         let header_bar = adw::HeaderBar::new();
 
         let title_widget = adw::WindowTitle::builder()
-            .title(&gettext("Passphrase Required"))
+            .title(gettext("Passphrase Required"))
             .subtitle(filename)
             .build();
         header_bar.set_title_widget(Some(&title_widget));
 
-        let btn_cancel = gtk::Button::builder().label(&gettext("Cancel")).build();
+        let btn_cancel = gtk::Button::builder().label(gettext("Cancel")).build();
         let btn_unlock = gtk::Button::builder()
-            .label(&gettext("Unlock"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Unlock"))
+            .css_classes(["suggested-action"])
             .build();
 
         header_bar.pack_start(&btn_cancel);
@@ -1179,16 +1179,16 @@ impl PassphrasePromptDialog {
 
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::builder()
-            .title(&gettext("Unlock PKCS#12 Bundle"))
+            .title(gettext("Unlock PKCS#12 Bundle"))
             .build();
 
         let row_pass = adw::PasswordEntryRow::builder()
-            .title(&gettext("Passphrase"))
+            .title(gettext("Passphrase"))
             .build();
         group.add(&row_pass);
 
         let lbl_error = gtk::Label::builder()
-            .css_classes(vec!["error", "caption"])
+            .css_classes(["error", "caption"])
             .visible(false)
             .xalign(0.0)
             .wrap(true)
@@ -1246,7 +1246,7 @@ impl PassphrasePromptDialog {
         F: Fn(String) -> Result<(), String> + 'static,
     {
         let dialog = adw::Dialog::builder()
-            .title(&gettext("Protect Certificate Export"))
+            .title(gettext("Protect Certificate Export"))
             .content_width(440)
             .content_height(280)
             .build();
@@ -1256,10 +1256,10 @@ impl PassphrasePromptDialog {
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
 
-        let btn_cancel = gtk::Button::builder().label(&gettext("Cancel")).build();
+        let btn_cancel = gtk::Button::builder().label(gettext("Cancel")).build();
         let btn_export = gtk::Button::builder()
-            .label(&gettext("Export"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Export"))
+            .css_classes(["suggested-action"])
             .build();
 
         header_bar.pack_start(&btn_cancel);
@@ -1268,21 +1268,21 @@ impl PassphrasePromptDialog {
 
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::builder()
-            .title(&gettext("Set PKCS#12 Passphrase"))
+            .title(gettext("Set PKCS#12 Passphrase"))
             .build();
 
         let row_pass1 = adw::PasswordEntryRow::builder()
-            .title(&gettext("New Passphrase"))
+            .title(gettext("New Passphrase"))
             .build();
         group.add(&row_pass1);
 
         let row_pass2 = adw::PasswordEntryRow::builder()
-            .title(&gettext("Repeat Passphrase"))
+            .title(gettext("Repeat Passphrase"))
             .build();
         group.add(&row_pass2);
 
         let lbl_error = gtk::Label::builder()
-            .css_classes(vec!["error", "caption"])
+            .css_classes(["error", "caption"])
             .visible(false)
             .xalign(0.0)
             .wrap(true)

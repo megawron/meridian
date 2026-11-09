@@ -731,7 +731,7 @@ fn resolve_autodiscover_srv(domain: &str) -> Option<(String, u16)> {
 /// 1. If host is specified, queries POX Autodiscover on host and falls back to direct EWS probe.
 /// 2. If host is empty, performs full Autodiscover chain (DNS SRV, https, autodiscover subdomain, redirects).
 ///    If all fail without host entered, returns Evolution's exact error message:
-///    "Abfrage des Autodiscover-Dienstes ist fehlgeschlagen: Die Rechneradresse darf nicht leer sein. Bitte geben Sie die Rechneradresse (Host-URL) Ihres Exchange-Servers ein."
+///    "Querying the Autodiscover service failed: Host address cannot be empty. Please enter the host address (Host URL) of your Exchange server."
 pub fn discover_and_validate_exchange_services(
     email: &str,
     input_host: &str,

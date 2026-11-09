@@ -80,6 +80,10 @@ pub mod services {
         pub struct AccountConfigStore;
 
         impl AccountConfigStore {
+            pub fn load(&self) -> Vec<AccountProfile> {
+                Vec::new()
+            }
+
             pub fn load_cached(&self) -> Vec<AccountProfile> {
                 Vec::new()
             }

@@ -62,7 +62,7 @@ impl ImportDialog {
     }
 
     fn build_ui(&self) {
-        self.set_title("Import Data");
+        self.set_title(&gettext("Import Data"));
         self.set_content_width(520);
         self.set_content_height(420);
 
@@ -72,7 +72,7 @@ impl ImportDialog {
             .show_end_title_buttons(false)
             .build();
 
-        let cancel_btn = gtk::Button::builder().label(&gettext("Cancel")).build();
+        let cancel_btn = gtk::Button::builder().label(gettext("Cancel")).build();
         let dialog_for_cancel = self.downgrade();
         cancel_btn.connect_clicked(move |_| {
             if let Some(dialog) = dialog_for_cancel.upgrade() {
@@ -82,8 +82,8 @@ impl ImportDialog {
         header.pack_start(&cancel_btn);
 
         let import_btn = gtk::Button::builder()
-            .label(&gettext("Import"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Import"))
+            .css_classes(["suggested-action"])
             .build();
         let dialog_for_import = self.downgrade();
         import_btn.connect_clicked(move |_| {
@@ -97,13 +97,13 @@ impl ImportDialog {
         let page = adw::PreferencesPage::new();
 
         let group = adw::PreferencesGroup::builder()
-            .title("Source File and Target")
-            .description("Choose an iCalendar (.ics, .vcs), contact (.vcf, .csv, .ldif), or mail (.mbox / .eml) file to import.")
+            .title(gettext("Source File and Target"))
+            .description(gettext("Choose an iCalendar (.ics, .vcs), contact (.vcf, .csv, .ldif), or mail (.mbox / .eml) file to import."))
             .build();
 
         let file_row = adw::ActionRow::builder()
-            .title("File to Import")
-            .subtitle("No file selected")
+            .title(gettext("File to Import"))
+            .subtitle(gettext("No file selected"))
             .build();
         let icon_file = gtk::Image::builder()
             .icon_name("document-open-symbolic")
@@ -112,7 +112,7 @@ impl ImportDialog {
         file_row.add_prefix(&icon_file);
 
         let choose_file_btn = gtk::Button::builder()
-            .label("Browse…")
+            .label(gettext("Browse…"))
             .valign(gtk::Align::Center)
             .build();
 
@@ -126,14 +126,14 @@ impl ImportDialog {
             let file_row_inner = file_row_weak.clone();
 
             let file_dialog = gtk::FileDialog::builder()
-                .title("Select Import File")
+                .title(gettext("Select Import File"))
                 .modal(true)
                 .build();
 
             let filter = gtk::FileFilter::new();
-            filter.set_name(Some(
+            filter.set_name(Some(&gettext(
                 "Supported Formats (*.ics, *.vcs, *.vcf, *.vcard, *.csv, *.ldif, *.ldi, *.mbox, *.eml)",
-            ));
+            )));
             filter.add_pattern("*.ics");
             filter.add_pattern("*.vcs");
             filter.add_pattern("*.vcf");
@@ -170,8 +170,8 @@ impl ImportDialog {
         group.add(&file_row);
 
         let preview_row = adw::ActionRow::builder()
-            .title("Detected Items")
-            .subtitle("No file loaded yet")
+            .title(gettext("Detected Items"))
+            .subtitle(gettext("No file loaded yet"))
             .build();
         let icon_preview = gtk::Image::builder()
             .icon_name("view-list-symbolic")
@@ -182,13 +182,13 @@ impl ImportDialog {
         *self.imp().preview_row.borrow_mut() = Some(preview_row);
 
         let target_combo = adw::ComboRow::builder()
-            .title("Target Component")
+            .title(gettext("Target Component"))
             .model(&gtk::StringList::new(&[
-                "Calendar / Events (.ics, .vcs)",
-                "Tasks (.ics, .vcs)",
-                "Memos / Notes (.ics, .vcs)",
-                "Contacts / Address Book (.vcf, .csv, .ldif)",
-                "Mail / Inbox (.mbox / .eml)",
+                &gettext("Calendar / Events (.ics, .vcs)"),
+                &gettext("Tasks (.ics, .vcs)"),
+                &gettext("Memos / Notes (.ics, .vcs)"),
+                &gettext("Contacts / Address Book (.vcf, .csv, .ldif)"),
+                &gettext("Mail / Inbox (.mbox / .eml)"),
             ]))
             .build();
         let icon_target = gtk::Image::builder()
@@ -200,11 +200,11 @@ impl ImportDialog {
         *self.imp().target_combo.borrow_mut() = Some(target_combo);
 
         let policy_combo = adw::ComboRow::builder()
-            .title("Duplicate Handling")
+            .title(gettext("Duplicate Handling"))
             .model(&gtk::StringList::new(&[
-                "Keep both (assign new ID)",
-                "Overwrite existing items",
-                "Skip existing items",
+                &gettext("Keep both (assign new ID)"),
+                &gettext("Overwrite existing items"),
+                &gettext("Skip existing items"),
             ]))
             .visible(false)
             .build();
@@ -276,9 +276,9 @@ impl ImportDialog {
                 );
                 preview_row.set_subtitle(&plan.summary_label());
             } else if ext == "mbox" || ext == "eml" {
-                preview_row.set_subtitle("Mail message archive ready for import");
+                preview_row.set_subtitle(&gettext("Mail message archive ready for import"));
             } else {
-                preview_row.set_subtitle("Format ready for import");
+                preview_row.set_subtitle(&gettext("Format ready for import"));
             }
         }
     }

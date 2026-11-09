@@ -1,9 +1,7 @@
 [Desktop Entry]
 Name=Meridian
 Comment=Calendar and Appointments
-Comment[de]=Kalender und Termine
 GenericName=Calendar
-GenericName[de]=Kalender
 Exec=meridian --calendar %U
 Icon=com.martingawron.Meridian
 Terminal=false

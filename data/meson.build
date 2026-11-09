@@ -11,7 +11,7 @@ gnome.post_install(glib_compile_schemas: true)
 desktop_conf = configuration_data()
 desktop_conf.set('APPLICATION_ID', application_id)
 
-# Desktop file
+# Desktop files
 desktop_file = i18n.merge_file(
   input: '@0@.desktop.in'.format(application_id),
   output: '@0@.desktop'.format(application_id),
@@ -21,12 +21,21 @@ desktop_file = i18n.merge_file(
   install_dir: datadir / 'applications',
 )
 
-# Validate desktop file
+calendar_desktop_file = i18n.merge_file(
+  input: '@0@.Calendar.desktop.in'.format(application_id),
+  output: '@0@.Calendar.desktop'.format(application_id),
+  type: 'desktop',
+  po_dir: meson.project_source_root() / 'po',
+  install: true,
+  install_dir: datadir / 'applications',
+)
+
+# Validate desktop files
 desktop_file_validate = find_program('desktop-file-validate', required: false)
 if desktop_file_validate.found()
   test('validate-desktop',
     desktop_file_validate,
-    args: [desktop_file],
+    args: [desktop_file, calendar_desktop_file],
   )
 endif
 

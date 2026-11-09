@@ -25,17 +25,27 @@ When opening an issue, please include:
 6. **Account provider / protocol**: e.g. generic IMAP, CalDAV/CardDAV, Exchange/EWS, Google, local folders.
 7. **Logs / terminal output**: Run `RUST_LOG=debug cargo run` and attach the relevant output if possible.
 
+## Translating Meridian (No Coding Required)
+
+Meridian follows the official GNOME internationalization (i18n) standards using GNU `gettext` (`po/*.po` and `po/meridian.pot`). Non-technical contributors are warmly welcome to improve existing translations or add new languages!
+
+- **Graphical Editors**: You can edit files in `po/` (such as `po/de.po`, `po/es.po`, `po/fr.po`, `po/ko.po`, `po/zh_CN.po`) or create a new language from `po/meridian.pot` using **[Poedit](https://poedit.net/)**, **[GNOME Translation Editor (Gtranslator)](https://flathub.org/apps/org.gnome.Gtranslator)**, or **[Lokalize](https://apps.kde.org/lokalize/)**.
+- **Adding a Language**: Open `po/meridian.pot` in Poedit, save your translation as `po/<lang>.po`, and add `<lang>` alphabetically to `po/LINGUAS`.
+- **Submitting Without Git**: If you are not comfortable with Git or Pull Requests, you can simply attach your updated `.po` file to a [GitHub Issue](https://github.com/megawron/meridian/issues).
+- For full details, placeholder rules, and testing instructions, see the **[Localization Guide (`po/README.md`)](po/README.md)**.
+
 ## Code Contributions
 
 1. Fork the repository and create a branch for your change.
 2. Keep changes focused on a single fix or feature per pull request.
-3. Make sure the project builds cleanly and tests pass before submitting:
+3. All code, comments, and user-facing `gettext("...")` source strings must be in **US English**.
+4. Make sure the project builds cleanly and tests pass before submitting:
    ```bash
    cargo fmt --check
    cargo check
    cargo test
    ```
-4. If you are planning a larger change or UI rework, please open an issue first so we can discuss the approach before you invest a lot of time.
+5. If you are planning a larger change or UI rework, please open an issue first so we can discuss the approach before you invest a lot of time.
 
 ## License
 

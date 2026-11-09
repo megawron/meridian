@@ -364,7 +364,7 @@ mod tests {
         };
         let calendar = EdsSource {
             uid: "calendar-1".to_string(),
-            display_name: "Kalender".to_string(),
+            display_name: "Calendar".to_string(),
             backend_name: "caldav".to_string(),
             enabled: true,
             writable: true,

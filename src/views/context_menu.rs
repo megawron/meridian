@@ -78,7 +78,7 @@ pub fn create_context_menu_button_with_shortcut(
             .label(sc)
             .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["accelerator", "dim-label"])
+            .css_classes(["accelerator", "dim-label"])
             .build();
         hbox.append(&sc_lbl);
     }

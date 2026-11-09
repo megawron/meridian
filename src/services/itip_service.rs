@@ -712,14 +712,14 @@ mod tests {
             &invitation,
             "Person <person@example.test>",
             ItipReplyStatus::Accepted,
-            Some("Komme 5 Minuten später"),
+            Some("Will be 5 minutes late"),
         )
         .expect("reply should build");
         assert!(reply.contains("METHOD:REPLY\r\n"));
         assert!(reply.contains("UID:meeting-1\r\n"));
         assert!(reply.contains("DTSTART;TZID=Europe/Berlin:20260810T120000\r\n"));
         assert!(reply.contains("ATTENDEE;CN=Person;PARTSTAT=ACCEPTED:mailto:person@example.test"));
-        assert!(reply.contains("COMMENT:Komme 5 Minuten später\r\n"));
+        assert!(reply.contains("COMMENT:Will be 5 minutes late\r\n"));
     }
 
     #[test]

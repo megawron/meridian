@@ -150,10 +150,10 @@ impl RichTextField {
             let btn = gtk::ToggleButton::builder()
                 .label("HTML")
                 .icon_name("format-text-bold-symbolic")
-                .tooltip_text(&gettext("Toggle formatting toolbar"))
+                .tooltip_text(gettext("Toggle formatting toolbar"))
                 .active(true)
                 .sensitive(true)
-                .css_classes(vec!["flat"])
+                .css_classes(["flat"])
                 .build();
 
             let sep = gtk::Separator::new(gtk::Orientation::Vertical);

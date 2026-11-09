@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // ShortcutsDialog — Keyboard shortcuts window listing GNOME Evolution GTK4 accelerators.
@@ -68,7 +69,7 @@ fn find_search_results_shortcuts_box(root: &gtk::Widget) -> Option<gtk::Box> {
     None
 }
 
-/// Inserts contextual section/group subheadings (`Zwischenüberschriften`) into
+/// Inserts contextual section/group subheadings into
 /// `GtkShortcutsWindow`'s internal search results list so duplicate accelerators
 /// across different views (e.g. `Ctrl+N`, `Ctrl+F`, `Delete`, `Ctrl+M`, `Ctrl+P`)
 /// clearly indicate which view and group they belong to.
@@ -108,7 +109,7 @@ fn install_search_result_subheadings(
             .halign(gtk::Align::Start)
             .margin_top(12)
             .margin_bottom(4)
-            .css_classes(vec!["heading", "shortcuts-search-subheading"])
+            .css_classes(["heading", "shortcuts-search-subheading"])
             .build();
         header_label.set_widget_name("shortcuts-search-subheading");
         header_label.insert_before(&search_shortcuts_box, Some(&group_slice[0]));
@@ -185,7 +186,7 @@ fn build_spec_group(
     let group = gtk::ShortcutsGroup::builder().title(group_title).build();
     for &(title, accel) in extra_shortcuts {
         let shortcut = gtk::ShortcutsShortcut::builder()
-            .title(&crate::i18n::gettext(title))
+            .title(gettext(title))
             .accelerator(accel)
             .build();
         group.add_shortcut(&shortcut);
@@ -196,7 +197,7 @@ fn build_spec_group(
     {
         let accel = format_accelerators_for_display(spec.action);
         let shortcut = gtk::ShortcutsShortcut::builder()
-            .title(&crate::i18n::gettext(spec.title))
+            .title(gettext(spec.title))
             .accelerator(&accel)
             .build();
         group.add_shortcut(&shortcut);
@@ -223,7 +224,7 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
     let mail_nav = build_spec_group(
         ShortcutSection::Mail,
         ShortcutGroup::MailNavigation,
-        &crate::i18n::gettext("Navigation & Search"),
+        &gettext("Navigation & Search"),
         &[
             ("Scroll Message / Next Unread", "space"),
             ("Scroll Message Up", "<Shift>space"),
@@ -234,39 +235,39 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
     let mail_view = build_spec_group(
         ShortcutSection::Mail,
         ShortcutGroup::MailView,
-        &crate::i18n::gettext("View & Zoom"),
+        &gettext("View & Zoom"),
         &[],
     );
     let mail_msg = build_spec_group(
         ShortcutSection::Mail,
         ShortcutGroup::MailMessage,
-        &crate::i18n::gettext("Message Actions"),
+        &gettext("Message Actions"),
         &[],
     );
     let mail_org = build_spec_group(
         ShortcutSection::Mail,
         ShortcutGroup::MailOrganize,
-        &crate::i18n::gettext("Organize & Flags"),
+        &gettext("Organize & Flags"),
         &[],
     );
     add_section_with_columns(
         &window,
         "mail",
-        &crate::i18n::gettext("Mail"),
+        &gettext("Mail"),
         vec![vec![mail_nav], vec![mail_msg, mail_view], vec![mail_org]],
         &mut search_groups,
     );
 
     // 2. Composer section (2 columns)
     let comp_send_group = gtk::ShortcutsGroup::builder()
-        .title(&crate::i18n::gettext("Send & Save"))
+        .title(gettext("Send & Save"))
         .build();
     for (title, accel) in [
-        (crate::i18n::gettext("Send Message"), "<Control>Return"),
-        (crate::i18n::gettext("Save Draft"), "<Control>s"),
-        (crate::i18n::gettext("Save as EML"), "<Control><Shift>s"),
-        (crate::i18n::gettext("New Message"), "<Control>n"),
-        (crate::i18n::gettext("Close / Discard"), "<Control>w Escape"),
+        (gettext("Send Message"), "<Control>Return"),
+        (gettext("Save Draft"), "<Control>s"),
+        (gettext("Save as EML"), "<Control><Shift>s"),
+        (gettext("New Message"), "<Control>n"),
+        (gettext("Close / Discard"), "<Control>w Escape"),
     ] {
         let shortcut = gtk::ShortcutsShortcut::builder()
             .title(&title)
@@ -276,14 +277,14 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
     }
 
     let comp_format_group = gtk::ShortcutsGroup::builder()
-        .title(&crate::i18n::gettext("Formatting & Options"))
+        .title(gettext("Formatting & Options"))
         .build();
     for (title, accel) in [
-        (crate::i18n::gettext("Attach File"), "<Control>m"),
-        (crate::i18n::gettext("Toggle Formatting Toolbar"), "<Control><Shift>f"),
-        (crate::i18n::gettext("Print Draft"), "<Control>p"),
-        (crate::i18n::gettext("Toggle Maximize"), "<Alt>F10"),
-        (crate::i18n::gettext("Toggle Fullscreen"), "F11"),
+        (gettext("Attach File"), "<Control>m"),
+        (gettext("Toggle Formatting Toolbar"), "<Control><Shift>f"),
+        (gettext("Print Draft"), "<Control>p"),
+        (gettext("Toggle Maximize"), "<Alt>F10"),
+        (gettext("Toggle Fullscreen"), "F11"),
     ] {
         let shortcut = gtk::ShortcutsShortcut::builder()
             .title(&title)
@@ -294,7 +295,7 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
     add_section_with_columns(
         &window,
         "composer",
-        &crate::i18n::gettext("Composer"),
+        &gettext("Composer"),
         vec![vec![comp_send_group], vec![comp_format_group]],
         &mut search_groups,
     );
@@ -303,7 +304,7 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
     let cal_events_group = build_spec_group(
         ShortcutSection::Calendar,
         ShortcutGroup::CalendarEvents,
-        &crate::i18n::gettext("Events & Appointments"),
+        &gettext("Events & Appointments"),
         &[
             ("New Event", "<Control>n"),
             ("Open / Quick Add Event", "Return"),
@@ -316,18 +317,18 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
         ],
     );
     let cal_nav_group = gtk::ShortcutsGroup::builder()
-        .title(&crate::i18n::gettext("Navigation & Views"))
+        .title(gettext("Navigation & Views"))
         .build();
     for (title, accel) in [
-        (crate::i18n::gettext("Go to Today"), "<Control>t T"),
-        (crate::i18n::gettext("Previous / Next Period"), "<Alt>Left <Alt>Right"),
-        (crate::i18n::gettext("Navigate Grid / Days"), "Up Down Left Right"),
-        (crate::i18n::gettext("Day View"), "<Alt>1 D"),
-        (crate::i18n::gettext("Work Week View"), "<Alt>2 2"),
-        (crate::i18n::gettext("Week View"), "<Alt>3 W"),
-        (crate::i18n::gettext("Month View"), "<Alt>4 M"),
-        (crate::i18n::gettext("Agenda View"), "<Alt>5 A"),
-        (crate::i18n::gettext("Year View"), "<Alt>6 Y"),
+        (gettext("Go to Today"), "<Control>t T"),
+        (gettext("Previous / Next Period"), "<Alt>Left <Alt>Right"),
+        (gettext("Navigate Grid / Days"), "Up Down Left Right"),
+        (gettext("Day View"), "<Alt>1 D"),
+        (gettext("Work Week View"), "<Alt>2 2"),
+        (gettext("Week View"), "<Alt>3 W"),
+        (gettext("Month View"), "<Alt>4 M"),
+        (gettext("Agenda View"), "<Alt>5 A"),
+        (gettext("Year View"), "<Alt>6 Y"),
     ] {
         let shortcut = gtk::ShortcutsShortcut::builder()
             .title(&title)
@@ -338,7 +339,7 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
     add_section_with_columns(
         &window,
         "calendar",
-        &crate::i18n::gettext("Calendar"),
+        &gettext("Calendar"),
         vec![vec![cal_events_group], vec![cal_nav_group]],
         &mut search_groups,
     );
@@ -347,7 +348,7 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
     let contacts_group = build_spec_group(
         ShortcutSection::ContactsTasks,
         ShortcutGroup::Contacts,
-        &crate::i18n::gettext("Contacts"),
+        &gettext("Contacts"),
         &[
             ("New Contact", "<Control>n"),
             ("Edit Selected Contact", "Return"),
@@ -360,7 +361,7 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
     let tasks_group = build_spec_group(
         ShortcutSection::ContactsTasks,
         ShortcutGroup::TasksMemos,
-        &crate::i18n::gettext("Tasks & Memos"),
+        &gettext("Tasks & Memos"),
         &[
             ("New Task / Memo", "<Control>n"),
             ("Edit Selected Task", "Return"),
@@ -375,7 +376,7 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
     add_section_with_columns(
         &window,
         "contacts_tasks",
-        &crate::i18n::gettext("Contacts & Tasks"),
+        &gettext("Contacts & Tasks"),
         vec![vec![contacts_group], vec![tasks_group]],
         &mut search_groups,
     );
@@ -384,25 +385,25 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
     let gen_modules = build_spec_group(
         ShortcutSection::General,
         ShortcutGroup::GeneralModules,
-        &crate::i18n::gettext("Switch Modules"),
+        &gettext("Switch Modules"),
         &[],
     );
     let gen_panes = build_spec_group(
         ShortcutSection::General,
         ShortcutGroup::GeneralPanes,
-        &crate::i18n::gettext("Panes & Views"),
+        &gettext("Panes & Views"),
         &[],
     );
     let gen_app = build_spec_group(
         ShortcutSection::General,
         ShortcutGroup::GeneralApp,
-        &crate::i18n::gettext("Application & Search"),
+        &gettext("Application & Search"),
         &[],
     );
     add_section_with_columns(
         &window,
         "general",
-        &crate::i18n::gettext("General"),
+        &gettext("General"),
         vec![vec![gen_modules, gen_panes], vec![gen_app]],
         &mut search_groups,
     );

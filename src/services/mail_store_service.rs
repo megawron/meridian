@@ -268,7 +268,7 @@ impl MailStoreService {
         collect_mail_files(&self.mail_dir, &mut paths);
         let should_update_legacy = welcome_file.is_file()
             && fs::read_to_string(&welcome_file)
-                .map(|s| s.contains("Willkommen bei Evolution"))
+                .map(|s| s.contains("Willkommen bei Evolution") || s.contains("Welcome to Evolution"))
                 .unwrap_or(false);
         if (paths.is_empty() && !welcome_file.exists()) || should_update_legacy {
             let welcome_content = "From: Meridian <noreply@meridian.local>\r\n\

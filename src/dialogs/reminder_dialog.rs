@@ -66,7 +66,7 @@ where
     ] {
         let btn = gtk::Button::builder()
             .label(&label)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         let pop_weak = popover.downgrade();
         let on_select = Rc::clone(&on_select);
@@ -90,7 +90,7 @@ impl ReminderDialog {
         Action: Fn(ReminderDelivery, ReminderDialogAction) -> bool + 'static,
     {
         let window = adw::Window::builder()
-            .title(&gettext("Reminders"))
+            .title(gettext("Reminders"))
             .default_width(720)
             .default_height(420)
             .build();
@@ -108,13 +108,13 @@ impl ReminderDialog {
         let on_action = Rc::new(on_action);
 
         let dismiss_all_button = gtk::Button::builder()
-            .label(&gettext("Dismiss All"))
-            .css_classes(vec!["destructive-action"])
+            .label(gettext("Dismiss All"))
+            .css_classes(["destructive-action"])
             .sensitive(false)
             .build();
 
         let snooze_all_button = gtk::MenuButton::builder()
-            .label(&gettext("Snooze All"))
+            .label(gettext("Snooze All"))
             .sensitive(false)
             .build();
         let snooze_all_popover = create_snooze_popover({
@@ -169,7 +169,7 @@ impl ReminderDialog {
 
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(["boxed-list"])
             .margin_start(12)
             .margin_end(12)
             .margin_top(12)
@@ -182,14 +182,14 @@ impl ReminderDialog {
             .build();
 
         let empty_state = gtk::Label::builder()
-            .label(&gettext("No pending reminders"))
-            .css_classes(vec!["dim-label"])
+            .label(gettext("No pending reminders"))
+            .css_classes(["dim-label"])
             .margin_top(24)
             .margin_bottom(24)
             .visible(false)
             .build();
         let error_label = gtk::Label::builder()
-            .css_classes(vec!["error"])
+            .css_classes(["error"])
             .wrap(true)
             .xalign(0.0)
             .margin_start(16)
@@ -374,7 +374,7 @@ impl ReminderDialog {
         let open_button = gtk::Button::with_label(&gettext("Open"));
         let snooze_10_button = gtk::Button::with_label(&gettext("10 min"));
         let snooze_menu_button = gtk::MenuButton::builder()
-            .label(&gettext("Snooze…"))
+            .label(gettext("Snooze…"))
             .build();
         let dismiss_button = gtk::Button::with_label(&gettext("Dismiss"));
         dismiss_button.add_css_class("destructive-action");

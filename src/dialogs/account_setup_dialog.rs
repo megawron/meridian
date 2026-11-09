@@ -1,10 +1,11 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // AccountSetupDialog — Minimalist single-column account setup & configuration dialog
 // following GNOME HIG and Progressive Disclosure principles.
 //
 // - New accounts: Focused single-page view (Name, Email, Password) with automatic
-//   Autodiscover and a collapsed "Server & Verbindung" expander for manual tweaks.
+//   Autodiscover and a collapsed "Server & Connection" expander for manual tweaks.
 // - Existing accounts: Single-column preferences page where advanced settings
 //   (Server ports/TLS/EWS, Special Folders, OpenPGP & S/MIME, Optional Identity)
 //   are progressively disclosed via AdwExpanderRows.
@@ -232,7 +233,7 @@ fn collect_known_account_folders(profile: Option<&AccountProfile>) -> Vec<String
 }
 
 fn create_folder_combo_row(title: &str, known_folders: &[String], stored_value: &str) -> adw::ComboRow {
-    let mut options = vec!["Automatic".to_string()];
+    let mut options = vec![gettext("Automatic")];
     for f in known_folders {
         if !options.contains(f) {
             options.push(f.clone());
@@ -419,10 +420,10 @@ impl AccountSetupDialog {
         };
 
         let combo_type = adw::ComboRow::builder()
-            .title("Account Type")
+            .title(gettext("Account Type"))
             .model(&gtk::StringList::new(&protocol_labels))
             .use_subtitle(true)
-            .css_classes(vec!["account-type-combo"])
+            .css_classes(["account-type-combo"])
             .build();
 
         let expression = gtk::PropertyExpression::new(
@@ -545,14 +546,14 @@ impl AccountSetupDialog {
             .unwrap_or_default();
 
         let group_goa_services = adw::PreferencesGroup::builder()
-            .title("GNOME Online Account")
+            .title(gettext("GNOME Online Account"))
             .visible(is_editing_goa)
             .build();
         let btn_goa_header = gtk::Button::builder()
             .icon_name("external-link-symbolic")
-            .tooltip_text("Open in GNOME Settings")
+            .tooltip_text(gettext("Open in GNOME Settings"))
             .valign(gtk::Align::Center)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .visible(goa_available)
             .build();
         let goa_id_for_header = resolved_goa_id.clone();
@@ -570,7 +571,7 @@ impl AccountSetupDialog {
         let syncing_from_goa = std::rc::Rc::new(std::cell::Cell::new(false));
 
         let row_goa_mail = adw::SwitchRow::builder()
-            .title("Mail")
+            .title(gettext("Mail"))
             .active(initial_goa_mail)
             .build();
         let uid_for_mail = goa_uid_str.clone();
@@ -594,7 +595,7 @@ impl AccountSetupDialog {
         group_goa_services.add(&row_goa_mail);
 
         let row_goa_cal = adw::SwitchRow::builder()
-            .title("Calendar")
+            .title(gettext("Calendar"))
             .active(initial_goa_cal)
             .build();
         let uid_for_cal = goa_uid_str.clone();
@@ -618,7 +619,7 @@ impl AccountSetupDialog {
         group_goa_services.add(&row_goa_cal);
 
         let row_goa_contacts = adw::SwitchRow::builder()
-            .title("Contacts")
+            .title(gettext("Contacts"))
             .active(initial_goa_contacts)
             .build();
         let uid_for_con = goa_uid_str.clone();
@@ -707,14 +708,14 @@ impl AccountSetupDialog {
         group_user.add(&combo_type);
 
         let row_goa_info = adw::ActionRow::builder()
-            .title(&crate::i18n::gettext("GNOME Online Account"))
+            .title(gettext("GNOME Online Account"))
             .activatable(true)
             .visible(false)
             .build();
         let btn_open_goa = gtk::Button::builder()
-            .label(&crate::i18n::gettext("Open GNOME Settings"))
+            .label(gettext("Open GNOME Settings"))
             .valign(gtk::Align::Center)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         btn_open_goa.connect_clicked(|_| {
             crate::services::eds_service::open_gnome_online_accounts(None);
@@ -725,17 +726,17 @@ impl AccountSetupDialog {
         row_goa_info.add_suffix(&btn_open_goa);
         group_user.add(&row_goa_info);
 
-        let row_fullname = adw::EntryRow::builder().title("Full Name").build();
+        let row_fullname = adw::EntryRow::builder().title(gettext("Full Name")).build();
         group_user.add(&row_fullname);
 
-        let row_email = adw::EntryRow::builder().title("Email Address").build();
+        let row_email = adw::EntryRow::builder().title(gettext("Email Address")).build();
 
         // ── Autodiscover Status Indicator & Spinner ───────────────────────────
         let discovery_spinner = gtk::Spinner::builder()
             .spinning(false)
             .visible(false)
             .valign(gtk::Align::Center)
-            .tooltip_text("Discovering server settings…")
+            .tooltip_text(gettext("Discovering server settings…"))
             .build();
         if !is_editing {
             row_email.add_suffix(&discovery_spinner);
@@ -745,16 +746,16 @@ impl AccountSetupDialog {
         let signatures = crate::services::signature_store_service::SignatureStore::from_environment().load();
         let signatures_state = std::rc::Rc::new(std::cell::RefCell::new(signatures));
         let mut sig_labels = vec![
-            "Use Default Signature".to_string(),
-            "No Signature".to_string(),
+            gettext("Use Default Signature"),
+            gettext("No Signature"),
         ];
         for sig in signatures_state.borrow().iter() {
             sig_labels.push(sig.name.clone());
         }
-        sig_labels.push("New Signature…".to_string());
+        sig_labels.push(gettext("New Signature…"));
         let sig_refs: Vec<&str> = sig_labels.iter().map(String::as_str).collect();
         let row_signature = adw::ComboRow::builder()
-            .title("Signature")
+            .title(gettext("Signature"))
             .model(&gtk::StringList::new(&sig_refs))
             .visible(true)
             .build();
@@ -887,8 +888,8 @@ impl AccountSetupDialog {
 
         let btn_manage_signatures = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
-            .tooltip_text("Manage Signatures…")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Manage Signatures…"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         {
@@ -999,8 +1000,8 @@ impl AccountSetupDialog {
         group_user.add(&row_signature);
 
         let row_discovery_status = adw::ActionRow::builder()
-            .title("Server Settings")
-            .subtitle("Enter your email address to detect server settings automatically")
+            .title(gettext("Server Settings"))
+            .subtitle(gettext("Enter your email address to detect server settings automatically"))
             .visible(false)
             .build();
 
@@ -1008,7 +1009,7 @@ impl AccountSetupDialog {
             .icon_name("view-refresh-symbolic")
             .valign(gtk::Align::Center)
             .has_frame(false)
-            .tooltip_text("Redetect server settings")
+            .tooltip_text(gettext("Redetect server settings"))
             .visible(false)
             .build();
         row_discovery_status.add_suffix(&btn_redetect);
@@ -1016,7 +1017,7 @@ impl AccountSetupDialog {
 
         // Smart OAuth / GOA recommendation banner for Google & Microsoft accounts
         let row_oauth_goa_hint = adw::ActionRow::builder()
-            .title("Sign in via GNOME Online Accounts")
+            .title(gettext("Sign in via GNOME Online Accounts"))
             .activatable(true)
             .visible(false)
             .build();
@@ -1027,9 +1028,9 @@ impl AccountSetupDialog {
             .build();
         row_oauth_goa_hint.add_prefix(&icon_oauth_goa);
         let btn_oauth_goa = gtk::Button::builder()
-            .label("Sign In with GNOME…")
+            .label(gettext("Sign In with GNOME…"))
             .valign(gtk::Align::Center)
-            .css_classes(vec!["suggested-action"])
+            .css_classes(["suggested-action"])
             .build();
         let dlg_for_oauth_hint = self.downgrade();
         btn_oauth_goa.connect_clicked(move |_| {
@@ -1049,15 +1050,15 @@ impl AccountSetupDialog {
         group_user.add(&row_oauth_goa_hint);
 
         let row_password = adw::PasswordEntryRow::builder()
-            .title("Password")
+            .title(gettext("Password"))
             .build();
-        row_password.set_tooltip_text(Some(
+        row_password.set_tooltip_text(Some(&gettext(
             "Stored securely in the system keyring (Secret Service)",
-        ));
+        )));
         group_user.add(&row_password);
 
         let row_account_enabled = adw::SwitchRow::builder()
-            .title("Account Enabled")
+            .title(gettext("Account Enabled"))
             .active(edit_profile.as_ref().map(|p| p.enabled).unwrap_or(true))
             .visible(is_editing && !is_editing_goa)
             .build();
@@ -1068,7 +1069,7 @@ impl AccountSetupDialog {
                 .unwrap_or(false)
         });
         let row_account_default = adw::SwitchRow::builder()
-            .title("Use as Default Account")
+            .title(gettext("Use as Default Account"))
             .active(is_currently_default)
             .visible(false)
             .build();
@@ -1076,7 +1077,7 @@ impl AccountSetupDialog {
 
         // Aliases & Reply-To (minimalist ExpanderRow without legacy clutter)
         let expander_optional = adw::ExpanderRow::builder()
-            .title("Aliases & Reply-To")
+            .title(gettext("Aliases & Reply-To"))
             .use_markup(false)
             .expanded(false)
             .build();
@@ -1085,35 +1086,35 @@ impl AccountSetupDialog {
             .replace(Some(expander_optional.clone()));
 
         let row_aliases = adw::EntryRow::builder()
-            .title("Aliases (comma-separated)")
+            .title(gettext("Aliases (comma-separated)"))
             .build();
         expander_optional.add_row(&row_aliases);
 
         let row_reply_to = adw::EntryRow::builder()
-            .title("Reply-To Address")
+            .title(gettext("Reply-To Address"))
             .build();
         expander_optional.add_row(&row_reply_to);
 
         let row_organization = adw::EntryRow::builder()
-            .title("Organization")
+            .title(gettext("Organization"))
             .visible(false)
             .build();
         expander_optional.add_row(&row_organization);
 
         let row_default_cc = adw::EntryRow::builder()
-            .title("Always CC")
+            .title(gettext("Always CC"))
             .visible(false)
             .build();
         expander_optional.add_row(&row_default_cc);
 
         let row_default_bcc = adw::EntryRow::builder()
-            .title("Always BCC")
+            .title(gettext("Always BCC"))
             .visible(false)
             .build();
         expander_optional.add_row(&row_default_bcc);
 
         let row_prefer_html = adw::SwitchRow::builder()
-            .title("Prefer HTML formatting when composing")
+            .title(gettext("Prefer HTML formatting when composing"))
             .active(edit_profile.as_ref().map(|p| p.prefer_html).unwrap_or(true))
             .visible(false)
             .build();
@@ -1134,15 +1135,15 @@ impl AccountSetupDialog {
         let server_page_content = adw::PreferencesPage::new();
         server_page_content.set_width_request(min_dialog_width);
         let group_server = adw::PreferencesGroup::builder()
-            .title("Connection Details")
+            .title(gettext("Connection Details"))
             .build();
         server_page_content.add(&group_server);
 
         let row_imap_host = adw::EntryRow::builder()
-            .title("Incoming Server (IMAP)")
+            .title(gettext("Incoming Server (IMAP)"))
             .build();
         let btn_fetch = gtk::Button::builder()
-            .label("Fetch URL")
+            .label(gettext("Fetch URL"))
             .valign(gtk::Align::Center)
             .build();
         row_imap_host.add_suffix(&btn_fetch);
@@ -1150,11 +1151,11 @@ impl AccountSetupDialog {
 
         // OAB URL Row (Offline Address Book)
         let row_oab_url = adw::EntryRow::builder()
-            .title("Offline Address Book")
+            .title(gettext("Offline Address Book"))
             .build();
         group_server.add(&row_oab_url);
 
-        let row_username = adw::EntryRow::builder().title("Username").build();
+        let row_username = adw::EntryRow::builder().title(gettext("Username")).build();
         if let Some(profile) = edit_profile.as_ref() {
             let user_text = if profile.protocol == AccountProtocol::Exchange {
                 crate::services::account_config_service::format_exchange_domain_user(
@@ -1169,10 +1170,10 @@ impl AccountSetupDialog {
         group_server.add(&row_username);
 
         let row_auth_combo = adw::ComboRow::builder()
-            .title("Authentication Method")
+            .title(gettext("Authentication Method"))
             .model(&gtk::StringList::new(&[
                 "NTLM",
-                "Password",
+                &gettext("Password"),
                 "Kerberos / GSSAPI",
                 "OAuth2",
             ]))
@@ -1188,11 +1189,11 @@ impl AccountSetupDialog {
         group_server.add(&row_auth_combo);
 
         let row_security = adw::ComboRow::builder()
-            .title("Encryption")
+            .title(gettext("Encryption"))
             .model(&gtk::StringList::new(&[
                 "SSL / TLS",
                 "STARTTLS",
-                "None",
+                &gettext("None"),
             ]))
             .build();
         if let Some(profile) = edit_profile.as_ref() {
@@ -1205,13 +1206,13 @@ impl AccountSetupDialog {
         group_server.add(&row_security);
 
         let row_open_other_mailbox = adw::SwitchRow::builder()
-            .title("Open Shared / Delegated Mailbox")
+            .title(gettext("Open Shared / Delegated Mailbox"))
             .active(false)
             .build();
         group_server.add(&row_open_other_mailbox);
 
         let row_other_mailbox_user = adw::EntryRow::builder()
-            .title("Shared Mailbox Email Address")
+            .title(gettext("Shared Mailbox Email Address"))
             .build();
         group_server.add(&row_other_mailbox_user);
 
@@ -1221,7 +1222,7 @@ impl AccountSetupDialog {
         });
         row_other_mailbox_user.set_sensitive(false);
 
-        let row_imap_port = adw::EntryRow::builder().title("Server Port").build();
+        let row_imap_port = adw::EntryRow::builder().title(gettext("Server Port")).build();
         group_server.add(&row_imap_port);
 
         if let Some(profile) = edit_profile.as_ref() {
@@ -1246,7 +1247,7 @@ impl AccountSetupDialog {
         }
 
         let row_remember_password = adw::SwitchRow::builder()
-            .title("Save password in keyring")
+            .title(gettext("Save password in keyring"))
             .active(true)
             .build();
         group_server.add(&row_remember_password);
@@ -1293,19 +1294,19 @@ impl AccountSetupDialog {
                 let group_prompt = adw::PreferencesGroup::new();
 
                 let entry_user = adw::EntryRow::builder()
-                    .title("Domain\\Username")
+                    .title(gettext("Domain\\Username"))
                     .text(&initial_user)
                     .build();
                 group_prompt.add(&entry_user);
 
                 let entry_pwd = adw::PasswordEntryRow::builder()
-                    .title("Password")
+                    .title(gettext("Password"))
                     .text(&initial_pwd)
                     .build();
                 group_prompt.add(&entry_pwd);
 
                 let switch_save = adw::SwitchRow::builder()
-                    .title("Save password in keyring")
+                    .title(gettext("Save password in keyring"))
                     .active(row_remember_password_ref.is_active())
                     .build();
                 group_prompt.add(&switch_save);
@@ -1313,8 +1314,8 @@ impl AccountSetupDialog {
                 content_box.append(&group_prompt);
                 alert.set_extra_child(Some(&content_box));
 
-                alert.add_response("cancel", &crate::i18n::gettext("Cancel"));
-                alert.add_response("confirm", &crate::i18n::gettext("Sign In"));
+                alert.add_response("cancel", &gettext("Cancel"));
+                alert.add_response("confirm", &gettext("Sign In"));
                 alert.set_response_appearance("confirm", adw::ResponseAppearance::Suggested);
                 alert.set_default_response(Some("confirm"));
                 alert.set_close_response("cancel");
@@ -1454,11 +1455,11 @@ impl AccountSetupDialog {
 
         // Sending (SMTP) inside group_server
         let row_smtp_host = adw::EntryRow::builder()
-            .title("Outgoing Server (SMTP)")
+            .title(gettext("Outgoing Server (SMTP)"))
             .build();
         group_server.add(&row_smtp_host);
 
-        let row_smtp_port = adw::EntryRow::builder().title("SMTP Port").build();
+        let row_smtp_port = adw::EntryRow::builder().title(gettext("SMTP Port")).build();
         group_server.add(&row_smtp_port);
 
         if let Some(profile) = edit_profile.as_ref() {
@@ -1468,7 +1469,7 @@ impl AccountSetupDialog {
 
         // Navigation row on the main page pointing to Server Settings subpage
         let row_nav_server = adw::ActionRow::builder()
-            .title("Server Settings")
+            .title(gettext("Server Settings"))
             .activatable(true)
             .build();
 
@@ -1494,7 +1495,7 @@ impl AccountSetupDialog {
 
         let label_nav_server = gtk::Label::builder()
             .label(&initial_server_summary)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(18)
             .valign(gtk::Align::Center)
@@ -1511,19 +1512,19 @@ impl AccountSetupDialog {
         let sync_page_content = adw::PreferencesPage::new();
         sync_page_content.set_width_request(min_dialog_width);
         let group_sync = adw::PreferencesGroup::builder()
-            .title("Message Checking")
+            .title(gettext("Message Checking"))
             .build();
         sync_page_content.add(&group_sync);
 
         let sync_interval_labels = [
-            crate::i18n::gettext("Use Default"),
-            crate::i18n::gettext("Manually"),
-            crate::i18n::gettext("Every minute"),
-            crate::i18n::gettext("Every 5 minutes"),
-            crate::i18n::gettext("Every 10 minutes"),
-            crate::i18n::gettext("Every 15 minutes"),
-            crate::i18n::gettext("Every 30 minutes"),
-            crate::i18n::gettext("Hourly"),
+            gettext("Use Default"),
+            gettext("Manually"),
+            gettext("Every minute"),
+            gettext("Every 5 minutes"),
+            gettext("Every 10 minutes"),
+            gettext("Every 15 minutes"),
+            gettext("Every 30 minutes"),
+            gettext("Hourly"),
         ];
         let sync_interval_refs: Vec<&str> =
             sync_interval_labels.iter().map(String::as_str).collect();
@@ -1545,14 +1546,14 @@ impl AccountSetupDialog {
             initial_interval_mins,
         );
         let row_check_interval_combo = adw::ComboRow::builder()
-            .title(&crate::i18n::gettext("Check for new messages"))
+            .title(gettext("Check for new messages"))
             .model(&gtk::StringList::new(&sync_interval_refs))
             .selected(initial_sync_idx)
             .build();
         group_sync.add(&row_check_interval_combo);
 
         let row_check_all_folders = adw::SwitchRow::builder()
-            .title("Check all folders for new messages")
+            .title(gettext("Check all folders for new messages"))
             .active(
                 edit_profile
                     .as_ref()
@@ -1563,12 +1564,12 @@ impl AccountSetupDialog {
         group_sync.add(&row_check_all_folders);
 
         let group_trash = adw::PreferencesGroup::builder()
-            .title("Trash & Maintenance")
+            .title(gettext("Trash & Maintenance"))
             .build();
         sync_page_content.add(&group_trash);
 
         let row_expunge_on_exit = adw::SwitchRow::builder()
-            .title("Empty trash on exit (Expunge)")
+            .title(gettext("Empty trash on exit (Expunge)"))
             .active(
                 edit_profile
                     .as_ref()
@@ -1579,24 +1580,24 @@ impl AccountSetupDialog {
         group_trash.add(&row_expunge_on_exit);
 
         let initial_sync_summary = if initial_sync_idx == 0 {
-            "Default".to_string()
+            gettext("Default")
         } else {
             sync_interval_labels
                 .get(initial_sync_idx as usize)
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| "Default".to_string())
+                .unwrap_or_else(|| gettext("Default"))
         };
 
         // Navigation row on the main page pointing to Synchronization subpage
         let row_nav_sync = adw::ActionRow::builder()
-            .title("Synchronization")
+            .title(gettext("Synchronization"))
             .activatable(true)
             .visible(is_editing)
             .build();
 
         let label_nav_sync = gtk::Label::builder()
             .label(&initial_sync_summary)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(18)
             .valign(gtk::Align::Center)
@@ -1615,7 +1616,7 @@ impl AccountSetupDialog {
             row_check_interval_combo.connect_selected_notify(move |combo| {
                 let idx = combo.selected() as usize;
                 if idx == 0 {
-                    label_nav_sync.set_text("Default");
+                    label_nav_sync.set_text(&gettext("Default"));
                 } else if let Some(label) = sync_interval_labels.get(idx) {
                     label_nav_sync.set_text(label);
                 }
@@ -1629,7 +1630,7 @@ impl AccountSetupDialog {
         group_nav.add(&row_nav_sync);
         group_nav.set_visible(is_editing || !is_editing_goa);
 
-        let row_inbox_folder = adw::EntryRow::builder().title("Inbox").visible(false).build();
+        let row_inbox_folder = adw::EntryRow::builder().title(gettext("Inbox")).visible(false).build();
         let known_folders = collect_known_account_folders(edit_profile.as_ref());
         let stored_drafts = edit_profile.as_ref().map(|p| p.drafts_folder.as_str()).unwrap_or("");
         let stored_sent = edit_profile.as_ref().map(|p| p.sent_folder.as_str()).unwrap_or("");
@@ -1637,17 +1638,17 @@ impl AccountSetupDialog {
         let stored_trash = edit_profile.as_ref().map(|p| p.trash_folder.as_str()).unwrap_or("");
         let stored_junk = edit_profile.as_ref().map(|p| p.junk_folder.as_str()).unwrap_or("");
 
-        let row_drafts_folder = create_folder_combo_row("Drafts", &known_folders, stored_drafts);
-        let row_sent_folder = create_folder_combo_row("Sent", &known_folders, stored_sent);
-        let row_archive_folder = create_folder_combo_row("Archive", &known_folders, stored_archive);
-        let row_trash_folder = create_folder_combo_row("Trash", &known_folders, stored_trash);
-        let row_junk_folder = create_folder_combo_row("Junk", &known_folders, stored_junk);
+        let row_drafts_folder = create_folder_combo_row(&gettext("Drafts"), &known_folders, stored_drafts);
+        let row_sent_folder = create_folder_combo_row(&gettext("Sent"), &known_folders, stored_sent);
+        let row_archive_folder = create_folder_combo_row(&gettext("Archive"), &known_folders, stored_archive);
+        let row_trash_folder = create_folder_combo_row(&gettext("Trash"), &known_folders, stored_trash);
+        let row_junk_folder = create_folder_combo_row(&gettext("Junk"), &known_folders, stored_junk);
 
         group_trash.add(&row_inbox_folder);
 
         let group_special_folders = adw::PreferencesGroup::new();
         let expander_folders = adw::ExpanderRow::builder()
-            .title("Folders")
+            .title(gettext("Folders"))
             .build();
         expander_folders.add_row(&row_drafts_folder);
         expander_folders.add_row(&row_sent_folder);
@@ -2351,7 +2352,7 @@ impl AccountSetupDialog {
         header_bar.set_show_end_title_buttons(false);
 
         let btn_cancel = gtk::Button::builder()
-            .label(&crate::i18n::gettext("Cancel"))
+            .label(gettext("Cancel"))
             .build();
         btn_cancel.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
@@ -2366,11 +2367,11 @@ impl AccountSetupDialog {
             let title = if !profile.display_name.is_empty() {
                 profile.display_name.clone()
             } else {
-                "Account Settings".to_string()
+                gettext("Account Settings")
             };
             (title, profile.email.clone())
         } else {
-            ("Add Account".to_string(), String::new())
+            (gettext("Add Account"), String::new())
         };
 
         let window_title = adw::WindowTitle::builder()
@@ -2380,8 +2381,8 @@ impl AccountSetupDialog {
         header_bar.set_title_widget(Some(&window_title));
 
         let btn_save = gtk::Button::builder()
-            .label(if is_editing { "Save" } else { "Set Up Account" })
-            .css_classes(vec!["suggested-action"])
+            .label(&if is_editing { gettext("Save") } else { gettext("Set Up Account") })
+            .css_classes(["suggested-action"])
             .build();
         {
             let do_save = do_save.clone();
@@ -2404,7 +2405,7 @@ impl AccountSetupDialog {
                 let group_danger = adw::PreferencesGroup::new();
                 group_danger.add(&row_account_enabled);
                 let row_delete = adw::ActionRow::builder()
-                    .title("Remove Account…")
+                    .title(gettext("Remove Account…"))
                     .activatable(true)
                     .build();
                 row_delete.add_css_class("error");

@@ -109,7 +109,7 @@ impl CalendarPurgeDialog {
     }
 
     fn build_ui(&self) {
-        self.set_title("Purge Past Events");
+        self.set_title(&gettext("Purge Past Events"));
         self.set_content_width(480);
         self.set_content_height(340);
 
@@ -138,8 +138,8 @@ impl CalendarPurgeDialog {
         self.imp().cancel_button.replace(Some(cancel));
 
         let days_row = adw::SpinRow::with_range(0.0, 1000.0, 1.0);
-        days_row.set_title("Delete events older than");
-        days_row.set_subtitle("Days");
+        days_row.set_title(&gettext("Delete events older than"));
+        days_row.set_subtitle(&gettext("Days"));
         days_row.set_value(60.0);
         let days_icon = gtk::Image::builder()
             .icon_name("preferences-system-time-symbolic")
@@ -148,8 +148,8 @@ impl CalendarPurgeDialog {
         days_row.add_prefix(&days_icon);
 
         let purge = gtk::Button::builder()
-            .label(&gettext("Permanently Delete"))
-            .css_classes(vec!["destructive-action"])
+            .label(gettext("Permanently Delete"))
+            .css_classes(["destructive-action"])
             .build();
         purge.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
@@ -159,7 +159,7 @@ impl CalendarPurgeDialog {
             move |_| {
                 let Some(cutoff) = purge_cutoff(Local::now().timestamp(), days_row.value() as i32)
                 else {
-                    dialog.set_status("The selected time range is invalid", true);
+                    dialog.set_status(&gettext("The selected time range is invalid"), true);
                     return;
                 };
                 dialog.execute_purge(cutoff);
@@ -171,8 +171,8 @@ impl CalendarPurgeDialog {
 
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::builder()
-            .title("Purge Past Events")
-            .description("This action permanently deletes old single events from the app-owned local calendar. Synchronized calendars and recurring event series are not modified in this portable path.")
+            .title(gettext("Purge Past Events"))
+            .description(gettext("This action permanently deletes old single events from the app-owned local calendar. Synchronized calendars and recurring event series are not modified in this portable path."))
             .build();
         group.add(&days_row);
 
@@ -180,7 +180,7 @@ impl CalendarPurgeDialog {
             .halign(gtk::Align::Start)
             .wrap(true)
             .margin_top(8)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         group.add(&status);
         self.imp().status.replace(Some(status));
@@ -195,7 +195,7 @@ impl CalendarPurgeDialog {
             if let Some(cancellation) = dialog.imp().cancellation.borrow().as_ref() {
                 cancellation.store(true, Ordering::Relaxed);
             }
-            dialog.set_status("Canceling purge…", false);
+            dialog.set_status(&gettext("Canceling purge…"), false);
         });
 
         toolbar.set_content(Some(&page));
@@ -214,7 +214,7 @@ impl CalendarPurgeDialog {
             button.set_sensitive(true);
             button.set_label(&gettext("Cancel"));
         }
-        self.set_status("Checking local events…", false);
+        self.set_status(&gettext("Checking local events…"), false);
 
         let cancellation = Arc::new(AtomicBool::new(false));
         self.imp()
@@ -256,7 +256,7 @@ impl CalendarPurgeDialog {
             }
             if let Some(button) = dialog.imp().cancel_button.borrow().as_ref() {
                 button.set_sensitive(true);
-                button.set_label("Close");
+                button.set_label(&gettext("Close"));
             }
             let message = outcome.message();
             dialog.set_status(&message, outcome.error.is_some());

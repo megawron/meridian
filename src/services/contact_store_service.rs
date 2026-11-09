@@ -832,11 +832,11 @@ mod tests {
         let root = temporary_directory("vcard-list-persistence");
         let service = ContactStoreService::with_writable_contact_dir(&root);
         let list = concat!(
-            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:list-1\r\nFN:Projektteam\r\n",
-            "N:;Projektteam;;;\r\nX-EVOLUTION-LIST:TRUE\r\n",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:list-1\r\nFN:Project Team\r\n",
+            "N:;Project Team;;;\r\nX-EVOLUTION-LIST:TRUE\r\n",
             "X-EVOLUTION-LIST-SHOW-ADDRESSES:FALSE\r\n",
-            "X-EVOLUTION-LIST-NAME:Projektteam\r\n",
-            "EMAIL:Extern <external@example.test>\r\n",
+            "X-EVOLUTION-LIST-NAME:Project Team\r\n",
+            "EMAIL:External <external@example.test>\r\n",
             "EMAIL;X-EVOLUTION-DEST-CONTACT-UID=contact-1;X-EVOLUTION-DEST-SOURCE-UID=local-addressbook:Alice <alice@example.test>\r\n",
             "X-PROVIDER-UNKNOWN;X-PARAM=kept:opaque\r\nEND:VCARD\r\n"
         );

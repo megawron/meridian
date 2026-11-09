@@ -463,7 +463,7 @@ fn validate_sidebar_folder_drop(
             return Ok(false); // malformed message ID
         }
         if !target_folder_selectable {
-            return Err("In diesen Ordner können keine Nachrichten abgelegt werden".to_string());
+            return Err("Cannot drop messages into this folder".to_string());
         }
         if is_copy {
             store.copy_message(msg_id, target_folder_id, false)?;
@@ -528,7 +528,7 @@ fn tier5_adversarial_m1_sidebar_folder_drop_unselectable_folder_rejected() {
     // Target folder has selectable == false (e.g., account root header)
     let res = validate_sidebar_folder_drop(valid_payload, false, &mut store, "inbox", false);
     assert!(res.is_err(), "Unselectable folder drop must return Err");
-    assert!(res.unwrap_err().contains("können keine Nachrichten abgelegt werden"));
+    assert!(res.unwrap_err().contains("Cannot drop messages into this folder"));
 
     // Message must NOT have moved
     assert_eq!(store.message_locations.get("msg_101").unwrap(), "inbox");
@@ -740,7 +740,7 @@ fn shift_rrule_full_oracle(
 
     if !matches!(frequency.as_str(), "DAILY" | "WEEKLY") {
         return Err(
-            "Diese Wiederholung kann nicht sicher per Ziehen verschoben werden; bitte den Termin bearbeiten"
+            "This recurrence cannot be safely moved by dragging; please edit the event"
                 .to_string(),
         );
     }
@@ -753,13 +753,13 @@ fn shift_rrule_full_oracle(
         let key_upper = k.to_ascii_uppercase();
         if matches!(key_upper.as_str(), "BYMONTHDAY" | "BYMONTH" | "BYSETPOS") {
             return Err(
-                "Diese Wiederholung enthält Filter, die beim Ziehen nicht sicher verschoben werden können"
+                "This recurrence contains filters that cannot be safely moved by dragging"
                     .to_string(),
             );
         }
         if key_upper == "UNTIL" {
             let shifted = ical_datetime_shift_oracle(v, delta_days, delta_minutes).ok_or_else(|| {
-                "RRULE-UNTIL konnte beim Verschieben nicht ausgewertet werden".to_string()
+                "RRULE-UNTIL could not be evaluated while shifting".to_string()
             })?;
             parts.push(format!("{k}={shifted}"));
         } else if key_upper == "BYDAY" {
@@ -783,11 +783,11 @@ fn shift_component_oracle(
     delta_minutes: i64,
 ) -> Result<String, String> {
     if raw.trim().is_empty() {
-        return Err("Der Termin enthält keine iCalendar-Daten".to_string());
+        return Err("The event contains no iCalendar data".to_string());
     }
     if raw.contains("RECURRENCE-ID") {
         return Err(
-            "Serienausnahmen mit RECURRENCE-ID können nicht per Ziehen verschoben werden; der Kalenderdienst kann die Ausnahme nicht eindeutig adressieren"
+            "Recurrence exceptions with RECURRENCE-ID cannot be moved by dragging; the calendar service cannot uniquely address the exception"
                 .to_string(),
         );
     }
@@ -802,7 +802,7 @@ fn shift_component_oracle(
         let prop_name = prop.split(';').next().unwrap_or(prop).to_ascii_uppercase();
         if prop_name == "DTSTART" || prop_name == "DTEND" {
             let shifted = ical_datetime_shift_oracle(val, delta_days, delta_minutes).ok_or_else(|| {
-                format!("{prop_name} konnte beim Verschieben nicht ausgewertet werden")
+                format!("{prop_name} could not be evaluated while shifting")
             })?;
             lines.push(format!("{prop}:{shifted}"));
         } else if prop_name == "RDATE" || prop_name == "EXDATE" {
@@ -810,7 +810,7 @@ fn shift_component_oracle(
                 .split(',')
                 .map(|v| {
                     ical_datetime_shift_oracle(v, delta_days, delta_minutes).ok_or_else(|| {
-                        format!("{prop_name} konnte beim Verschieben nicht ausgewertet werden")
+                        format!("{prop_name} could not be evaluated while shifting")
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -921,12 +921,12 @@ fn tier5_challenger2_drag_drop_unselected_disabled_and_multimessage() {
     let mut store = MockFolderStore::new();
 
     // Add extra folders to simulate realistic hierarchy
-    let mut drafts = TestFolder::new("drafts", "Entwürfe");
+    let mut drafts = TestFolder::new("drafts", "Drafts");
     drafts.unread_count = 0;
     drafts.total_count = 3;
     store.folders.insert("drafts".to_string(), drafts);
 
-    let mut receipts = TestFolder::new("receipts", "Belege");
+    let mut receipts = TestFolder::new("receipts", "Receipts");
     receipts.unread_count = 0;
     receipts.total_count = 15;
     store.folders.insert("receipts".to_string(), receipts);
@@ -985,7 +985,7 @@ fn tier5_challenger2_drag_drop_unselected_disabled_and_multimessage() {
     );
     assert!(disabled_res
         .unwrap_err()
-        .contains("können keine Nachrichten abgelegt werden"));
+        .contains("Cannot drop messages into this folder"));
     // Message remains in inbox and counts untouched
     assert_eq!(store.message_locations.get("msg_102").unwrap(), "inbox");
     assert_eq!(store.folders.get("inbox").unwrap().total_count, 9);
@@ -1059,7 +1059,7 @@ fn tier5_challenger2_calendar_drag_rrule_weekday_shifts() {
     let rule_monthly = "FREQ=MONTHLY;BYDAY=1MO";
     let err_monthly = shift_rrule_full_oracle(rule_monthly, 1, 0);
     assert!(err_monthly.is_err());
-    assert!(err_monthly.unwrap_err().contains("nicht sicher per Ziehen verschoben"));
+    assert!(err_monthly.unwrap_err().contains("cannot be safely moved by dragging"));
 
     // 8. Safety Rejection: YEARLY recurrence
     let rule_yearly = "FREQ=YEARLY;BYMONTH=6";
@@ -1074,7 +1074,7 @@ fn tier5_challenger2_calendar_drag_rrule_weekday_shifts() {
     ] {
         let err = shift_rrule_full_oracle(filter_rule, 1, 0);
         assert!(err.is_err(), "Filter rule '{}' must be rejected", filter_rule);
-        assert!(err.unwrap_err().contains("nicht sicher verschoben werden"));
+        assert!(err.unwrap_err().contains("cannot be safely moved by dragging"));
     }
 }
 
@@ -1161,7 +1161,7 @@ fn tier5_challenger2_calendar_drag_timezone_and_allday_integrity() {
     assert!(err_detached.is_err());
     assert!(err_detached
         .unwrap_err()
-        .contains("Serienausnahmen mit RECURRENCE-ID"));
+        .contains("Recurrence exceptions with RECURRENCE-ID"));
 }
 
 // ============================================================================
@@ -3447,12 +3447,12 @@ fn tier5_challenger2_m3_portable_mail_engine_timeout_cancellation_and_offline_ca
     // 1. Cancellation Token Pre-flight check
     let cancelled = Arc::new(AtomicBool::new(true)); // Pre-cancelled
     let cancel_res = if cancelled.load(Ordering::Relaxed) {
-        Err("Mail-Ladevorgang wurde abgebrochen.".to_string())
+        Err("Mail loading was cancelled.".to_string())
     } else {
         Ok(())
     };
     assert!(cancel_res.is_err());
-    assert_eq!(cancel_res.unwrap_err(), "Mail-Ladevorgang wurde abgebrochen.");
+    assert_eq!(cancel_res.unwrap_err(), "Mail loading was cancelled.");
 
     // 2. Offline Cache Protection Oracle:
     // Verify that saving an empty load does NOT overwrite valid cached data
@@ -4063,7 +4063,7 @@ fn tier5_challenger2_m3_fix2_offline_cache_fallback_multiple_accounts_stress() {
         configured_sources: accounts.len(),
         failed_sources,
         warning: Some(format!(
-            "Offline-Modus: Server nicht erreichbar ({}); zwischengespeicherte Daten geladen",
+            "Offline mode: server unreachable ({}); cached data loaded",
             warnings.join("; ")
         )),
     };
@@ -4071,7 +4071,7 @@ fn tier5_challenger2_m3_fix2_offline_cache_fallback_multiple_accounts_stress() {
     assert_eq!(fallback_load.configured_sources, 3);
     assert_eq!(fallback_load.failed_sources, 3);
     assert_eq!(fallback_load.messages.len(), 2);
-    assert!(fallback_load.warning.as_ref().unwrap().contains("Offline-Modus"));
+    assert!(fallback_load.warning.as_ref().unwrap().contains("Offline mode"));
     assert!(fallback_load.warning.as_ref().unwrap().contains("Work IMAP"));
     assert!(fallback_load.warning.as_ref().unwrap().contains("Personal Posteo"));
 
@@ -4092,7 +4092,7 @@ fn tier5_challenger2_m3_fix2_offline_cache_fallback_multiple_accounts_stress() {
                     return Ok(full);
                 }
             }
-            Err(format!("Offline: Nachricht {} konnte nicht geladen werden", message_uid))
+            Err(format!("Offline: message {} could not be loaded", message_uid))
         }
     };
 
@@ -4108,7 +4108,7 @@ fn tier5_challenger2_m3_fix2_offline_cache_fallback_multiple_accounts_stress() {
     // Case C: Non-existent message returns explicit offline error
     let raw_c = fetch_raw_message("acc1", "non-existent-msg", false);
     assert!(raw_c.is_err());
-    assert!(raw_c.unwrap_err().contains("Offline: Nachricht non-existent-msg konnte nicht geladen werden"));
+    assert!(raw_c.unwrap_err().contains("Offline: message non-existent-msg could not be loaded"));
 }
 
 #[test]
@@ -4489,7 +4489,7 @@ fn tier5_challenger2_m4_preferences_dialog_dynamic_smime_reload_contract_stress(
     ) -> (Vec<String>, u32, Vec<String>, u32) {
         // 1. Reload personal certs
         let personal = store.list_by_category(CertCategory::Personal);
-        let mut signer_labels = vec!["Nicht festgelegt".to_string()];
+        let mut signer_labels = vec!["Not set".to_string()];
         for cert in &personal {
             let label = if !cert.subject_cn.is_empty() {
                 cert.subject_cn.clone()
@@ -4552,7 +4552,7 @@ fn tier5_challenger2_m4_preferences_dialog_dynamic_smime_reload_contract_stress(
     let cur_s = settings.string("smime-signer-certificate");
     let cur_c = settings.string("smime-ca-file");
     let (signer_labels, signer_idx, ca_labels, ca_idx) = simulate_refresh_smime_selectors(&store, &cur_s, &cur_c);
-    assert_eq!(signer_labels, vec!["Nicht festgelegt"]);
+    assert_eq!(signer_labels, vec!["Not set"]);
     assert_eq!(signer_idx, 0);
     assert_eq!(ca_labels, vec!["System-Vertrauensspeicher (Standard)"]);
     assert_eq!(ca_idx, 0);

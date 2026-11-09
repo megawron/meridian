@@ -1,3 +1,4 @@
+use crate::i18n::ngettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Portable calendar/task reminders.
@@ -1467,10 +1468,10 @@ pub fn format_duration(seconds: i64) -> String {
         let remaining_days = ((seconds % WEEK) / DAY) as u32;
         let remaining_hours = ((seconds % DAY) / HOUR) as u32;
         if remaining_hours == 0 {
-            let week_str = crate::i18n::ngettext("%d week", "%d weeks", weeks)
+            let week_str = ngettext("%d week", "%d weeks", weeks)
                 .replace("%d", &weeks.to_string());
             if remaining_days > 0 {
-                let day_str = crate::i18n::ngettext("%d day", "%d days", remaining_days)
+                let day_str = ngettext("%d day", "%d days", remaining_days)
                     .replace("%d", &remaining_days.to_string());
                 return format!("{week_str} {day_str}");
             }
@@ -1481,10 +1482,10 @@ pub fn format_duration(seconds: i64) -> String {
     if seconds >= DAY {
         let days = (seconds / DAY) as u32;
         let remaining_hours = ((seconds % DAY) / HOUR) as u32;
-        let day_str = crate::i18n::ngettext("%d day", "%d days", days)
+        let day_str = ngettext("%d day", "%d days", days)
             .replace("%d", &days.to_string());
         if remaining_hours > 0 {
-            let hour_str = crate::i18n::ngettext("%d hour", "%d hours", remaining_hours)
+            let hour_str = ngettext("%d hour", "%d hours", remaining_hours)
                 .replace("%d", &remaining_hours.to_string());
             return format!("{day_str} {hour_str}");
         }
@@ -1494,10 +1495,10 @@ pub fn format_duration(seconds: i64) -> String {
     if seconds >= HOUR {
         let hours = (seconds / HOUR) as u32;
         let remaining_minutes = ((seconds % HOUR) / MINUTE) as u32;
-        let hour_str = crate::i18n::ngettext("%d hour", "%d hours", hours)
+        let hour_str = ngettext("%d hour", "%d hours", hours)
             .replace("%d", &hours.to_string());
         if remaining_minutes > 0 {
-            let min_str = crate::i18n::ngettext("%d minute", "%d minutes", remaining_minutes)
+            let min_str = ngettext("%d minute", "%d minutes", remaining_minutes)
                 .replace("%d", &remaining_minutes.to_string());
             return format!("{hour_str} {min_str}");
         }
@@ -1506,12 +1507,12 @@ pub fn format_duration(seconds: i64) -> String {
 
     if seconds >= MINUTE {
         let minutes = (seconds / MINUTE) as u32;
-        return crate::i18n::ngettext("%d minute", "%d minutes", minutes)
+        return ngettext("%d minute", "%d minutes", minutes)
             .replace("%d", &minutes.to_string());
     }
 
     let secs = seconds as u32;
-    crate::i18n::ngettext("%d second", "%d seconds", secs)
+    ngettext("%d second", "%d seconds", secs)
         .replace("%d", &secs.to_string())
 }
 

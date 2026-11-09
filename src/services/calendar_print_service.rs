@@ -330,25 +330,25 @@ mod tests {
             CalendarEventRecord {
                 uid: "event-1".to_string(),
                 source_uid: "local".to_string(),
-                source_display_name: "Privat".to_string(),
+                source_display_name: "Personal".to_string(),
                 component: String::new(),
-                summary: "Zahnarzt".to_string(),
+                summary: "Dentist".to_string(),
                 start: "20260915T093000Z".to_string(),
                 end: "20260915T103000Z".to_string(),
                 location: "Praxis Dr. Müller".to_string(),
-                description: "Kontrolle & Prophylaxe".to_string(),
+                description: "Checkup & Prophylaxis".to_string(),
                 all_day: false,
             },
             CalendarEventRecord {
                 uid: "event-2".to_string(),
                 source_uid: "local".to_string(),
-                source_display_name: "Arbeit".to_string(),
+                source_display_name: "Work".to_string(),
                 component: String::new(),
-                summary: "Projekt-Review <Sprint 42> & Roadmap".to_string(),
+                summary: "Project Review <Sprint 42> & Roadmap".to_string(),
                 start: "20260915T140000Z".to_string(),
                 end: "20260915T150000Z".to_string(),
-                location: "Raum Newton".to_string(),
-                description: "Ergebnisse vorstellen".to_string(),
+                location: "Room Newton".to_string(),
+                description: "Present results".to_string(),
                 all_day: false,
             },
         ]
@@ -362,36 +362,36 @@ mod tests {
         assert_eq!(doc.event_count, 1);
         assert!(
             doc.html
-                .contains("Projekt-Review &lt;Sprint 42&gt; &amp; Roadmap")
+                .contains("Project Review &lt;Sprint 42&gt; &amp; Roadmap")
         );
-        assert!(doc.html.contains("Raum Newton"));
-        assert!(doc.html.contains("Ergebnisse vorstellen"));
+        assert!(doc.html.contains("Room Newton"));
+        assert!(doc.html.contains("Present results"));
         assert!(
             doc.plain_text
-                .contains("Projekt-Review <Sprint 42> & Roadmap")
+                .contains("Project Review <Sprint 42> & Roadmap")
         );
-        assert!(doc.plain_text.contains("Raum Newton"));
+        assert!(doc.plain_text.contains("Room Newton"));
     }
 
     #[test]
     fn build_calendar_list_print_document_sorts_and_groups_by_date() {
         let records = sample_records();
-        let doc = build_calendar_list_print_document(&records, Some("Wochenplan")).unwrap();
+        let doc = build_calendar_list_print_document(&records, Some("Weekly Schedule")).unwrap();
 
         assert_eq!(doc.event_count, 2);
-        assert!(doc.html.contains("Wochenplan"));
+        assert!(doc.html.contains("Weekly Schedule"));
         assert!(doc.html.contains("2 event(s)"));
         assert!(doc.html.contains("2026-09-15"));
-        assert!(doc.html.contains("Zahnarzt"));
+        assert!(doc.html.contains("Dentist"));
         assert!(doc.html.contains("Praxis Dr. Müller"));
         assert!(
             doc.html
-                .contains("Projekt-Review &lt;Sprint 42&gt; &amp; Roadmap")
+                .contains("Project Review &lt;Sprint 42&gt; &amp; Roadmap")
         );
 
-        assert!(doc.plain_text.contains("=== Wochenplan ==="));
+        assert!(doc.plain_text.contains("=== Weekly Schedule ==="));
         assert!(doc.plain_text.contains("--- 2026-09-15 ---"));
-        assert!(doc.plain_text.contains("Zahnarzt"));
+        assert!(doc.plain_text.contains("Dentist"));
     }
 
     #[test]

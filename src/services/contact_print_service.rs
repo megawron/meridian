@@ -474,8 +474,8 @@ mod tests {
             suffix: String::new(),
         };
         contact.tel = "+49 123 456789".to_string();
-        contact.categories = vec!["Kollegen".to_string()];
-        contact.note = "Wichtiger Notiz-Text\nmit Umbruch".to_string();
+        contact.categories = vec!["Colleagues".to_string()];
+        contact.note = "Important note text\nwith line break".to_string();
         EBookContactRecord {
             source_uid: source_uid.to_string(),
             source_display_name: source_name.to_string(),
@@ -519,7 +519,7 @@ mod tests {
     fn print_single_contact_card_renders_cleanly() {
         let r = make_test_record(
             "local",
-            "Mein Adressbuch",
+            "My Address Book",
             "c1",
             "Lovelace",
             "Ada",
@@ -537,12 +537,12 @@ mod tests {
         assert!(doc.html.contains("Engineer, Analytics Corp"));
         assert!(doc.html.contains("<dt>Email</dt><dd>ada@example.com</dd>"));
         assert!(doc.html.contains("<dt>Phone</dt><dd>+49 123 456789</dd>"));
-        assert!(doc.html.contains("<dt>Categories</dt><dd>Kollegen</dd>"));
+        assert!(doc.html.contains("<dt>Categories</dt><dd>Colleagues</dd>"));
         assert!(
             doc.html
-                .contains("<dt>Address Book</dt><dd>Mein Adressbuch</dd>")
+                .contains("<dt>Address Book</dt><dd>My Address Book</dd>")
         );
-        assert!(doc.html.contains("<div class=\"contact-notes\"><h4>Notes</h4><pre>Wichtiger Notiz-Text\nmit Umbruch</pre></div>"));
+        assert!(doc.html.contains("<div class=\"contact-notes\"><h4>Notes</h4><pre>Important note text\nwith line break</pre></div>"));
         assert!(doc.plain_text.contains("Ada Lovelace"));
         assert!(doc.plain_text.contains("Email: ada@example.com"));
     }
@@ -608,12 +608,12 @@ mod tests {
 
     #[test]
     fn print_contact_list_renders_members_section() {
-        let mut list_contact = VCardContact::new("Projekt-Team", "", "", "");
+        let mut list_contact = VCardContact::new("Project Team", "", "", "");
         list_contact.is_list = true;
-        list_contact.list_name = "Projekt-Team".to_string();
+        list_contact.list_name = "Project Team".to_string();
         list_contact.list_show_addresses = true;
         list_contact.list_members = vec![
-            VCardListMember::external_address("ext@example.com", "Externer Partner"),
+            VCardListMember::external_address("ext@example.com", "External Partner"),
             VCardListMember::local_contact(
                 "c1",
                 "local",
@@ -625,7 +625,7 @@ mod tests {
 
         let record = EBookContactRecord {
             source_uid: "local".to_string(),
-            source_display_name: "Lokales Adressbuch".to_string(),
+            source_display_name: "Local Address Book".to_string(),
             uid: "list-1".to_string(),
             vcard: String::new(),
             contact: list_contact,
@@ -633,17 +633,17 @@ mod tests {
 
         let doc = build_contact_print_document(&[record]).expect("list contact print document");
         assert_eq!(doc.contact_count, 1);
-        assert!(doc.html.contains("Projekt-Team"));
+        assert!(doc.html.contains("Project Team"));
         assert!(doc.html.contains("Members (2)"));
         assert!(
             doc.html
-                .contains("Externer Partner &lt;ext@example.com&gt;")
+                .contains("External Partner &lt;ext@example.com&gt;")
         );
         assert!(doc.html.contains("Ada Lovelace &lt;ada@example.com&gt;"));
         assert!(doc.plain_text.contains("Members (2):"));
         assert!(
             doc.plain_text
-                .contains("Externer Partner <ext@example.com>")
+                .contains("External Partner <ext@example.com>")
         );
     }
 

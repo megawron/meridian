@@ -485,34 +485,34 @@ VERSION:2.0
 PRODID:-//Example Corp.//EN
 BEGIN:VEVENT
 UID:event-1@example.com
-SUMMARY:Projekt-Kickoff
+SUMMARY:Project Kickoff
 DTSTART:20260910T090000Z
 DTEND:20260910T100000Z
-DESCRIPTION:Besprechung der Meilensteine
-LOCATION:Raum 404
+DESCRIPTION:Milestone Review
+LOCATION:Room 404
 BEGIN:VALARM
 TRIGGER:-PT15M
 ACTION:DISPLAY
-DESCRIPTION:Erinnerung
+DESCRIPTION:Reminder
 END:VALARM
 END:VEVENT
 BEGIN:VEVENT
 UID:event-2@example.com
-SUMMARY:Wöchentliches Sync-Meeting
+SUMMARY:Weekly Sync Meeting
 DTSTART;TZID=Europe/Berlin:20260911T140000
 DTEND;TZID=Europe/Berlin:20260911T150000
 RRULE:FREQ=WEEKLY;BYDAY=FR
 END:VEVENT
 BEGIN:VTODO
 UID:task-1@example.com
-SUMMARY:Dokumentation schreiben
+SUMMARY:Write documentation
 DUE:20260915T180000Z
 STATUS:IN-PROCESS
 END:VTODO
 BEGIN:VJOURNAL
 UID:memo-1@example.com
-SUMMARY:Notizen zur Architektur
-DESCRIPTION:Erste Gedanken zum Design
+SUMMARY:Architecture Notes
+DESCRIPTION:Initial design thoughts
 END:VJOURNAL
 END:VCALENDAR
 "#;
@@ -525,14 +525,14 @@ END:VCALENDAR
         let event1 = &items[0];
         assert_eq!(event1.kind, IcalComponentKind::Event);
         assert_eq!(event1.uid, "event-1@example.com");
-        assert_eq!(event1.summary, "Projekt-Kickoff");
+        assert_eq!(event1.summary, "Project Kickoff");
         assert_eq!(event1.dtstart.as_deref(), Some("20260910T090000Z"));
         assert_eq!(event1.dtend_or_due.as_deref(), Some("20260910T100000Z"));
         assert_eq!(
             event1.description.as_deref(),
-            Some("Besprechung der Meilensteine")
+            Some("Milestone Review")
         );
-        assert_eq!(event1.location.as_deref(), Some("Raum 404"));
+        assert_eq!(event1.location.as_deref(), Some("Room 404"));
         assert_eq!(event1.alarm_count, 1);
         assert!(!event1.is_recurring);
 
@@ -544,13 +544,13 @@ END:VCALENDAR
         let task = &items[2];
         assert_eq!(task.kind, IcalComponentKind::Task);
         assert_eq!(task.uid, "task-1@example.com");
-        assert_eq!(task.summary, "Dokumentation schreiben");
+        assert_eq!(task.summary, "Write documentation");
         assert_eq!(task.dtend_or_due.as_deref(), Some("20260915T180000Z"));
 
         let memo = &items[3];
         assert_eq!(memo.kind, IcalComponentKind::Memo);
         assert_eq!(memo.uid, "memo-1@example.com");
-        assert_eq!(memo.summary, "Notizen zur Architektur");
+        assert_eq!(memo.summary, "Architecture Notes");
     }
 
     #[test]

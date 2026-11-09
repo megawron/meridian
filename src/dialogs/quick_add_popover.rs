@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // QuickAddPopover — Compact, lightweight appointment creation popover.
@@ -27,42 +28,42 @@ pub struct QuickAddEventDraft {
 
 pub fn weekday_short_name(date: NaiveDate) -> String {
     match date.weekday() {
-        Weekday::Mon => crate::i18n::gettext("Mon"),
-        Weekday::Tue => crate::i18n::gettext("Tue"),
-        Weekday::Wed => crate::i18n::gettext("Wed"),
-        Weekday::Thu => crate::i18n::gettext("Thu"),
-        Weekday::Fri => crate::i18n::gettext("Fri"),
-        Weekday::Sat => crate::i18n::gettext("Sat"),
-        Weekday::Sun => crate::i18n::gettext("Sun"),
+        Weekday::Mon => gettext("Mon"),
+        Weekday::Tue => gettext("Tue"),
+        Weekday::Wed => gettext("Wed"),
+        Weekday::Thu => gettext("Thu"),
+        Weekday::Fri => gettext("Fri"),
+        Weekday::Sat => gettext("Sat"),
+        Weekday::Sun => gettext("Sun"),
     }
 }
 
 pub fn weekday_long_name(date: NaiveDate) -> String {
     match date.weekday() {
-        Weekday::Mon => crate::i18n::gettext("Monday"),
-        Weekday::Tue => crate::i18n::gettext("Tuesday"),
-        Weekday::Wed => crate::i18n::gettext("Wednesday"),
-        Weekday::Thu => crate::i18n::gettext("Thursday"),
-        Weekday::Fri => crate::i18n::gettext("Friday"),
-        Weekday::Sat => crate::i18n::gettext("Saturday"),
-        Weekday::Sun => crate::i18n::gettext("Sunday"),
+        Weekday::Mon => gettext("Monday"),
+        Weekday::Tue => gettext("Tuesday"),
+        Weekday::Wed => gettext("Wednesday"),
+        Weekday::Thu => gettext("Thursday"),
+        Weekday::Fri => gettext("Friday"),
+        Weekday::Sat => gettext("Saturday"),
+        Weekday::Sun => gettext("Sunday"),
     }
 }
 
 pub fn month_name(month: u32) -> String {
     match month {
-        1 => crate::i18n::gettext("January"),
-        2 => crate::i18n::gettext("February"),
-        3 => crate::i18n::gettext("March"),
-        4 => crate::i18n::gettext("April"),
-        5 => crate::i18n::gettext("May"),
-        6 => crate::i18n::gettext("June"),
-        7 => crate::i18n::gettext("July"),
-        8 => crate::i18n::gettext("August"),
-        9 => crate::i18n::gettext("September"),
-        10 => crate::i18n::gettext("October"),
-        11 => crate::i18n::gettext("November"),
-        12 => crate::i18n::gettext("December"),
+        1 => gettext("January"),
+        2 => gettext("February"),
+        3 => gettext("March"),
+        4 => gettext("April"),
+        5 => gettext("May"),
+        6 => gettext("June"),
+        7 => gettext("July"),
+        8 => gettext("August"),
+        9 => gettext("September"),
+        10 => gettext("October"),
+        11 => gettext("November"),
+        12 => gettext("December"),
         _ => String::new(),
     }
 }
@@ -97,14 +98,14 @@ pub fn format_quick_add_date_time(
             format!(
                 "{} • {}",
                 format_date_human(s_date),
-                crate::i18n::gettext("All day")
+                gettext("All day")
             )
         } else {
             format!(
                 "{} – {} • {}",
                 format_date_short(s_date),
                 format_date_short(e_date),
-                crate::i18n::gettext("All day")
+                gettext("All day")
             )
         }
     } else if s_date == e_date {
@@ -147,7 +148,7 @@ where
     let popover = gtk::Popover::builder()
         .autohide(false)
         .has_arrow(true)
-        .css_classes(vec!["calendar-quick-add-popover"])
+        .css_classes(["calendar-quick-add-popover"])
         .build();
 
     if let Some(ref rect) = pointing_to {
@@ -180,7 +181,7 @@ where
         .margin_top(14)
         .margin_bottom(14)
         .width_request(340)
-        .css_classes(vec!["calendar-quick-add-content"])
+        .css_classes(["calendar-quick-add-content"])
         .build();
 
     // ── Row 1: Title Entry + Close Button ──
@@ -191,16 +192,16 @@ where
         .build();
 
     let title_entry = gtk::Entry::builder()
-        .placeholder_text(&crate::i18n::gettext("Add title"))
+        .placeholder_text(gettext("Add title"))
         .hexpand(true)
-        .css_classes(vec!["quick-add-title-entry"])
+        .css_classes(["quick-add-title-entry"])
         .build();
     top_box.append(&title_entry);
 
     let btn_close = gtk::Button::builder()
         .icon_name("window-close-symbolic")
-        .css_classes(vec!["flat", "circular"])
-        .tooltip_text(&crate::i18n::gettext("Close"))
+        .css_classes(["flat", "circular"])
+        .tooltip_text(gettext("Close"))
         .build();
     let popover_weak_close = popover.downgrade();
     btn_close.connect_clicked(move |_| {
@@ -221,7 +222,7 @@ where
     let time_icon = gtk::Image::builder()
         .icon_name("appointment-soon-symbolic")
         .pixel_size(16)
-        .css_classes(vec!["dim-label"])
+        .css_classes(["dim-label"])
         .build();
     time_box.append(&time_icon);
 
@@ -231,7 +232,7 @@ where
         .xalign(0.0)
         .wrap(true)
         .hexpand(true)
-        .css_classes(vec!["quick-add-time-label"])
+        .css_classes(["quick-add-time-label"])
         .build();
     time_box.append(&time_label);
     main_box.append(&time_box);
@@ -257,7 +258,7 @@ where
         .content_width(12)
         .content_height(12)
         .valign(gtk::Align::Center)
-        .css_classes(vec!["calendar-quick-add-color-dot"])
+        .css_classes(["calendar-quick-add-color-dot"])
         .build();
     dot.set_draw_func(move |_, cr, width, height| {
         let color_str = dot_color_draw.borrow();
@@ -318,8 +319,8 @@ where
         .build();
 
     let btn_edit_details = gtk::Button::builder()
-        .label(&crate::i18n::gettext("Edit details…"))
-        .css_classes(vec!["flat"])
+        .label(gettext("Edit details…"))
+        .css_classes(["flat"])
         .build();
     btn_box.append(&btn_edit_details);
 
@@ -327,8 +328,8 @@ where
     btn_box.append(&spacer);
 
     let btn_save = gtk::Button::builder()
-        .label(&crate::i18n::gettext("Save"))
-        .css_classes(vec!["suggested-action"])
+        .label(gettext("Save"))
+        .css_classes(["suggested-action"])
         .build();
     btn_box.append(&btn_save);
     main_box.append(&btn_box);
@@ -345,7 +346,7 @@ where
         Rc::new(move || {
             let text = title_entry.text().to_string();
             let summary = if text.trim().is_empty() {
-                crate::i18n::gettext("New Event")
+                gettext("New Event")
             } else {
                 text.trim().to_string()
             };

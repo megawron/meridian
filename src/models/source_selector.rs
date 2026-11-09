@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // SourceSelector — Unified multi-selection and primary source model for groupware sidebars.
@@ -683,8 +684,8 @@ use gtk::prelude::*;
 pub fn create_primary_indicator() -> gtk::Image {
     gtk::Image::builder()
         .icon_name("starred-symbolic")
-        .tooltip_text("Standardquelle")
-        .css_classes(vec!["dim-label"])
+        .tooltip_text(gettext("Default source"))
+        .css_classes(["dim-label"])
         .valign(gtk::Align::Center)
         .build()
 }
@@ -713,7 +714,7 @@ where
 
     let btn_exclusive = make_btn(
         "view-eye-symbolic",
-        &crate::i18n::gettext("Show Only This {domain}").replace("{domain}", domain_label),
+        &gettext("Show Only This {domain}").replace("{domain}", domain_label),
     );
     let pop_weak = popover.downgrade();
     btn_exclusive.connect_clicked(move |_| {
@@ -726,7 +727,7 @@ where
 
     let btn_all = make_btn(
         "view-refresh-symbolic",
-        &crate::i18n::gettext("Show All {domain}").replace("{domain}", domain_label),
+        &gettext("Show All {domain}").replace("{domain}", domain_label),
     );
     let pop_weak2 = popover.downgrade();
     btn_all.connect_clicked(move |_| {
@@ -740,7 +741,7 @@ where
     if !is_primary {
         let btn_default = make_btn(
             "object-select-symbolic",
-            &crate::i18n::gettext("Set as Default"),
+            &gettext("Set as Default"),
         );
         let pop_weak3 = popover.downgrade();
         btn_default.connect_clicked(move |_| {
@@ -759,7 +760,7 @@ where
     if let Some(on_properties) = on_properties {
         let btn_props = make_btn(
             "document-properties-symbolic",
-            &crate::i18n::gettext("Properties…"),
+            &gettext("Properties…"),
         );
         let pop_weak4 = popover.downgrade();
         btn_props.connect_clicked(move |_| {
@@ -774,7 +775,7 @@ where
     if let Some(on_manage_groups) = on_manage_groups {
         let btn_groups = make_btn(
             "folder-symbolic",
-            &crate::i18n::gettext("Manage Groups…"),
+            &gettext("Manage Groups…"),
         );
         let pop_weak5 = popover.downgrade();
         btn_groups.connect_clicked(move |_| {
@@ -818,9 +819,9 @@ where
     gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
         .popover(&popover)
-        .css_classes(vec!["flat", "circular"])
+        .css_classes(["flat", "circular"])
         .valign(gtk::Align::Center)
-        .tooltip_text(&crate::i18n::gettext("Options"))
+        .tooltip_text(gettext("Options"))
         .build()
 }
 
@@ -853,14 +854,14 @@ pub(crate) mod tests {
 
     fn sample_sources() -> Vec<SourceSelectorItem> {
         vec![
-            SourceSelectorItem::new("local-cal", "Persönlicher Kalender", "local", true, true),
+            SourceSelectorItem::new("local-cal", "Personal Calendar", "local", true, true),
             SourceSelectorItem::new("work-cal", "Arbeitskalender", "caldav", true, true)
                 .with_color("#3465a4")
                 .with_group("Arbeit"),
             SourceSelectorItem::new("holiday-cal", "Feiertage", "webcal", true, false)
                 .with_color("#4e9a06")
-                .with_group("Abonnements"),
-            SourceSelectorItem::new("archived-cal", "Archiv", "local", false, false),
+                .with_group("Subscriptions"),
+            SourceSelectorItem::new("archived-cal", "Archive", "local", false, false),
         ]
     }
 
@@ -957,8 +958,8 @@ pub(crate) mod tests {
 
         // External update: work-cal is removed, team-cal added
         let updated = vec![
-            SourceSelectorItem::new("local-cal", "Persönlicher Kalender", "local", true, true),
-            SourceSelectorItem::new("team-cal", "Team Kalender", "caldav", true, true),
+            SourceSelectorItem::new("local-cal", "Personal Calendar", "local", true, true),
+            SourceSelectorItem::new("team-cal", "Team Calendar", "caldav", true, true),
         ];
         selector.update_sources(updated);
 
@@ -978,14 +979,14 @@ pub(crate) mod tests {
         assert!(crate::services::eds_service::is_local_group(&groups[0].name));
         let local_group = groups[0].name.clone();
         assert_eq!(groups[1].name, "Arbeit");
-        assert_eq!(groups[2].name, "Abonnements");
+        assert_eq!(groups[2].name, "Subscriptions");
 
         // Move "Arbeit" (index 1) up
         assert!(selector.move_group_up(1));
         let groups_after_up = selector.ordered_groups();
         assert_eq!(groups_after_up[0].name, "Arbeit");
         assert_eq!(groups_after_up[1].name, local_group);
-        assert_eq!(groups_after_up[2].name, "Abonnements");
+        assert_eq!(groups_after_up[2].name, "Subscriptions");
 
         // Cannot move index 0 up
         assert!(!selector.move_group_up(0));
@@ -1058,13 +1059,13 @@ pub(crate) mod tests {
 
         assert!(selector.update_source_metadata(
             "work-cal",
-            "Hauptberuflicher Kalender",
+            "Primary Work Calendar",
             Some("#cc0000"),
             true, // set as default
         ));
 
         let updated = selector.source_by_uid("work-cal").unwrap();
-        assert_eq!(updated.display_name, "Hauptberuflicher Kalender");
+        assert_eq!(updated.display_name, "Primary Work Calendar");
         assert_eq!(updated.color, Some("#cc0000".to_string()));
         assert_eq!(selector.primary_uid(), Some("work-cal"));
         assert!(selector.is_selected("work-cal"));
@@ -1079,7 +1080,7 @@ pub(crate) mod tests {
         ];
         selector.update_sources(fresh_discovery);
         let preserved = selector.source_by_uid("work-cal").unwrap();
-        assert_eq!(preserved.display_name, "Hauptberuflicher Kalender");
+        assert_eq!(preserved.display_name, "Primary Work Calendar");
         assert_eq!(preserved.color, Some("#cc0000".to_string()));
     }
 
@@ -1092,14 +1093,14 @@ pub(crate) mod tests {
 
             assert!(crate::services::eds_service::is_local_group(&selector.ordered_groups()[0].name));
             let local_group = selector.ordered_groups()[0].name.clone();
-            // Select only local-cal, set it as primary, reorder groups, hide "Abonnements"
+            // Select only local-cal, set it as primary, reorder groups, hide "Subscriptions"
             selector.select_exclusive("local-cal");
             selector.set_primary("local-cal");
-            selector.set_group_hidden("Abonnements", true);
+            selector.set_group_hidden("Subscriptions", true);
             selector.set_groups_order(&[
                 "Arbeit".to_string(),
                 local_group.clone(),
-                "Abonnements".to_string(),
+                "Subscriptions".to_string(),
             ]);
             selector.save_to_settings(&settings);
 
@@ -1110,18 +1111,18 @@ pub(crate) mod tests {
             assert!(fresh.is_selected("local-cal"));
             assert!(!fresh.is_selected("work-cal"));
             assert_eq!(fresh.primary_uid(), Some("local-cal"));
-            assert!(fresh.is_group_hidden("Abonnements"));
+            assert!(fresh.is_group_hidden("Subscriptions"));
             assert_eq!(
                 fresh.groups_order(),
                 &[
                     "Arbeit".to_string(),
                     local_group,
-                    "Abonnements".to_string()
+                    "Subscriptions".to_string()
                 ]
             );
 
             // Reset back
-            fresh.set_group_hidden("Abonnements", false);
+            fresh.set_group_hidden("Subscriptions", false);
             fresh.select_all();
             fresh.set_groups_order(&[]);
             fresh.save_to_settings(&settings);

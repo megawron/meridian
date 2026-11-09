@@ -235,7 +235,7 @@ impl MemoActionState {
             can_cut: all_selected_sources_writable,
             can_delete: all_selected_sources_writable,
             // The caller may have rows that are not selected; selection
-            // count alone cannot decide whether "Alle auswählen" is useful.
+            // count alone cannot decide whether "Select All" is useful.
             can_select_all: true,
         }
     }

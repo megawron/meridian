@@ -97,7 +97,7 @@ glib::wrapper! {
 impl FolderPropertiesDialog {
     pub fn new(snapshot: FolderPropertiesSnapshot) -> Self {
         glib::Object::builder()
-            .property("title", "Folder Properties")
+            .property("title", gettext("Folder Properties"))
             .property("content-width", 540)
             .property("content-height", 560)
             .property("folder-name", snapshot.folder_name)
@@ -111,13 +111,13 @@ impl FolderPropertiesDialog {
 
     fn build_ui(&self) {
         let toolbar = adw::ToolbarView::new();
-        toolbar.set_tooltip_text(Some(
+        toolbar.set_tooltip_text(Some(&gettext(
             "Read-only snapshot: storage quota and advanced mail provider settings are managed by the server.",
-        ));
+        )));
         let type_subtitle = if *self.imp().is_remote.borrow() {
-            "Synchronized account folder"
+            gettext("Synchronized account folder")
         } else {
-            "Local app-owned folder"
+            gettext("Local app-owned folder")
         };
 
         let view_stack = adw::ViewStack::new();
@@ -130,7 +130,7 @@ impl FolderPropertiesDialog {
         header.set_title_widget(Some(&view_switcher));
 
         let close_btn = gtk::Button::builder()
-            .label(&gettext("Close"))
+            .label(gettext("Close"))
             .build();
         let dialog_weak_close = self.downgrade();
         close_btn.connect_clicked(move |_| {
@@ -152,12 +152,12 @@ impl FolderPropertiesDialog {
         let page_general = adw::PreferencesPage::new();
 
         let details_group = adw::PreferencesGroup::builder()
-            .title(&gettext("Folder Details"))
-            .description(type_subtitle)
+            .title(gettext("Folder Details"))
+            .description(&type_subtitle)
             .build();
 
         let row_folder = adw::ActionRow::builder()
-            .title(&gettext("Folder Name"))
+            .title(gettext("Folder Name"))
             .subtitle(&folder_name)
             .build();
         let icon_folder = gtk::Image::builder()
@@ -168,7 +168,7 @@ impl FolderPropertiesDialog {
         details_group.add(&row_folder);
 
         let row_account = adw::ActionRow::builder()
-            .title(&gettext("Account"))
+            .title(gettext("Account"))
             .subtitle(&account_name)
             .build();
         let icon_account = gtk::Image::builder()
@@ -179,7 +179,7 @@ impl FolderPropertiesDialog {
         details_group.add(&row_account);
 
         let row_path = adw::ActionRow::builder()
-            .title(&gettext("Path"))
+            .title(gettext("Path"))
             .subtitle(&folder_path)
             .build();
         let icon_path = gtk::Image::builder()
@@ -191,8 +191,8 @@ impl FolderPropertiesDialog {
         let copy_button = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
             .valign(gtk::Align::Center)
-            .tooltip_text(&gettext("Copy folder path"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Copy folder path"))
+            .css_classes(["flat", "circular"])
             .build();
         let path_text = folder_path.clone();
         let dialog_weak = self.downgrade();
@@ -208,7 +208,7 @@ impl FolderPropertiesDialog {
         details_group.add(&row_path);
 
         let row_unread = adw::ActionRow::builder()
-            .title(&gettext("Unread Messages"))
+            .title(gettext("Unread Messages"))
             .subtitle(&unread_count.to_string())
             .build();
         let icon_unread = gtk::Image::builder()
@@ -219,7 +219,7 @@ impl FolderPropertiesDialog {
         details_group.add(&row_unread);
 
         let row_total = adw::ActionRow::builder()
-            .title(&gettext("Total Messages"))
+            .title(gettext("Total Messages"))
             .subtitle(&total_count.to_string())
             .build();
         let icon_total = gtk::Image::builder()
@@ -232,12 +232,12 @@ impl FolderPropertiesDialog {
         page_general.add(&details_group);
 
         let sync_group = adw::PreferencesGroup::builder()
-            .title(&gettext("Synchronization and Offline"))
+            .title(gettext("Synchronization and Offline"))
             .build();
 
         let row_offline = adw::SwitchRow::builder()
-            .title("Copy folder contents locally for offline operation")
-            .subtitle(&gettext("Cache messages on this device for offline reading"))
+            .title(gettext("Copy folder contents locally for offline operation"))
+            .subtitle(gettext("Cache messages on this device for offline reading"))
             .active(is_remote)
             .build();
         let icon_offline = gtk::Image::builder()
@@ -248,8 +248,8 @@ impl FolderPropertiesDialog {
         sync_group.add(&row_offline);
 
         let row_check = adw::SwitchRow::builder()
-            .title("Always check for new mail in this folder")
-            .subtitle(&gettext("Include this folder when synchronizing mailbox"))
+            .title(gettext("Always check for new mail in this folder"))
+            .subtitle(gettext("Include this folder when synchronizing mailbox"))
             .active(true)
             .build();
         let icon_check = gtk::Image::builder()
@@ -260,8 +260,8 @@ impl FolderPropertiesDialog {
         sync_group.add(&row_check);
 
         let row_filter = adw::SwitchRow::builder()
-            .title("Apply message filters to this folder")
-            .subtitle(&gettext("Process incoming filter rules automatically"))
+            .title(gettext("Apply message filters to this folder"))
+            .subtitle(gettext("Process incoming filter rules automatically"))
             .active(false)
             .build();
         let icon_filter = gtk::Image::builder()
@@ -274,12 +274,12 @@ impl FolderPropertiesDialog {
         page_general.add(&sync_group);
 
         let reading_group = adw::PreferencesGroup::builder()
-            .title(&gettext("Reading and Delivery"))
+            .title(gettext("Reading and Delivery"))
             .build();
 
         let row_read = adw::ActionRow::builder()
-            .title(&gettext("Mark messages as read after"))
-            .subtitle(&gettext("Timeout before viewed messages are marked read"))
+            .title(gettext("Mark messages as read after"))
+            .subtitle(gettext("Timeout before viewed messages are marked read"))
             .build();
         let icon_read = gtk::Image::builder()
             .icon_name("preferences-system-time-symbolic")
@@ -293,9 +293,9 @@ impl FolderPropertiesDialog {
             .valign(gtk::Align::Center)
             .build();
         let lbl_sec = gtk::Label::builder()
-            .label(&gettext("Seconds"))
+            .label(gettext("Seconds"))
             .valign(gtk::Align::Center)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         let read_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -313,8 +313,8 @@ impl FolderPropertiesDialog {
         ];
         let accounts_str_slices: Vec<&str> = accounts_list.iter().map(|s| s.as_str()).collect();
         let row_override = adw::ComboRow::builder()
-            .title(&gettext("Send Account Override"))
-            .subtitle(&gettext("Default sending identity for messages from this folder"))
+            .title(gettext("Send Account Override"))
+            .subtitle(gettext("Default sending identity for messages from this folder"))
             .model(&gtk::StringList::new(&accounts_str_slices))
             .build();
         let icon_override = gtk::Image::builder()
@@ -326,17 +326,17 @@ impl FolderPropertiesDialog {
 
         page_general.add(&reading_group);
 
-        view_stack.add_titled_with_icon(&page_general, Some("general"), "General", "folder-symbolic");
+        view_stack.add_titled_with_icon(&page_general, Some("general"), &gettext("General"), "folder-symbolic");
 
         // ── Page 2: Appearance ──────────────────────────────────────────
         let page_appearance = adw::PreferencesPage::new();
         let appearance_group = adw::PreferencesGroup::builder()
-            .title(&gettext("Appearance"))
+            .title(gettext("Appearance"))
             .build();
 
         let row_color = adw::SwitchRow::builder()
-            .title(&gettext("Use custom folder color"))
-            .subtitle(&gettext("Display folder with a custom highlight color"))
+            .title(gettext("Use custom folder color"))
+            .subtitle(gettext("Display folder with a custom highlight color"))
             .build();
         let icon_color = gtk::Image::builder()
             .icon_name("applications-graphics-symbolic")
@@ -346,8 +346,8 @@ impl FolderPropertiesDialog {
         appearance_group.add(&row_color);
 
         let row_icon = adw::SwitchRow::builder()
-            .title(&gettext("Show custom folder icon"))
-            .subtitle(&gettext("Display a customized icon in the sidebar"))
+            .title(gettext("Show custom folder icon"))
+            .subtitle(gettext("Display a customized icon in the sidebar"))
             .build();
         let icon_folder_custom = gtk::Image::builder()
             .icon_name("starred-symbolic")
@@ -357,17 +357,17 @@ impl FolderPropertiesDialog {
         appearance_group.add(&row_icon);
 
         page_appearance.add(&appearance_group);
-        view_stack.add_titled_with_icon(&page_appearance, Some("appearance"), "Appearance", "preferences-desktop-appearance-symbolic");
+        view_stack.add_titled_with_icon(&page_appearance, Some("appearance"), &gettext("Appearance"), "preferences-desktop-appearance-symbolic");
 
         // ── Page 3: Archiving ───────────────────────────────────────────
         let page_archive = adw::PreferencesPage::new();
         let archive_group = adw::PreferencesGroup::builder()
-            .title(&gettext("Archiving"))
+            .title(gettext("Archiving"))
             .build();
 
         let row_archive = adw::SwitchRow::builder()
-            .title(&gettext("Automatically archive old messages in this folder"))
-            .subtitle(&gettext("Move expired messages to archive storage"))
+            .title(gettext("Automatically archive old messages in this folder"))
+            .subtitle(gettext("Move expired messages to archive storage"))
             .build();
         let icon_archive = gtk::Image::builder()
             .icon_name("package-x-generic-symbolic")
@@ -377,13 +377,13 @@ impl FolderPropertiesDialog {
         archive_group.add(&row_archive);
 
         page_archive.add(&archive_group);
-        view_stack.add_titled_with_icon(&page_archive, Some("archive"), "Archiving", "package-x-generic-symbolic");
+        view_stack.add_titled_with_icon(&page_archive, Some("archive"), &gettext("Archiving"), "package-x-generic-symbolic");
 
         // ── Page 4: Labels ──────────────────────────────────────────────
         let page_labels = adw::PreferencesPage::new();
         let labels_group = adw::PreferencesGroup::builder()
-            .title(&gettext("Labels"))
-            .description(&gettext("Available tags and flags for organizing messages in this folder:"))
+            .title(gettext("Labels"))
+            .description(gettext("Available tags and flags for organizing messages in this folder:"))
             .build();
 
         let available_labels = crate::services::AppSettings::try_new()
@@ -416,7 +416,7 @@ impl FolderPropertiesDialog {
         }
 
         page_labels.add(&labels_group);
-        view_stack.add_titled_with_icon(&page_labels, Some("labels"), "Labels", "tag-symbolic");
+        view_stack.add_titled_with_icon(&page_labels, Some("labels"), &gettext("Labels"), "tag-symbolic");
 
         toolbar.set_content(Some(&view_stack));
         self.set_child(Some(&toolbar));

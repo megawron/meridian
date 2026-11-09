@@ -299,8 +299,8 @@ fn append_condition_editor(
     });
     let remove = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
-        .tooltip_text(&gettext("Remove condition"))
-        .css_classes(vec!["flat", "error"])
+        .tooltip_text(gettext("Remove condition"))
+        .css_classes(["flat", "error"])
         .valign(gtk::Align::Center)
         .build();
     let row = gtk::Box::builder()
@@ -383,7 +383,7 @@ fn append_action_editor(
     action_type.set_selected(filter_action_index(&action));
     action_type.set_width_request(240);
     let target = gtk::Entry::builder()
-        .placeholder_text(&gettext("Destination folder, label, or parameter"))
+        .placeholder_text(gettext("Destination folder, label, or parameter"))
         .hexpand(true)
         .build();
     if let Some(target_val) = action.target_value() {
@@ -392,8 +392,8 @@ fn append_action_editor(
     target.set_sensitive(action.target_value().is_some());
     let remove = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
-        .tooltip_text(&gettext("Remove action"))
-        .css_classes(vec!["flat", "error"])
+        .tooltip_text(gettext("Remove action"))
+        .css_classes(["flat", "error"])
         .valign(gtk::Align::Center)
         .build();
     let row = gtk::Box::builder()
@@ -500,7 +500,7 @@ impl FilterEditorDialog {
             .show_end_title_buttons(false)
             .build();
         let btn_cancel = gtk::Button::builder()
-            .label(&gettext("Cancel"))
+            .label(gettext("Cancel"))
             .build();
         let dialog_for_cancel = self.downgrade();
         btn_cancel.connect_clicked(move |_| {
@@ -511,8 +511,8 @@ impl FilterEditorDialog {
         header_bar.pack_start(&btn_cancel);
 
         let btn_save = gtk::Button::builder()
-            .label(&gettext("Save"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         header_bar.pack_end(&btn_save);
         toolbar_view.add_top_bar(&header_bar);
@@ -533,11 +533,11 @@ impl FilterEditorDialog {
 
         // Rule Name
         let group_general = adw::PreferencesGroup::builder()
-            .title(&gettext("Rule Name & Scope"))
+            .title(gettext("Rule Name & Scope"))
             .build();
 
         let row_rulename = adw::EntryRow::builder()
-            .title(&gettext("Rule Name"))
+            .title(gettext("Rule Name"))
             .build();
         group_general.add(&row_rulename);
 
@@ -548,7 +548,7 @@ impl FilterEditorDialog {
         ];
         let scope_slices: Vec<&str> = scope_options.iter().map(|s| s.as_str()).collect();
         let row_scope = adw::ComboRow::builder()
-            .title(&gettext("Apply When"))
+            .title(gettext("Apply When"))
             .model(&gtk::StringList::new(&scope_slices))
             .build();
         if let Some(rule) = edit_rule.as_ref() {
@@ -573,15 +573,15 @@ impl FilterEditorDialog {
             .spacing(8)
             .build();
         let condition_title = gtk::Label::builder()
-            .label(&gettext("Conditions (If…)"))
+            .label(gettext("Conditions (If…)"))
             .halign(gtk::Align::Start)
             .hexpand(true)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .build();
         let add_condition = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Add condition"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Add condition"))
+            .css_classes(["flat", "circular"])
             .build();
         condition_header.append(&condition_title);
         condition_header.append(&add_condition);
@@ -646,7 +646,7 @@ impl FilterEditorDialog {
         let match_mode_slices: Vec<&str> = match_mode_options.iter().map(|s| s.as_str()).collect();
         let group_cond = adw::PreferencesGroup::new();
         let row_match_mode = adw::ComboRow::builder()
-            .title(&gettext("Condition Logic"))
+            .title(gettext("Condition Logic"))
             .model(&gtk::StringList::new(&match_mode_slices))
             .build();
         row_match_mode.add_prefix(&gtk::Image::from_icon_name("edit-select-all-symbolic"));
@@ -670,15 +670,15 @@ impl FilterEditorDialog {
             .spacing(8)
             .build();
         let action_title = gtk::Label::builder()
-            .label(&gettext("Actions (Then…)"))
+            .label(gettext("Actions (Then…)"))
             .halign(gtk::Align::Start)
             .hexpand(true)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .build();
         let add_action = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Add action"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Add action"))
+            .css_classes(["flat", "circular"])
             .build();
         action_header.append(&action_title);
         action_header.append(&add_action);

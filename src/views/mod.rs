@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Views module — contains all major page views of the application.
@@ -6,7 +7,7 @@ pub(crate) mod accessibility;
 pub(crate) mod calendar_page;
 pub(crate) mod contacts_page;
 pub(crate) mod context_menu;
-mod html_editor;
+pub(crate) mod html_editor;
 pub mod itip_banner;
 mod mail_page;
 mod mail_viewer;
@@ -74,7 +75,7 @@ pub fn build_sidebar_module_switcher(
         .margin_bottom(0)
         .valign(gtk::Align::End)
         .vexpand(false)
-        .css_classes(vec!["meridian-module-switcher"])
+        .css_classes(["meridian-module-switcher"])
         .build();
 
     let grid = gtk::Grid::builder()
@@ -85,10 +86,10 @@ pub fn build_sidebar_module_switcher(
         .build();
 
     let modules: [(&str, String); 4] = [
-        ("mail", crate::i18n::gettext("Mail")),
-        ("contacts", crate::i18n::gettext("Contacts")),
-        ("calendar", crate::i18n::gettext("Calendar")),
-        ("tasks", crate::i18n::gettext("Tasks")),
+        ("mail", gettext("Mail")),
+        ("contacts", gettext("Contacts")),
+        ("calendar", gettext("Calendar")),
+        ("tasks", gettext("Tasks")),
     ];
 
     let mut buttons_vec = Vec::new();

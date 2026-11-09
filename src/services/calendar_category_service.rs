@@ -457,24 +457,24 @@ mod tests {
         let store = CalendarCategoryStore::new(root.join("categories.json"));
         let category = CalendarCategory {
             id: "category-custom".to_string(),
-            name: "Projekt".to_string(),
+            name: "Project".to_string(),
             color: "#123abc".to_string(),
         };
         store
             .upsert(category.clone())
             .expect("category should save");
-        assert_eq!(store.color_for("PROJEKT").as_deref(), Some("#123ABC"));
+        assert_eq!(store.color_for("PROJECT").as_deref(), Some("#123ABC"));
         assert_eq!(
-            CalendarCategoryStore::new(store.path()).color_for("Projekt"),
+            CalendarCategoryStore::new(store.path()).color_for("Project"),
             Some("#123ABC".to_string())
         );
         assert!(store.delete(&category.id).expect("category should delete"));
-        assert!(store.color_for("Projekt").is_none());
+        assert!(store.color_for("Project").is_none());
         assert!(
             store
                 .upsert(CalendarCategory {
                     id: "invalid".to_string(),
-                    name: "Ungültig".to_string(),
+                    name: "Invalid".to_string(),
                     color: "red".to_string(),
                 })
                 .is_err()
@@ -486,9 +486,9 @@ mod tests {
     fn ensure_names_adds_only_new_categories() {
         let root = temporary_directory("category-ensure");
         let store = CalendarCategoryStore::new(root.join("categories.json"));
-        assert_eq!(store.ensure_names(["Work", "Kunde", "Kunde"]).unwrap(), 1);
-        assert_eq!(store.ensure_names(["Kunde"]).unwrap(), 0);
-        assert!(store.color_for("Kunde").is_some());
+        assert_eq!(store.ensure_names(["Work", "Client", "Client"]).unwrap(), 1);
+        assert_eq!(store.ensure_names(["Client"]).unwrap(), 0);
+        assert!(store.color_for("Client").is_some());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -496,16 +496,16 @@ mod tests {
     fn component_category_parser_preserves_escaped_commas() {
         let component = concat!(
             "BEGIN:VEVENT\r\n",
-            "CATEGORIES:Arbeit,Privat\\, Familie\r\n",
-            "CATEGORIES:Reise\r\n",
+            "CATEGORIES:Work,Personal\\, Family\r\n",
+            "CATEGORIES:Travel\r\n",
             "END:VEVENT\r\n"
         );
         assert_eq!(
             category_names_from_ical_component(component),
             vec![
-                "Arbeit".to_string(),
-                "Privat, Familie".to_string(),
-                "Reise".to_string()
+                "Work".to_string(),
+                "Personal, Family".to_string(),
+                "Travel".to_string()
             ]
         );
     }

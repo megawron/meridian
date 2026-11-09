@@ -36,14 +36,14 @@ impl FolderSortOrderDialog {
         F: Fn(FolderSortOrderOutcome) + 'static,
     {
         let dialog = adw::Dialog::builder()
-            .title(&gettext("Folder Sort Order"))
+            .title(gettext("Folder Sort Order"))
             .content_width(460)
             .content_height(420)
             .build();
         let order = Rc::new(RefCell::new(items));
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(["boxed-list"])
             .build();
         let selected = Rc::new(RefCell::new(None::<usize>));
         let refresh = Rc::new(RefCell::new(None::<Box<dyn Fn()>>));
@@ -51,7 +51,7 @@ impl FolderSortOrderDialog {
 
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
-        let save = gtk::Button::builder().label(&gettext("Save")).build();
+        let save = gtk::Button::builder().label(gettext("Save")).build();
         header.pack_end(&save);
         toolbar.add_top_bar(&header);
 
@@ -68,15 +68,15 @@ impl FolderSortOrderDialog {
                 .label(title)
                 .xalign(0.0)
                 .wrap(true)
-                .css_classes(vec!["title-4"])
+                .css_classes(["title-4"])
                 .build(),
         );
         content.append(
             &gtk::Label::builder()
-                .label(&gettext("This order only applies to this folder level. Folders are not moved on the server."))
+                .label(gettext("This order only applies to this folder level. Folders are not moved on the server."))
                 .xalign(0.0)
                 .wrap(true)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build(),
         );
         let scrolled = gtk::ScrolledWindow::builder()
@@ -93,11 +93,11 @@ impl FolderSortOrderDialog {
             .build();
         let up = gtk::Button::builder()
             .icon_name("go-up-symbolic")
-            .tooltip_text(&gettext("Move Up"))
+            .tooltip_text(gettext("Move Up"))
             .build();
         let down = gtk::Button::builder()
             .icon_name("go-down-symbolic")
-            .tooltip_text(&gettext("Move Down"))
+            .tooltip_text(gettext("Move Down"))
             .build();
         let reset_current = gtk::Button::with_label(&gettext("Reset This Level"));
         let reset_all = gtk::Button::with_label(&gettext("Reset All Levels"));

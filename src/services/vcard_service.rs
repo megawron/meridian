@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // vcard_service — Service utility for parsing and serializing vCard 4.0 (RFC 6350) contacts.
@@ -236,9 +237,9 @@ impl VCardListMember {
             display_name.to_string()
         } else if !show_address && !email.is_empty() {
             match self.kind {
-                VCardListMemberKind::ExternalAddress => "Externe Adresse".to_string(),
-                VCardListMemberKind::LocalContact => "Lokaler Kontakt".to_string(),
-                VCardListMemberKind::StandardMember => "Listenmitglied".to_string(),
+                VCardListMemberKind::ExternalAddress => gettext("External Address"),
+                VCardListMemberKind::LocalContact => gettext("Local Contact"),
+                VCardListMemberKind::StandardMember => gettext("List Member"),
                 _ => email.to_string(),
             }
         } else if !email.is_empty() {
@@ -246,7 +247,7 @@ impl VCardListMember {
         } else if !self.value.trim().is_empty() {
             self.value.trim().to_string()
         } else {
-            "Unbekanntes Mitglied".to_string()
+            gettext("Unknown Member")
         };
         if self.is_valid() {
             text
@@ -2406,7 +2407,7 @@ mod tests {
     #[test]
     fn eds_list_parser_distinguishes_invalid_external_and_local_destinations() {
         let vcard = concat!(
-            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ungültige Liste\r\n",
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Invalid List\r\n",
             "X-EVOLUTION-LIST:TRUE\r\n",
             "EMAIL:broken-address\r\n",
             "EMAIL;X-EVOLUTION-DEST-CONTACT-UID=local-1:broken-local\r\n",

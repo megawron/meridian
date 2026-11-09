@@ -141,15 +141,15 @@ mod tests {
         let store = SnippetStore::new(root.join("snippets.json"));
         let later = MailSnippet {
             id: "snippet-2".to_string(),
-            name: "Zahlungsbeleg".to_string(),
-            trigger: "/beleg".to_string(),
-            body_html: "<p>Bitte senden Sie den Beleg.</p>".to_string(),
+            name: "Receipt".to_string(),
+            trigger: "/receipt".to_string(),
+            body_html: "<p>Please send the receipt.</p>".to_string(),
         };
         let earlier = MailSnippet {
             id: "snippet-1".to_string(),
-            name: "Begrüßung".to_string(),
-            trigger: "/hallo".to_string(),
-            body_html: "<p>Guten Tag,</p>".to_string(),
+            name: "Greeting".to_string(),
+            trigger: "/hello".to_string(),
+            body_html: "<p>Hello,</p>".to_string(),
         };
         store.upsert(later).expect("snippet should save");
         store.upsert(earlier.clone()).expect("snippet should save");

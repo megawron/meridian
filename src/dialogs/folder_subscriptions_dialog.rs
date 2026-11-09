@@ -63,13 +63,13 @@ impl FolderSubscriptionsDialog {
         let header = adw::HeaderBar::new();
         let refresh = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text(&gettext("Reload subscription list"))
+            .tooltip_text(gettext("Reload subscription list"))
             .build();
         let cancel = gtk::Button::builder()
-            .label(&gettext("Cancel"))
+            .label(gettext("Cancel"))
             .sensitive(false)
             .build();
-        let close = gtk::Button::builder().label(&gettext("Close")).build();
+        let close = gtk::Button::builder().label(gettext("Close")).build();
         header.pack_start(&refresh);
         header.pack_start(&cancel);
         header.pack_end(&close);
@@ -85,14 +85,14 @@ impl FolderSubscriptionsDialog {
             .build();
         content.append(
             &gtk::Label::builder()
-                .label(&gettext("The folder list and subscription status are loaded directly from the mail provider."))
+                .label(gettext("The folder list and subscription status are loaded directly from the mail provider."))
                 .xalign(0.0)
                 .wrap(true)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build(),
         );
         let search = gtk::SearchEntry::builder()
-            .placeholder_text(&gettext("Filter folders…"))
+            .placeholder_text(gettext("Filter folders…"))
             .build();
         content.append(&search);
         let status = gtk::Label::builder()
@@ -103,7 +103,7 @@ impl FolderSubscriptionsDialog {
         content.append(&status);
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(["boxed-list"])
             .vexpand(true)
             .build();
         content.append(
@@ -239,7 +239,7 @@ fn rebuild_list(state: &Rc<RefCell<SubscriptionDialogState>>) {
         None if busy => {
             list.append(
                 &adw::ActionRow::builder()
-                    .title(&gettext("Loading subscription list…"))
+                    .title(gettext("Loading subscription list…"))
                     .build(),
             );
             return;
@@ -247,8 +247,8 @@ fn rebuild_list(state: &Rc<RefCell<SubscriptionDialogState>>) {
         Some(false) => {
             list.append(
                 &adw::ActionRow::builder()
-                    .title(&gettext("This account does not support folder subscriptions"))
-                    .subtitle(&gettext("The mail provider does not report subscription support."))
+                    .title(gettext("This account does not support folder subscriptions"))
+                    .subtitle(gettext("The mail provider does not report subscription support."))
                     .build(),
             );
             return;
@@ -307,7 +307,7 @@ fn rebuild_list(state: &Rc<RefCell<SubscriptionDialogState>>) {
                 .active(folder.is_subscribed)
                 .sensitive(!busy)
                 .valign(gtk::Align::Center)
-                .tooltip_text(&gettext("Change subscription with provider"))
+                .tooltip_text(gettext("Change subscription with provider"))
                 .build();
             let state_for_toggle = Rc::clone(state);
             let folder_name = folder.folder_name.clone();
@@ -505,7 +505,7 @@ fn finish_set_subscription(
             set_status(
                 state,
                 Some(&format!(
-                    "„{folder_name}“: {}",
+                    "“{folder_name}”: {}",
                     gettext("confirmed by provider; refreshing list…")
                 )),
                 false,
@@ -517,7 +517,7 @@ fn finish_set_subscription(
         }
         Err(error) => finish_worker_error(
             state,
-            &format!("{}: {error}", format!("{} „{folder_name}“", gettext("Subscription not changed for"))),
+            &format!("{}: {error}", format!("{} “{folder_name}”", gettext("Subscription not changed for"))),
         ),
     }
 }

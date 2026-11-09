@@ -660,7 +660,7 @@ fn r6_test_certificate_store_json_persistence_roundtrip() {
 
 #[test]
 fn r6_test_preferences_dialog_certificate_manager_integration() {
-    // Preferences dialog "Zertifikate" page contract:
+    // Preferences dialog "Certificates" page contract:
     // Exposes action/button to trigger CertificateManagerDialog
     let gsettings = create_test_settings();
     assert!(gsettings.settings_schema().unwrap().has_key("smime-signer-certificate"));

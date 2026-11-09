@@ -3,9 +3,9 @@
 // SearchFolderObject — GObject model representing Virtual Search Folders (vFolders).
 //
 // Allows combining emails across multiple accounts based on dynamic search criteria:
-// - "Ungelesen (Alle Konten)"
-// - "Wichtig & Markiert"
-// - "Letzte 7 Tage"
+// - "Unread (All Accounts)"
+// - "Important & Flagged"
+// - "Last 7 Days"
 
 use glib::Object;
 use gtk::glib;

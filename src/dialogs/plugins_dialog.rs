@@ -24,7 +24,7 @@ impl PluginsDialog {
         let app_settings = settings.or_else(AppSettings::try_new);
 
         let dialog = adw::Dialog::builder()
-            .title(&gettext("Standard Plugins"))
+            .title(gettext("Standard Plugins"))
             .content_width(620)
             .content_height(560)
             .build();
@@ -44,7 +44,7 @@ impl PluginsDialog {
             .build();
 
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text(&gettext("Filter plugins…"))
+            .placeholder_text(gettext("Filter plugins…"))
             .hexpand(true)
             .build();
         search_clamp.set_child(Some(&search_entry));
@@ -102,7 +102,7 @@ impl PluginsDialog {
                         .icon_name("emblem-system-symbolic")
                         .tooltip_text(&format!("{} {}…", gettext("Configure"), plugin.name))
                         .valign(gtk::Align::Center)
-                        .css_classes(vec!["flat"])
+                        .css_classes(["flat"])
                         .build();
 
                     let dlg_config = dialog.downgrade();
@@ -191,15 +191,15 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
         "org.gnome.evolution.plugin.attachment-reminder" => {
             dialog.set_title(&gettext("Configure Attachment Reminder"));
             let group = adw::PreferencesGroup::builder()
-                .title(&gettext("Reminder Keywords"))
-                .description(&gettext(
+                .title(gettext("Reminder Keywords"))
+                .description(gettext(
                     "Warn before sending if any of these phrases appear in the message body but no attachment is present.",
                 ))
                 .build();
 
             let row_enabled = adw::SwitchRow::builder()
-                .title(&gettext("Reminder Enabled"))
-                .subtitle(&gettext("Check for missing attachments when sending"))
+                .title(gettext("Reminder Enabled"))
+                .subtitle(gettext("Check for missing attachments when sending"))
                 .build();
             row_enabled.add_prefix(&gtk::Image::from_icon_name("mail-attachment-symbolic"));
 
@@ -213,7 +213,7 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
             group.add(&row_enabled);
 
             let row_keywords = adw::EntryRow::builder()
-                .title(&gettext("Keywords (comma-separated)"))
+                .title(gettext("Keywords (comma-separated)"))
                 .text(
                     &settings
                         .as_ref()
@@ -242,36 +242,36 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
         "org.gnome.evolution.plugin.mail-notification" => {
             dialog.set_title(&gettext("Configure Email Notifications"));
             let group = adw::PreferencesGroup::builder()
-                .title(&gettext("Notification Behavior"))
-                .description(&gettext("Configure notifications and alert sounds like Evolution"))
+                .title(gettext("Notification Behavior"))
+                .description(gettext("Configure notifications and alert sounds like Evolution"))
                 .build();
 
             let row_unread = adw::SwitchRow::builder()
-                .title(&gettext("Desktop Notification"))
-                .subtitle(&gettext("Show notification popup when new unread messages arrive"))
+                .title(gettext("Desktop Notification"))
+                .subtitle(gettext("Show notification popup when new unread messages arrive"))
                 .build();
             row_unread.add_prefix(&gtk::Image::from_icon_name("preferences-system-notifications-symbolic"));
 
             let row_inbox_only = adw::SwitchRow::builder()
-                .title(&gettext("Notify for Inbox only"))
-                .subtitle(&gettext("Ignore messages received in other folders"))
+                .title(gettext("Notify for Inbox only"))
+                .subtitle(gettext("Ignore messages received in other folders"))
                 .build();
             row_inbox_only.add_prefix(&gtk::Image::from_icon_name("mail-read-symbolic"));
 
             let row_sound = adw::SwitchRow::builder()
-                .title(&gettext("Play Sound"))
-                .subtitle(&gettext("Play an audio alert when new mail arrives (30-second throttle)"))
+                .title(gettext("Play Sound"))
+                .subtitle(gettext("Play an audio alert when new mail arrives (30-second throttle)"))
                 .build();
             row_sound.add_prefix(&gtk::Image::from_icon_name("audio-volume-high-symbolic"));
 
             let row_sound_beep = adw::SwitchRow::builder()
-                .title(&gettext("Use System Beep"))
-                .subtitle(&gettext("Play the system alert tone instead of a sound file or sound theme"))
+                .title(gettext("Use System Beep"))
+                .subtitle(gettext("Play the system alert tone instead of a sound file or sound theme"))
                 .build();
             row_sound_beep.add_prefix(&gtk::Image::from_icon_name("alarm-symbolic"));
 
             let row_sound_file = adw::EntryRow::builder()
-                .title(&gettext("Sound file (optional)"))
+                .title(gettext("Sound file (optional)"))
                 .text(&settings.as_ref().map(|s| s.mail_notification_sound_file()).unwrap_or_default())
                 .build();
             row_sound_file.add_prefix(&gtk::Image::from_icon_name("folder-music-symbolic"));
@@ -330,14 +330,14 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
         "org.gnome.evolution.plugin.external-editor" => {
             dialog.set_title(&gettext("Configure External Editor"));
             let group = adw::PreferencesGroup::builder()
-                .title(&gettext("Editor Command"))
-                .description(&gettext(
+                .title(gettext("Editor Command"))
+                .description(gettext(
                     "Specify the command to launch the external text editor (%s will be replaced with the file path).",
                 ))
                 .build();
 
             let row_cmd = adw::EntryRow::builder()
-                .title(&gettext("Command line"))
+                .title(gettext("Command line"))
                 .text(
                     &settings
                         .as_ref()
@@ -359,8 +359,8 @@ fn present_plugin_config_dialog<P: IsA<gtk::Widget>>(
         _ => {
             dialog.set_title(&gettext("Plugin Information"));
             let group = adw::PreferencesGroup::builder()
-                .title(&gettext("Default Settings"))
-                .description(&gettext("No additional configuration is required for this plugin."))
+                .title(gettext("Default Settings"))
+                .description(gettext("No additional configuration is required for this plugin."))
                 .build();
             pref_page.add(&group);
         }

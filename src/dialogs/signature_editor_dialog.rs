@@ -346,8 +346,8 @@ impl SignatureEditorDialog {
 
             let del_btn = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
-                .tooltip_text(&gettext("Delete signature"))
-                .css_classes(vec!["flat", "circular", "dim-label"])
+                .tooltip_text(gettext("Delete signature"))
+                .css_classes(["flat", "circular", "dim-label"])
                 .valign(gtk::Align::Center)
                 .build();
             let pid_for_del = profile.id.clone();
@@ -483,8 +483,8 @@ impl SignatureEditorDialog {
 
         let btn_add = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("New Signature"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("New Signature"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         sidebar_header.pack_end(&btn_add);
@@ -492,7 +492,7 @@ impl SignatureEditorDialog {
 
         let sidebar_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["navigation-sidebar", "settings-side"])
+            .css_classes(["navigation-sidebar", "settings-side"])
             .build();
         self.imp().sidebar_list.replace(Some(sidebar_list.clone()));
 
@@ -505,7 +505,7 @@ impl SignatureEditorDialog {
         sidebar_toolbar_view.set_content(Some(&sidebar_scroll));
 
         let sidebar_page = adw::NavigationPage::builder()
-            .title(&gettext("Signatures"))
+            .title(gettext("Signatures"))
             .child(&sidebar_toolbar_view)
             .build();
 
@@ -525,7 +525,7 @@ impl SignatureEditorDialog {
         header_bar.set_title_widget(Some(&title_widget));
 
         let btn_cancel = gtk::Button::builder()
-            .label(&gettext("Cancel"))
+            .label(gettext("Cancel"))
             .build();
         btn_cancel.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
@@ -540,7 +540,7 @@ impl SignatureEditorDialog {
         // keep a hidden proxy button for programmatic/test state inspection.
         let btn_format = gtk::ToggleButton::builder()
             .icon_name("format-text-underline-symbolic")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .active(true)
             .visible(false)
             .build();
@@ -548,15 +548,15 @@ impl SignatureEditorDialog {
         self.imp().btn_format.replace(Some(btn_format.clone()));
 
         let btn_save = gtk::Button::builder()
-            .label(&gettext("Save"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         header_bar.pack_end(&btn_save);
         toolbar_view.add_top_bar(&header_bar);
 
         // Hidden proxy rows for test compatibility
         let row_format = adw::SwitchRow::builder()
-            .title(&gettext("Rich Text (HTML)"))
+            .title(gettext("Rich Text (HTML)"))
             .active(is_html)
             .visible(false)
             .build();
@@ -564,7 +564,7 @@ impl SignatureEditorDialog {
 
         let is_default = initial_default_id.as_deref() == Some(active_profile.id.as_str());
         let row_default = adw::SwitchRow::builder()
-            .title(&gettext("Default Signature"))
+            .title(gettext("Default Signature"))
             .active(is_default)
             .visible(false)
             .build();
@@ -577,7 +577,7 @@ impl SignatureEditorDialog {
 
         let lbl_name = gtk::Label::builder()
             .label(gettext("Name"))
-            .css_classes(vec!["dim-label", "composer-header-label"])
+            .css_classes(["dim-label", "composer-header-label"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
@@ -586,15 +586,15 @@ impl SignatureEditorDialog {
         let entry_name = gtk::Entry::builder()
             .hexpand(true)
             .text(initial_name)
-            .placeholder_text(&gettext("Signature name…"))
-            .css_classes(vec!["flat", "composer-field-entry", "composer-subject-entry"])
+            .placeholder_text(gettext("Signature name…"))
+            .css_classes(["flat", "composer-field-entry", "composer-subject-entry"])
             .build();
         set_accessible_label(&entry_name, &gettext("Name"));
 
         let row_name = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
-            .css_classes(vec!["composer-header-row", "composer-row-subject", "last-visible-row"])
+            .css_classes(["composer-header-row", "composer-row-subject", "last-visible-row"])
             .build();
         row_name.append(&lbl_name);
         row_name.append(&entry_name);

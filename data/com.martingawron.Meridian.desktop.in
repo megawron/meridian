@@ -1,9 +1,7 @@
 [Desktop Entry]
 Name=Meridian
 Comment=Mail, Calendar and Contacts
-Comment[de]=E-Mail, Kalender und Kontakte
 GenericName=Groupware Client
-GenericName[de]=Groupware-Client
 Exec=meridian %U
 Icon=com.martingawron.Meridian
 Terminal=false
@@ -18,20 +16,16 @@ X-GNOME-UsesNotifications=true
 
 [Desktop Action NewMessage]
 Name=New Message
-Name[de]=Neue Nachricht
 Exec=meridian --compose
 
 [Desktop Action calendar]
 Name=Calendar
-Name[de]=Kalender
 Exec=meridian --calendar
 
 [Desktop Action OpenContacts]
 Name=Contacts
-Name[de]=Kontakte
 Exec=meridian --contacts
 
 [Desktop Action OpenTasks]
 Name=Tasks & Memos
-Name[de]=Aufgaben & Notizen
 Exec=meridian --tasks

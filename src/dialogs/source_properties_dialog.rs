@@ -89,7 +89,7 @@ impl SourcePropertiesDialog {
         let is_writable = *self.imp().is_writable.borrow();
         let is_default = *self.imp().is_default.borrow();
 
-        self.set_title(&format!("Properties of \"{display_name}\""));
+        self.set_title(&format!("{} \"{display_name}\"", gettext("Properties of")));
         self.set_content_width(460);
         self.set_content_height(380);
 
@@ -100,7 +100,7 @@ impl SourcePropertiesDialog {
             .build();
 
         let cancel_btn = gtk::Button::builder()
-            .label(&gettext("Cancel"))
+            .label(gettext("Cancel"))
             .build();
         let dialog_for_cancel = self.downgrade();
         cancel_btn.connect_clicked(move |_| {
@@ -113,21 +113,21 @@ impl SourcePropertiesDialog {
         let page = adw::PreferencesPage::new();
 
         // 1. General group
-        let general_group = adw::PreferencesGroup::builder().title("General").build();
+        let general_group = adw::PreferencesGroup::builder().title(gettext("General")).build();
 
         let name_row = adw::EntryRow::builder()
-            .title("Name")
+            .title(gettext("Name"))
             .text(&display_name)
             .build();
         general_group.add(&name_row);
 
         let type_subtitle = if is_writable {
-            format!("{source_kind} · Writable (Read/Write access)")
+            format!("{source_kind} · {}", gettext("Writable (Read/Write access)"))
         } else {
-            format!("{source_kind} · Read-only")
+            format!("{source_kind} · {}", gettext("Read-only"))
         };
         let type_row = adw::ActionRow::builder()
-            .title("Source Type & Write Access")
+            .title(gettext("Source Type & Write Access"))
             .subtitle(&type_subtitle)
             .build();
         let type_icon = gtk::Image::builder()
@@ -141,16 +141,16 @@ impl SourcePropertiesDialog {
 
         // 2. Visuals and Behavior
         let visual_group = adw::PreferencesGroup::builder()
-            .title("Appearance and Behavior")
+            .title(gettext("Appearance and Behavior"))
             .build();
 
         let color_row = adw::ActionRow::builder()
-            .title("Color")
+            .title(gettext("Color"))
             .subtitle(&color)
             .build();
         let color_dot = gtk::Label::builder()
             .label("●")
-            .css_classes(vec!["title-2"])
+            .css_classes(["title-2"])
             .valign(gtk::Align::Center)
             .margin_end(8)
             .build();
@@ -161,14 +161,14 @@ impl SourcePropertiesDialog {
 
         // Color dialog button for selecting a color
         let color_dialog = gtk::ColorDialog::builder()
-            .title("Select Source Color")
+            .title(gettext("Select Source Color"))
             .build();
         let color_button = gtk::ColorDialogButton::new(Some(color_dialog));
         if let Ok(rgba) = gtk::gdk::RGBA::parse(&color) {
             color_button.set_rgba(&rgba);
         }
         color_button.set_valign(gtk::Align::Center);
-        color_button.set_tooltip_text(Some("Customize color"));
+        color_button.set_tooltip_text(Some(&gettext("Customize color")));
 
         let color_dot_weak = color_dot.downgrade();
         let color_row_weak = color_row.downgrade();
@@ -195,7 +195,7 @@ impl SourcePropertiesDialog {
         visual_group.add(&color_row);
 
         let default_row = adw::SwitchRow::builder()
-            .title("Use as default source")
+            .title(gettext("Use as default source"))
             .active(is_default)
             .build();
         let default_icon = gtk::Image::builder()
@@ -209,8 +209,8 @@ impl SourcePropertiesDialog {
 
         // Save button in HeaderBar
         let save_btn = gtk::Button::builder()
-            .label("Save")
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         let dialog_for_save = self.downgrade();
         let name_row_weak = name_row.downgrade();
@@ -258,12 +258,12 @@ mod tests {
     fn source_properties_update_data_structure() {
         let update = SourcePropertiesUpdate {
             source_uid: "local-1".to_string(),
-            display_name: "Mein Kalender".to_string(),
+            display_name: "My Calendar".to_string(),
             color: "#3584e4".to_string(),
             is_default: true,
         };
         assert_eq!(update.source_uid, "local-1");
-        assert_eq!(update.display_name, "Mein Kalender");
+        assert_eq!(update.display_name, "My Calendar");
         assert_eq!(update.color, "#3584e4");
         assert!(update.is_default);
     }

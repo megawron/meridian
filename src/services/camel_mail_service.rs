@@ -381,7 +381,22 @@ pub(crate) fn load_mail_load_cache() -> Option<CamelMailLoad> {
     let started = std::time::Instant::now();
     let path = mail_cache_path();
     let content = std::fs::read_to_string(path).ok()?;
-    let cached: CamelMailLoad = serde_json::from_str(&content).ok()?;
+    let mut cached: CamelMailLoad = serde_json::from_str(&content).ok()?;
+    cached.folders.retain(|f| {
+        crate::services::eds_service::is_source_enabled_for_service(
+            &f.source_uid,
+            crate::services::eds_service::EdsSourceKind::Mail,
+        )
+    });
+    cached.messages.retain(|m| {
+        m.backend_location.as_ref().is_none_or(|loc| {
+            loc.source_uid.is_empty()
+                || crate::services::eds_service::is_source_enabled_for_service(
+                    &loc.source_uid,
+                    crate::services::eds_service::EdsSourceKind::Mail,
+                )
+        })
+    });
     remember_folder_names_in_memory(cached.folders.iter().map(|f| f.folder_name.as_str()));
     tracing::debug!(
         elapsed_ms = started.elapsed().as_millis() as u64,
@@ -1180,6 +1195,8 @@ pub(crate) fn shared_mailbox_container_prefixes(email: &str, display_name: &str)
         prefixes.push(format!("Foreign Folders/Mailbox - {email}"));
         prefixes.push(format!("Postfach — {email}"));
         prefixes.push(format!("Postfach - {email}"));
+        prefixes.push(format!("Mailbox — {email}"));
+        prefixes.push(format!("Mailbox - {email}"));
     }
 
     if !dname.is_empty() && dname != email {
@@ -1189,6 +1206,8 @@ pub(crate) fn shared_mailbox_container_prefixes(email: &str, display_name: &str)
         prefixes.push(format!("Foreign Folders/Mailbox - {dname}"));
         prefixes.push(format!("Postfach — {dname}"));
         prefixes.push(format!("Postfach - {dname}"));
+        prefixes.push(format!("Mailbox — {dname}"));
+        prefixes.push(format!("Mailbox - {dname}"));
     }
 
     if let Some((local_part, _)) = email.split_once('@') {
@@ -1199,6 +1218,8 @@ pub(crate) fn shared_mailbox_container_prefixes(email: &str, display_name: &str)
             prefixes.push(format!("Foreign Folders/Mailbox - {local_part}"));
             prefixes.push(format!("Postfach — {local_part}"));
             prefixes.push(format!("Postfach - {local_part}"));
+            prefixes.push(format!("Mailbox — {local_part}"));
+            prefixes.push(format!("Mailbox - {local_part}"));
         }
     }
 
@@ -2232,7 +2253,7 @@ fn load_messages_native(
                 strip_shared_mailbox_prefix(&msg.folder_name, &profile.email, &profile.display_name)
             {
                 let target_rel = if is_container || rel.is_empty() {
-                    "Posteingang".to_string()
+                    "Inbox".to_string()
                 } else {
                     rel.to_string()
                 };
@@ -2246,7 +2267,7 @@ fn load_messages_native(
                 break;
             } else if let Some(orig_src) = source_uid {
                 if orig_src == profile.id || orig_src == profile.email {
-                    let target_fld = folder_name.unwrap_or("Posteingang");
+                    let target_fld = folder_name.unwrap_or("Inbox");
                     msg.folder_name = target_fld.to_string();
                     msg.folder_id = normalized_camel_folder_id("", target_fld);
                     if let Some(ref mut loc) = msg.backend_location {
@@ -4004,6 +4025,14 @@ ParentFolderId=folder-sync-id
         // English Mailbox variants
         assert_eq!(
             strip_shared_mailbox_prefix("Foreign Folders/Mailbox - shared@example.com/Inbox", email, dname),
+            Some(("Inbox", false))
+        );
+        assert_eq!(
+            strip_shared_mailbox_prefix("Mailbox — shared@example.com", email, dname),
+            Some(("", true))
+        );
+        assert_eq!(
+            strip_shared_mailbox_prefix("Mailbox - shared@example.com/Inbox", email, dname),
             Some(("Inbox", false))
         );
 

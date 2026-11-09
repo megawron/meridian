@@ -321,14 +321,14 @@ mod tests {
         let store = SignatureStore::new(root.join("signatures.json"));
         let first = SignatureProfile {
             id: "signature-one".to_string(),
-            name: "Arbeit".to_string(),
-            text: "Viele Grüße\nPerson".to_string(),
+            name: "Work".to_string(),
+            text: "Best regards\nPerson".to_string(),
             format: "text/plain".to_string(),
         };
         let second = SignatureProfile {
             id: "signature-two".to_string(),
-            name: "Privat".to_string(),
-            text: "Beste Grüße".to_string(),
+            name: "Personal".to_string(),
+            text: "Kind regards".to_string(),
             format: "text/plain".to_string(),
         };
         store

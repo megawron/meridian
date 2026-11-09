@@ -602,9 +602,11 @@ pub(crate) fn sanitized_html_to_plain_text(value: &str) -> String {
                     .next()
                     .unwrap_or_default()
                     .to_string();
-                if matches!(
+                if normalized == "br" {
+                    output.push('\n');
+                } else if matches!(
                     normalized.as_str(),
-                    "br" | "/p" | "/div" | "/li" | "/blockquote" | "/h1" | "/h2" | "/h3"
+                    "/p" | "/div" | "/li" | "/blockquote" | "/h1" | "/h2" | "/h3"
                 ) {
                     if !output.ends_with('\n') {
                         output.push('\n');

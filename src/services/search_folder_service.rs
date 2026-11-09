@@ -785,7 +785,7 @@ mod tests {
         let service = SearchFolderService::new(root.join("searches.json"));
         let local_folder = SavedSearch::with_metadata(
             "local-folder",
-            "Lokale Projekte",
+            "Local Projects",
             "is:unread",
             SavedSearchFieldMode::FreeForm,
             SavedSearchScope::CurrentFolder,
@@ -796,7 +796,7 @@ mod tests {
         .expect("local folder identity should be valid");
         let local_subfolders = SavedSearch::with_metadata(
             "local-subfolders",
-            "Lokale Projekte samt Unterordnern",
+            "Local Projects with Subfolders",
             "is:starred",
             SavedSearchFieldMode::FreeForm,
             SavedSearchScope::CurrentFolderAndSubfolders,

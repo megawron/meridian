@@ -221,7 +221,7 @@ impl AdvancedSearchDialog {
         header.set_title_widget(Some(
             &gtk::Label::builder()
                 .label(gettext("Advanced Search"))
-                .css_classes(vec!["title-4"])
+                .css_classes(["title-4"])
                 .build(),
         ));
         toolbar.add_top_bar(&header);
@@ -242,7 +242,7 @@ impl AdvancedSearchDialog {
             ))
             .wrap(true)
             .halign(gtk::Align::Start)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         content.append(&intro);
 
@@ -289,12 +289,12 @@ impl AdvancedSearchDialog {
             .label(gettext("Conditions"))
             .halign(gtk::Align::Start)
             .hexpand(true)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .build();
         let add_row = gtk::Button::builder()
             .label(gettext("Add Condition"))
             .icon_name("list-add-symbolic")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         rows_header.append(&rows_title);
         rows_header.append(&add_row);
@@ -358,7 +358,7 @@ impl AdvancedSearchDialog {
         let status = gtk::Label::builder()
             .halign(gtk::Align::Start)
             .wrap(true)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         content.append(&status);
         self.imp().status.replace(Some(status));
@@ -378,8 +378,8 @@ impl AdvancedSearchDialog {
             }
         ));
         let apply = gtk::Button::builder()
-            .label(&gettext("Apply"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Apply"))
+            .css_classes(["suggested-action"])
             .build();
         apply.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
@@ -565,7 +565,7 @@ fn append_rule_row(
     let remove = gtk::Button::builder()
         .icon_name("list-remove-symbolic")
         .tooltip_text(gettext("Remove condition"))
-        .css_classes(vec!["flat"])
+        .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
 

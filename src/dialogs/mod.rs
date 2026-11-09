@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Dialogs module — modal windows and preferences.
@@ -98,7 +99,7 @@ pub fn run_destructive_action<W, F>(
     }
 
     let confirmation = adw::AlertDialog::new(Some(title), Some(description));
-    let cancel_label = crate::i18n::gettext("Cancel");
+    let cancel_label = gettext("Cancel");
     confirmation.add_responses(&[("cancel", &cancel_label), ("confirm", confirm_label)]);
     confirmation.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
 

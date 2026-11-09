@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::i18n::gettext;
 use crate::services::search_engine::{
     GlobalSearchEngine, SearchDomain, SearchResultItem, SearchStoreSnapshot,
 };
@@ -67,7 +68,7 @@ glib::wrapper! {
 impl GlobalSearchDialog {
     pub fn new() -> Self {
         glib::Object::builder()
-            .property("title", "Global Search")
+            .property("title", gettext("Global Search"))
             .property("content-width", 760)
             .property("content-height", 600)
             .build()
@@ -77,22 +78,22 @@ impl GlobalSearchDialog {
         let toolbar_view = adw::ToolbarView::new();
         let header_bar = adw::HeaderBar::new();
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text(
+            .placeholder_text(gettext(
                 "Search mail, calendar, tasks, memos, or contacts (on:2026-08-11, after:7d)…",
-            )
+            ))
             .hexpand(true)
             .build();
         let domain_selector = gtk::DropDown::new(
             Some(gtk::StringList::new(&[
-                "All",
-                "Mail",
-                "Calendar / Tasks / Memos",
-                "Contacts",
+                &gettext("All"),
+                &gettext("Mail"),
+                &gettext("Calendar / Tasks / Memos"),
+                &gettext("Contacts"),
             ])),
             None::<&gtk::Expression>,
         );
         domain_selector.set_selected(0);
-        domain_selector.set_tooltip_text(Some("Select search scope"));
+        domain_selector.set_tooltip_text(Some(&gettext("Select search scope")));
         let header_content = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -110,11 +111,11 @@ impl GlobalSearchDialog {
             .margin_end(16)
             .margin_top(16)
             .margin_bottom(8)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(["boxed-list"])
             .margin_start(16)
             .margin_end(16)
             .margin_bottom(16)
@@ -155,8 +156,7 @@ impl GlobalSearchDialog {
         ));
         search_entry.grab_focus();
         self.set_status(
-            "Portable search across local mail, calendar, task, memo, and contact data. \
-             Server-side account search is enabled separately on Linux.",
+            &gettext("Portable search across local mail, calendar, task, memo, and contact data. Server-side account search is enabled separately on Linux."),
         );
     }
 
@@ -179,13 +179,13 @@ impl GlobalSearchDialog {
         let query = query.trim();
         if query.is_empty() {
             self.set_status(
-                "Enter a search term. Searches the app-owned local data stores.",
+                &gettext("Enter a search term. Searches the app-owned local data stores."),
             );
             return;
         }
 
         let domain = *self.imp().domain.borrow();
-        self.set_status("Searching local data stores…");
+        self.set_status(&gettext("Searching local data stores…"));
         let query = query.to_string();
         let dialog = self.downgrade();
         let debounce = glib::timeout_add_local_once(Duration::from_millis(120), move || {
@@ -256,14 +256,15 @@ impl GlobalSearchDialog {
             return;
         };
         if results.is_empty() {
-            self.set_status(&format!("No local matches for \"{query}\"."));
+            self.set_status(&format!("{} \"{query}\".", gettext("No local matches for")));
             return;
         }
 
         self.set_status(&format!(
-            "{} local match{} for \"{query}\" — account search remains separate on Linux.",
+            "{} {} \"{query}\" — {}",
             results.len(),
-            if results.len() == 1 { "" } else { "es" }
+            if results.len() == 1 { gettext("local match for") } else { gettext("local matches for") },
+            gettext("account search remains separate on Linux.")
         ));
         for result in results {
             list.append(&self.result_row(&result));
@@ -272,15 +273,15 @@ impl GlobalSearchDialog {
 
     fn result_row(&self, result: &SearchResultItem) -> adw::ActionRow {
         let title = if result.title.trim().is_empty() {
-            "(Untitled)"
+            gettext("(Untitled)")
         } else {
-            result.title.trim()
+            result.title.trim().to_string()
         };
         let mut subtitle = match result.domain {
-            SearchDomain::Mail => "Mail".to_string(),
-            SearchDomain::Contacts => "Contact".to_string(),
-            SearchDomain::Calendar => "Calendar / Task / Memo".to_string(),
-            SearchDomain::All => "Local Match".to_string(),
+            SearchDomain::Mail => gettext("Mail"),
+            SearchDomain::Contacts => gettext("Contact"),
+            SearchDomain::Calendar => gettext("Calendar / Task / Memo"),
+            SearchDomain::All => gettext("Local Match"),
         };
         if !result.date.trim().is_empty() {
             subtitle.push_str(" · ");

@@ -40,7 +40,7 @@ impl ManageGroupsDialog {
         let header_bar = adw::HeaderBar::new();
 
         let cancel_btn = gtk::Button::builder()
-            .label(&gettext("Cancel"))
+            .label(gettext("Cancel"))
             .build();
         let dialog_cancel = dialog.downgrade();
         cancel_btn.connect_clicked(move |_| {
@@ -51,8 +51,8 @@ impl ManageGroupsDialog {
         header_bar.pack_start(&cancel_btn);
 
         let save_btn = gtk::Button::builder()
-            .label(&gettext("Save"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         let dialog_save = dialog.downgrade();
         let ws_save = Rc::clone(&working_selector);
@@ -79,13 +79,13 @@ impl ManageGroupsDialog {
 
         // 1. Groups preference group
         let groups_pref = adw::PreferencesGroup::builder()
-            .title("Source Groups")
-            .description("Set the order and visibility of source groups.")
+            .title(gettext("Source Groups"))
+            .description(gettext("Set the order and visibility of source groups."))
             .build();
 
         let list_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(["boxed-list"])
             .build();
 
         rebuild_groups_list(&list_box, &working_selector, domain_label);
@@ -94,12 +94,12 @@ impl ManageGroupsDialog {
 
         // 2. Add custom group preference group
         let add_pref = adw::PreferencesGroup::builder()
-            .title("New Group")
-            .description("Add a new custom source group.")
+            .title(gettext("New Group"))
+            .description(gettext("Add a new custom source group."))
             .build();
 
         let add_row = adw::EntryRow::builder()
-            .title("Group Name")
+            .title(gettext("Group Name"))
             .show_apply_button(true)
             .build();
         let add_icon = gtk::Image::builder()
@@ -110,8 +110,8 @@ impl ManageGroupsDialog {
 
         let add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("Add group")
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Add group"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         add_row.add_suffix(&add_btn);
@@ -197,8 +197,8 @@ fn rebuild_groups_list(
 
     if total == 0 {
         let empty_row = adw::ActionRow::builder()
-            .title("No groups available")
-            .subtitle("Add a new group below.")
+            .title(gettext("No groups available"))
+            .subtitle(gettext("Add a new group below."))
             .build();
         list_box.append(&empty_row);
         return;
@@ -215,7 +215,7 @@ fn rebuild_groups_list(
             format!("{} {domain_label}", group.source_count)
         };
         let subtitle = if group.is_custom {
-            format!("{count_text} • Custom")
+            format!("{count_text} • {}", gettext("Custom"))
         } else {
             count_text
         };
@@ -241,7 +241,7 @@ fn rebuild_groups_list(
         let switch = gtk::Switch::builder()
             .active(!group.is_hidden)
             .valign(gtk::Align::Center)
-            .tooltip_text("Show or hide group")
+            .tooltip_text(gettext("Show or hide group"))
             .build();
 
         let ws_switch = Rc::clone(working_selector);
@@ -256,9 +256,9 @@ fn rebuild_groups_list(
         // Move Up button
         let up_btn = gtk::Button::builder()
             .icon_name("go-up-symbolic")
-            .tooltip_text("Move group up")
+            .tooltip_text(gettext("Move group up"))
             .sensitive(index > 0)
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
 
@@ -277,9 +277,9 @@ fn rebuild_groups_list(
         // Move Down button
         let down_btn = gtk::Button::builder()
             .icon_name("go-down-symbolic")
-            .tooltip_text("Move group down")
+            .tooltip_text(gettext("Move group down"))
             .sensitive(index + 1 < total)
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
 
@@ -299,8 +299,8 @@ fn rebuild_groups_list(
         if group.is_custom {
             let del_btn = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
-                .tooltip_text("Delete custom group")
-                .css_classes(vec!["flat", "circular", "destructive-action"])
+                .tooltip_text(gettext("Delete custom group"))
+                .css_classes(["flat", "circular", "destructive-action"])
                 .valign(gtk::Align::Center)
                 .build();
 
@@ -332,8 +332,8 @@ mod tests {
         let local_group = crate::services::eds_service::canonical_local_group_name();
         let mut selector = SourceSelector::new(SourceDomain::Calendar);
         selector.update_sources(vec![
-            SourceSelectorItem::new("c1", "Privat", "local", true, true).with_group(&local_group),
-            SourceSelectorItem::new("c2", "Arbeit", "caldav", true, true).with_group("CalDAV Server"),
+            SourceSelectorItem::new("c1", "Personal", "local", true, true).with_group(&local_group),
+            SourceSelectorItem::new("c2", "Work", "caldav", true, true).with_group("CalDAV Server"),
         ]);
 
         // Verify initial groups

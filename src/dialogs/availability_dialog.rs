@@ -8,6 +8,7 @@ use chrono::{Local, NaiveDate};
 use gtk::glib;
 use std::cell::RefCell;
 
+use crate::i18n::gettext;
 use crate::services::availability_service::{
     FreeSlot, busy_intervals_for_snapshot, find_free_slots,
 };
@@ -68,7 +69,7 @@ glib::wrapper! {
 impl AvailabilityDialog {
     pub fn new(date: NaiveDate) -> Self {
         glib::Object::builder()
-            .property("title", "Free/Busy")
+            .property("title", gettext("Free/Busy"))
             .property("content-width", 520)
             .property("content-height", 420)
             .property("date", date.format("%Y-%m-%d").to_string())
@@ -102,7 +103,7 @@ impl AvailabilityDialog {
         header.set_show_start_title_buttons(false);
         header.set_show_end_title_buttons(false);
         let close = gtk::Button::builder()
-            .label("Close")
+            .label(gettext("Close"))
             .build();
         header.pack_start(&close);
         toolbar.add_top_bar(&header);
@@ -118,20 +119,22 @@ impl AvailabilityDialog {
         content.append(
             &gtk::Label::builder()
                 .label(&format!(
-                    "Available slots on {} · Working hours {}–{}",
+                    "{} {} · {} {}–{}",
+                    gettext("Available slots on"),
                     date.format("%Y-%m-%d"),
+                    gettext("Working hours"),
                     format_minutes(workday_start),
                     format_minutes(workday_end)
                 ))
-                .css_classes(vec!["title-3"])
+                .css_classes(["title-3"])
                 .halign(gtk::Align::Start)
                 .wrap(true)
                 .build(),
         );
         content.append(
             &gtk::Label::builder()
-                .label("Calculated from your local and synced calendars.")
-                .css_classes(vec!["dim-label"])
+                .label(gettext("Calculated from your local and synced calendars."))
+                .css_classes(["dim-label"])
                 .halign(gtk::Align::Start)
                 .wrap(true)
                 .build(),
@@ -139,13 +142,13 @@ impl AvailabilityDialog {
 
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(["boxed-list"])
             .build();
         if slots.is_empty() {
             list.append(
                 &adw::ActionRow::builder()
-                    .title("No available time slots")
-                    .subtitle("No free slot of at least 30 minutes was found during working hours.")
+                    .title(gettext("No available time slots"))
+                    .subtitle(gettext("No free slot of at least 30 minutes was found during working hours."))
                     .build(),
             );
         } else {
@@ -174,7 +177,7 @@ fn slot_row(slot: FreeSlot) -> adw::ActionRow {
             slot.start.format("%H:%M"),
             slot.end.format("%H:%M")
         ))
-        .subtitle(format!("{} minutes available", slot.duration_minutes()))
+        .subtitle(format!("{} {}", slot.duration_minutes(), gettext("minutes available")))
         .build()
 }
 

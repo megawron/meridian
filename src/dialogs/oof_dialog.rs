@@ -77,7 +77,7 @@ impl OutOfOfficeDialog {
         header_bar.set_title_widget(Some(&title_widget));
 
         let btn_cancel = gtk::Button::builder()
-            .label(&gettext("Cancel"))
+            .label(gettext("Cancel"))
             .build();
         let dialog_for_cancel = self.downgrade();
         btn_cancel.connect_clicked(move |_| {
@@ -88,8 +88,8 @@ impl OutOfOfficeDialog {
         header_bar.pack_start(&btn_cancel);
 
         let btn_save = gtk::Button::builder()
-            .label(&gettext("Save"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         header_bar.pack_end(&btn_save);
         toolbar_view.add_top_bar(&header_bar);
@@ -103,13 +103,13 @@ impl OutOfOfficeDialog {
         let group_schedule = adw::PreferencesGroup::new();
 
         let row_enabled = adw::SwitchRow::builder()
-            .title(&gettext("Send Automatic Replies"))
+            .title(gettext("Send Automatic Replies"))
             .active(saved_settings.enabled)
             .build();
         group_schedule.add(&row_enabled);
 
         let expander_schedule = adw::ExpanderRow::builder()
-            .title(&gettext("Only During a Time Range"))
+            .title(gettext("Only During a Time Range"))
             .show_enable_switch(true)
             .enable_expansion(saved_settings.use_schedule)
             .build();
@@ -146,7 +146,7 @@ impl OutOfOfficeDialog {
 
         // Group 2: Inside My Organization
         let group_internal = adw::PreferencesGroup::builder()
-            .title(&gettext("Inside My Organization"))
+            .title(gettext("Inside My Organization"))
             .build();
 
         let rich_internal = RichTextField::new(false, 140);
@@ -155,7 +155,7 @@ impl OutOfOfficeDialog {
 
         // Group 3: Outside My Organization
         let group_external = adw::PreferencesGroup::builder()
-            .title(&gettext("Outside My Organization"))
+            .title(gettext("Outside My Organization"))
             .build();
 
         let rich_external = RichTextField::new(false, 140);
@@ -406,7 +406,7 @@ fn create_date_picker_row(
         .build();
 
     let menu_button = gtk::MenuButton::builder()
-        .css_classes(vec!["flat"])
+        .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
 
@@ -415,16 +415,16 @@ fn create_date_picker_row(
         .spacing(6)
         .build();
     let btn_label = gtk::Label::builder()
-        .label(&gettext("Select date…"))
-        .css_classes(vec!["dim-label"])
+        .label(gettext("Select date…"))
+        .css_classes(["dim-label"])
         .build();
     btn_box.append(&btn_label);
     menu_button.set_child(Some(&btn_box));
 
     let btn_clear = gtk::Button::builder()
         .icon_name("edit-clear-symbolic")
-        .tooltip_text(&gettext("Clear date"))
-        .css_classes(vec!["flat", "circular"])
+        .tooltip_text(gettext("Clear date"))
+        .css_classes(["flat", "circular"])
         .valign(gtk::Align::Center)
         .visible(false)
         .build();
@@ -449,13 +449,13 @@ fn create_date_picker_row(
         .build();
 
     let btn_today = gtk::Button::builder()
-        .label(&gettext("Today"))
-        .css_classes(vec!["flat"])
+        .label(gettext("Today"))
+        .css_classes(["flat"])
         .build();
 
     let btn_popover_clear = gtk::Button::builder()
-        .label(&gettext("Clear"))
-        .css_classes(vec!["flat"])
+        .label(gettext("Clear"))
+        .css_classes(["flat"])
         .build();
 
     popover_btn_box.append(&btn_today);
