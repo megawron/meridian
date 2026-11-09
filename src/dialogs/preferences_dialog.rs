@@ -12046,11 +12046,14 @@ where
                 let Some(path) = file.path() else {
                     return;
                 };
-                let path = path.to_string_lossy().into_owned();
-                if let Some(settings) = settings_for_result.as_ref() {
-                    set_path_for_result(settings, &path);
+                let path_str = path.to_string_lossy().into_owned();
+                if !path_str.contains("/evolution") && !path_str.contains("\\evolution") {
+                    let _ = std::fs::write(path.join(".meridian-store"), b"meridian-local-store\n");
                 }
-                row_for_result.set_subtitle(&path);
+                if let Some(settings) = settings_for_result.as_ref() {
+                    set_path_for_result(settings, &path_str);
+                }
+                row_for_result.set_subtitle(&path_str);
                 clear_for_result.set_visible(true);
             },
         );

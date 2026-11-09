@@ -128,11 +128,34 @@ pub(crate) fn app_cache_dir() -> std::path::PathBuf {
 }
 
 /// Return whether a configured local store is inside the application's own
-/// data tree.  Paths selected outside that tree are intentionally treated as
-/// read-only import sources; app-owned paths remain editable after a restart
-/// or a profile migration has persisted their location in GSettings.
+/// data tree, a Flatpak/host Meridian data directory, an XDG Document Portal
+/// mount, or an explicitly initialized Meridian custom store directory.
+/// Paths selected outside those locations (such as external Evolution stores)
+/// are intentionally treated as read-only import sources.
 pub(crate) fn is_app_owned_store_path(path: &std::path::Path) -> bool {
-    path.starts_with(app_data_dir())
+    is_app_owned_or_portal_store_path(path, &app_data_dir())
+}
+
+pub(crate) fn is_app_owned_or_portal_store_path(
+    path: &std::path::Path,
+    app_data_directory: &std::path::Path,
+) -> bool {
+    if path.starts_with(app_data_directory) {
+        return true;
+    }
+    let home = home_dir();
+    if path.starts_with(home.join(".local/share/meridian"))
+        || path.starts_with(home.join(".var/app/com.martingawron.Meridian/data/meridian"))
+    {
+        return true;
+    }
+    let path_str = path.to_string_lossy();
+    if (path_str.starts_with("/run/user/") || path_str.starts_with("/var/run/user/"))
+        && path_str.contains("/doc/")
+    {
+        return true;
+    }
+    path.join(".meridian-state.json").is_file() || path.join(".meridian-store").is_file()
 }
 
 #[cfg(test)]

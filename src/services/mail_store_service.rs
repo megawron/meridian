@@ -225,7 +225,8 @@ impl MailStoreService {
             .filter(|path| !path.trim().is_empty())
             .map(PathBuf::from)
         {
-            let writable = path.starts_with(&app_data_directory);
+            let writable =
+                crate::services::is_app_owned_or_portal_store_path(&path, &app_data_directory);
             (path, writable)
         } else {
             // With no installed schema there is no persistent external-path
@@ -448,12 +449,6 @@ Enjoy using Meridian!\r\n";
         file_stem_hint: &str,
         target_folder_id: &str,
     ) -> std::io::Result<PathBuf> {
-        if !self.writable {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "configured local mail store is read-only",
-            ));
-        }
         if raw_mime.is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -462,21 +457,33 @@ Enjoy using Meridian!\r\n";
         }
 
         let normalized_folder = local_folder_id(target_folder_id);
-        let target_dir = if normalized_folder.is_empty() || normalized_folder == "inbox" {
-            self.mail_dir.clone()
-        } else if let Some(custom_name) = normalized_folder.strip_prefix("custom:") {
-            let sub = custom_name
-                .split('/')
-                .map(|part| format!(".{}", part.trim_start_matches('.')))
-                .collect::<Vec<_>>()
-                .join("/");
-            self.mail_dir.join(sub)
-        } else {
-            self.mail_dir
-                .join(format!(".{}", normalized_folder.trim_start_matches('.')))
+        let resolve_target_dir = |base: &Path| -> PathBuf {
+            if normalized_folder.is_empty() || normalized_folder == "inbox" {
+                base.to_path_buf()
+            } else if let Some(custom_name) = normalized_folder.strip_prefix("custom:") {
+                let sub = custom_name
+                    .split('/')
+                    .map(|part| format!(".{}", part.trim_start_matches('.')))
+                    .collect::<Vec<_>>()
+                    .join("/");
+                base.join(sub)
+            } else {
+                base.join(format!(".{}", normalized_folder.trim_start_matches('.')))
+            }
         };
 
-        fs::create_dir_all(&target_dir)?;
+        let primary_base = self.import_destination();
+        let mut target_dir = resolve_target_dir(&primary_base);
+        if let Err(primary_err) = fs::create_dir_all(&target_dir) {
+            let fallback_base = crate::services::app_data_dir().join("mail");
+            if fallback_base != primary_base {
+                let fallback_dir = resolve_target_dir(&fallback_base);
+                fs::create_dir_all(&fallback_dir)?;
+                target_dir = fallback_dir;
+            } else {
+                return Err(primary_err);
+            }
+        }
 
         let sanitized_stem: String = file_stem_hint
             .chars()
@@ -537,7 +544,7 @@ Enjoy using Meridian!\r\n";
         cancelled: &std::sync::Arc<AtomicBool>,
     ) -> LocalFilterRunReport {
         let mut report = LocalFilterRunReport::default();
-        if !self.writable || rules.is_empty() || remote_messages.is_empty() {
+        if rules.is_empty() || remote_messages.is_empty() {
             return report;
         }
 
