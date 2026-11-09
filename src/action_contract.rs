@@ -171,7 +171,6 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
     ],
     PrimaryActions => [
         ("Send & Receive", "win.mail-send-receive"),
-        ("Edit Filter Rules…", "win.filter-editor"),
     ],
     PrimaryApp => [
         ("Preferences", "app.preferences"),

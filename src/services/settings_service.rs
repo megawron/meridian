@@ -774,9 +774,39 @@ impl AppSettings {
                     .and_then(|source| source.lookup(crate::APP_ID, true))
             })?;
             let s = gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None);
+            #[cfg(not(test))]
+            Self::ensure_initial_online_mode_default(&s);
             *borrow = Some(s.clone());
             Some(Self { settings: s })
         })
+    }
+
+    #[cfg(not(test))]
+    fn offline_mode_state_path() -> std::path::PathBuf {
+        glib::user_config_dir()
+            .join("meridian")
+            .join("offline_mode_state.json")
+    }
+
+    #[cfg(not(test))]
+    fn ensure_initial_online_mode_default(settings: &gio::Settings) {
+        let path = Self::offline_mode_state_path();
+        if let Ok(raw) = std::fs::read_to_string(&path)
+            && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
+            && val.get("initialized").and_then(|v| v.as_bool()) == Some(true)
+        {
+            if let Some(saved_offline) = val.get("offline").and_then(|v| v.as_bool())
+                && settings.boolean("offline-mode") != saved_offline
+            {
+                let _ = settings.set_boolean("offline-mode", saved_offline);
+            }
+            return;
+        }
+        let _ = settings.set_boolean("offline-mode", false);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, r#"{"initialized":true,"offline":false}"#);
     }
 
     #[cfg(test)]
@@ -817,6 +847,15 @@ impl AppSettings {
 
     pub fn set_offline_mode(&self, value: bool) {
         self.set_boolean("offline-mode", value);
+        #[cfg(not(test))]
+        {
+            let path = Self::offline_mode_state_path();
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let payload = format!(r#"{{"initialized":true,"offline":{value}}}"#);
+            let _ = std::fs::write(&path, payload);
+        }
     }
 
     pub fn window_width(&self) -> i32 {
@@ -3164,6 +3203,32 @@ impl AppSettings {
         if let Err(error) = self.settings.set_strv("mail-expanded-folders", &*refs) {
             tracing::warn!(%error, "Could not persist mail-expanded-folders");
         }
+    }
+
+    pub fn mail_show_local_folders_explicit(&self) -> Option<bool> {
+        let folders = self.mail_expanded_folders();
+        if folders.iter().any(|s| s == "local:show") {
+            Some(true)
+        } else if folders.iter().any(|s| s == "local:hide") {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    pub fn set_mail_show_local_folders_explicit(&self, show: Option<bool>) {
+        let mut folders: Vec<String> = self
+            .mail_expanded_folders()
+            .into_iter()
+            .filter(|s| s != "local:show" && s != "local:hide")
+            .collect();
+        match show {
+            Some(true) => folders.push("local:show".to_string()),
+            Some(false) => folders.push("local:hide".to_string()),
+            None => {}
+        }
+        folders.sort();
+        self.set_mail_expanded_folders(&folders);
     }
 
     pub fn mail_show_deleted(&self) -> bool {

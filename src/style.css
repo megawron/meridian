@@ -7399,3 +7399,21 @@ row.compact-grouped-combo popover listview > row {
   min-height: 22px;
 }
 
+/* Subtle header-bar Offline Mode pill indicator */
+button.offline-header-badge {
+  min-height: 24px;
+  padding: 2px 9px;
+  margin-top: 4px;
+  margin-bottom: 4px;
+  border-radius: 999px;
+  background-color: alpha(@window_fg_color, 0.08);
+  color: alpha(@window_fg_color, 0.78);
+  font-weight: 600;
+}
+
+button.offline-header-badge:hover {
+  background-color: alpha(@window_fg_color, 0.14);
+  color: @window_fg_color;
+}
+
+

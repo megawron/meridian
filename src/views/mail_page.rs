@@ -5310,7 +5310,10 @@ fn remote_folder_properties_snapshot(
         return None;
     }
     let folder = folders.iter().find(|folder| {
-        folder.is_selectable && folder.source_uid == source_uid && folder.folder_name == folder_name
+        folder.is_selectable
+            && account_sources_match(&folder.source_uid, source_uid)
+            && (folder.folder_name == folder_name
+                || folder_names_match(&folder.folder_name, folder_name))
     })?;
     let account_name = MailPage::localize_source_name(&folder.source_display_name);
     Some(crate::dialogs::FolderPropertiesSnapshot {
@@ -6665,60 +6668,34 @@ fn load_mail_backend(
         limit = request.max_messages_per_folder,
         "Mail backend load started"
     );
-    if offline_mode {
-        let store = crate::services::MailStoreService::new_worker_safe(store_config.clone());
-        let (mut messages, local_deleted_ids) =
-            store.load_local_records_with_deleted_cancelable(cancelled, show_deleted);
-        messages.retain(|m| !parsed_mail_belongs_to_disabled_account(m));
-        let searchable_body_texts = match prepare_searchable_body_texts(&messages, cancelled) {
-            Ok(texts) => texts,
-            Err(error) => return MailPageLoadResult::Error(error),
-        };
-        return MailPageLoadResult::Local {
-            reason: "Offline-Modus: lokaler Meridian-Speicher".to_string(),
-            messages,
-            local_deleted_ids,
-            local_folders: store.local_folder_definitions(),
-            searchable_body_texts,
-        };
-    }
-    tracing::debug!(
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        "Starting synchronous EDS/Camel work on mail worker"
-    );
-    let camel_result = camel_mail_service::load_messages_page_with_progress_and_cancellation(
-        request.source_uid.as_deref(),
-        request.folder_name.as_deref(),
-        request.offset,
-        if request.source_uid.is_some() || request.folder_name.is_some() {
-            request.max_messages_per_folder.max(500)
-        } else {
-            request.max_messages_per_folder
-        },
-        Some(cancelled),
-        progress_sender,
-    );
-    if let Ok(ref camel) = camel_result {
-        if request.source_uid.is_none()
-            && request.folder_name.is_none()
-            && request.offset == 0
-            && (!camel.messages.is_empty() || !camel.folders.is_empty())
-        {
-            camel_mail_service::save_mail_load_cache(camel);
-        }
-    }
-    tracing::debug!(
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        result = if camel_result.is_ok() { "ok" } else { "error" },
-        "Mail backend returned from EDS/Camel"
-    );
-
-    if cancelled.load(Ordering::Relaxed) {
-        return MailPageLoadResult::Error(gettext("Mail loading was cancelled."));
-    }
-
     let try_cached_sqlite = || -> Option<MailPageLoadResult> {
         let hint = request.source_uid.as_deref();
+        let page_limit = request.max_messages_per_folder.max(1) as usize;
+        if hint.is_none() {
+            let (sqlite_folders, sqlite_msgs, source_count) =
+                crate::services::evolution_summary_cache::load_unified_accounts_from_sqlite(
+                    page_limit.min(500),
+                );
+            if !sqlite_folders.is_empty() || !sqlite_msgs.is_empty() {
+                let fast_load = camel_mail_service::CamelMailLoad {
+                    messages: sqlite_msgs,
+                    folders: sqlite_folders,
+                    configured_sources: source_count.max(1),
+                    successful_sources: 0,
+                    failed_sources: source_count.max(1),
+                    warning: Some(format!(
+                        "{} · {}",
+                        gettext("Offline"),
+                        gettext("Showing cached messages")
+                    )),
+                    is_graph: false,
+                    search_query: None,
+                    graph_next_links: HashMap::new(),
+                    graph_search_next_cursor: None,
+                };
+                return Some(prepared_camel_result(fast_load, cancelled));
+            }
+        }
         if let Some(cache) = crate::services::evolution_summary_cache::find_evolution_account_cache(hint) {
             let effective_source = hint.unwrap_or(&cache.source_uid);
             let folder_to_load = request
@@ -6771,6 +6748,110 @@ fn load_mail_backend(
         None
     };
 
+    if offline_mode {
+        let store = crate::services::MailStoreService::new_worker_safe(store_config.clone());
+        let local_folders = store.local_folder_definitions();
+        let (mut messages, local_deleted_ids) =
+            store.load_local_records_with_deleted_cancelable(cancelled, show_deleted);
+        messages.retain(|m| !parsed_mail_belongs_to_disabled_account(m));
+
+        if let Some(MailPageLoadResult::Camel {
+            mut camel,
+            searchable_body_texts: mut camel_searchable_texts,
+        }) = try_cached_sqlite()
+        {
+            camel.folders.retain(|f| {
+                eds_service::is_source_enabled_for_service(&f.source_uid, EdsSourceKind::Mail)
+            });
+            camel
+                .messages
+                .retain(|m| !parsed_mail_belongs_to_disabled_account(m));
+            if !camel.folders.is_empty() || !camel.messages.is_empty() {
+                if request.is_remote_or_paged() {
+                    return MailPageLoadResult::Camel {
+                        camel,
+                        searchable_body_texts: camel_searchable_texts,
+                    };
+                }
+                let mut local_messages = messages;
+                local_messages.retain(|m| {
+                    let is_welcome = m.message_id.as_deref()
+                        == Some("welcome-meridian@meridian.local")
+                        || m.id.contains("welcome.eml");
+                    local_folders.contains(&m.folder_id) || !is_welcome
+                });
+                let local_searchable_body_texts =
+                    match prepare_searchable_body_texts(&local_messages, cancelled) {
+                        Ok(texts) => texts,
+                        Err(error) => return MailPageLoadResult::Error(error),
+                    };
+                camel_searchable_texts = merge_authoritative_searchable_body_texts(
+                    camel_searchable_texts,
+                    local_searchable_body_texts,
+                );
+                if local_messages.is_empty() && local_folders.is_empty() {
+                    return MailPageLoadResult::Camel {
+                        camel,
+                        searchable_body_texts: camel_searchable_texts,
+                    };
+                }
+                return MailPageLoadResult::Combined {
+                    camel,
+                    local_messages,
+                    local_deleted_ids,
+                    local_folders,
+                    searchable_body_texts: camel_searchable_texts,
+                };
+            }
+        }
+
+        let searchable_body_texts = match prepare_searchable_body_texts(&messages, cancelled) {
+            Ok(texts) => texts,
+            Err(error) => return MailPageLoadResult::Error(error),
+        };
+        return MailPageLoadResult::Local {
+            reason: "Offline-Modus: lokaler Meridian-Speicher".to_string(),
+            messages,
+            local_deleted_ids,
+            local_folders,
+            searchable_body_texts,
+        };
+    }
+    tracing::debug!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Starting synchronous EDS/Camel work on mail worker"
+    );
+    let camel_result = camel_mail_service::load_messages_page_with_progress_and_cancellation(
+        request.source_uid.as_deref(),
+        request.folder_name.as_deref(),
+        request.offset,
+        if request.source_uid.is_some() || request.folder_name.is_some() {
+            request.max_messages_per_folder.max(500)
+        } else {
+            request.max_messages_per_folder
+        },
+        Some(cancelled),
+        progress_sender,
+    );
+    if let Ok(ref camel) = camel_result {
+        if request.source_uid.is_none()
+            && request.folder_name.is_none()
+            && request.offset == 0
+            && (!camel.messages.is_empty() || !camel.folders.is_empty())
+        {
+            camel_mail_service::save_mail_load_cache(camel);
+        }
+    }
+    tracing::debug!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        result = if camel_result.is_ok() { "ok" } else { "error" },
+        "Mail backend returned from EDS/Camel"
+    );
+
+    if cancelled.load(Ordering::Relaxed) {
+        return MailPageLoadResult::Error(gettext("Mail loading was cancelled."));
+    }
+
     if request.is_remote_or_paged() {
         return match camel_result {
             Ok(camel) => prepared_camel_result(camel, cancelled),
@@ -6810,11 +6891,37 @@ fn load_mail_backend(
                 .messages
                 .retain(|m| !parsed_mail_belongs_to_disabled_account(m));
             let store = crate::services::MailStoreService::new_worker_safe(store_config.clone());
+            let incoming_local_rules = MailFilterStore::default()
+                .load()
+                .into_iter()
+                .filter(|rule| {
+                    rule.enabled
+                        && rule.scope == crate::services::mail_filter_service::FilterScope::Incoming
+                        && rule.effective_actions().iter().any(|action| match action {
+                            crate::services::mail_filter_service::FilterAction::MoveToFolder(t)
+                            | crate::services::mail_filter_service::FilterAction::CopyToFolder(t) => {
+                                crate::services::mail_filter_service::is_explicit_local_folder_target(t)
+                            }
+                            _ => false,
+                        })
+                })
+                .collect::<Vec<_>>();
+            if !incoming_local_rules.is_empty() && !camel.messages.is_empty() {
+                let _ = store.apply_local_first_rules_to_remote_messages(
+                    &incoming_local_rules,
+                    &camel.messages,
+                    cancelled,
+                );
+            }
             let local_folders = store.local_folder_definitions();
             let (mut local_messages, local_deleted_ids) =
                 store.load_local_records_with_deleted_cancelable(cancelled, show_deleted);
             local_messages.retain(|m| {
-                local_folders.contains(&m.folder_id) && !parsed_mail_belongs_to_disabled_account(m)
+                let is_welcome = m.message_id.as_deref()
+                    == Some("welcome-meridian@meridian.local")
+                    || m.id.contains("welcome.eml");
+                (local_folders.contains(&m.folder_id) || !is_welcome)
+                    && !parsed_mail_belongs_to_disabled_account(m)
             });
             let mut searchable_body_texts =
                 match prepare_searchable_body_texts(&camel.messages, cancelled) {
@@ -7571,8 +7678,14 @@ mod imp {
                 .replace(MailCommandStack::empty_persistent());
             self.thread_strips_expanded.set(true);
             let preview_position = if let Some(settings) = AppSettings::try_new() {
-                self.dynamic_folder_expanded
-                    .replace(settings.mail_expanded_folders().into_iter().collect());
+                let persisted_expanded: HashSet<String> =
+                    settings.mail_expanded_folders().into_iter().collect();
+                let persisted_local_collapsed: HashSet<String> = persisted_expanded
+                    .iter()
+                    .filter_map(|entry| entry.strip_prefix("local-collapsed:").map(str::to_string))
+                    .collect();
+                self.local_folder_collapsed.replace(persisted_local_collapsed);
+                self.dynamic_folder_expanded.replace(persisted_expanded);
                 self.mail_sort_field.set(MailSortField::Date);
                 self.mail_sort_descending.set(true);
                 if settings.mail_sort_field() != "date" {
@@ -12711,6 +12824,19 @@ impl MailPage {
                 Ok(_) => {
                     dialog.close();
                     if let Some(page) = page.upgrade() {
+                        if current_folder.is_none() {
+                            page.set_dynamic_folder_expanded("local:expanded", true);
+                            if let Some(list) = page.imp().folder_list.borrow().as_ref() {
+                                list.set_visible(true);
+                            }
+                        }
+                        let defs = crate::services::mail_store_service::MailStoreService::new()
+                            .local_folder_definitions();
+                        let counts = page.current_local_folder_counts();
+                        if let Some(list) = page.imp().folder_list.borrow().as_ref() {
+                            page.rebuild_local_folder_rows(list, &counts, &defs);
+                        }
+                        page.imp().local_folder_ids.replace(defs);
                         page.refresh_mail();
                     }
                 }
@@ -12926,6 +13052,25 @@ impl MailPage {
         is_before: bool,
     ) -> bool {
         if dragged.folder_id == target.id() {
+            return false;
+        }
+
+        let dragged_is_account_root = dragged.source_uid.is_some()
+            && dragged.folder_name.as_deref().unwrap_or("").is_empty();
+        if dragged_is_account_root {
+            if let (Some(dragged_src), Some(target_src)) =
+                (dragged.source_uid.as_deref(), target.source_uid())
+            {
+                if Self::canonical_account_uid(dragged_src)
+                    != Self::canonical_account_uid(&target_src)
+                {
+                    return self.reorder_account_roots_by_drag(
+                        dragged_src,
+                        &target_src,
+                        is_before,
+                    );
+                }
+            }
             return false;
         }
 
@@ -13261,6 +13406,23 @@ impl MailPage {
             page.handle_folder_drop_outcome(&dragged, &target_obj, is_before)
         });
         container.add_controller(drop_target);
+
+        let right_click = gtk::GestureClick::builder()
+            .button(gtk::gdk::BUTTON_SECONDARY)
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        let container_for_rc = container.downgrade();
+        let page_for_rc = self.downgrade();
+        let fid_for_rc = folder_id.to_string();
+        right_click.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let (Some(page), Some(c)) = (page_for_rc.upgrade(), container_for_rc.upgrade()) else {
+                return;
+            };
+            let target = FolderSelection::from_folder_id(&fid_for_rc);
+            page.present_folder_context_menu(&c, x, y, target);
+        });
+        container.add_controller(right_click);
     }
 
     /// Folder context actions deliberately use the popup row while it is
@@ -13347,13 +13509,41 @@ impl MailPage {
         if let Some(root) = self.root().and_downcast::<crate::window::MeridianWindow>() {
             root.set_folder_properties_action_enabled(target_has_properties_snapshot);
         }
+        let parent_ref: &gtk::Widget = parent.as_ref();
+        let (anchor_widget, px, py): (gtk::Widget, f64, f64) = if parent_ref.is::<gtk::ListBox>()
+            || parent_ref.is::<gtk::ListBoxRow>()
+        {
+            let mut candidate = parent_ref.parent();
+            let mut found_box = None;
+            while let Some(w) = candidate {
+                if w.is::<gtk::Box>() {
+                    found_box = Some(w);
+                    break;
+                }
+                candidate = w.parent();
+            }
+            if let Some(box_widget) = found_box {
+                let (tx, ty) = parent_ref
+                    .compute_point(
+                        &box_widget,
+                        &gtk::graphene::Point::new(x as f32, y as f32),
+                    )
+                    .map(|p| (p.x() as f64, p.y() as f64))
+                    .unwrap_or((x, y));
+                (box_widget, tx, ty)
+            } else {
+                (parent_ref.clone(), x, y)
+            }
+        } else {
+            (parent_ref.clone(), x, y)
+        };
         let popover = gtk::PopoverMenu::builder()
             .menu_model(&Self::folder_context_menu())
             .has_arrow(false)
-            .pointing_to(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+            .pointing_to(&gtk::gdk::Rectangle::new(px as i32, py as i32, 1, 1))
             .build();
-        popover.set_parent(parent);
-        Self::configure_unclipped_popover_menu(&popover, parent.as_ref(), x, y);
+        popover.set_parent(&anchor_widget);
+        Self::configure_unclipped_popover_menu(&popover, &anchor_widget, px, py);
         let page = self.downgrade();
         popover.connect_closed(move |popover| {
             let page = page.clone();
@@ -14381,6 +14571,13 @@ impl MailPage {
                             match result {
                                 Ok(()) => {
                                     page.show_toast(&gettext("Folder “{folder_name}” deleted").replace("{folder_name}", &folder_name));
+                                    let defs = crate::services::mail_store_service::MailStoreService::new()
+                                        .local_folder_definitions();
+                                    let counts = page.current_local_folder_counts();
+                                    if let Some(list) = page.imp().folder_list.borrow().as_ref() {
+                                        page.rebuild_local_folder_rows(list, &counts, &defs);
+                                    }
+                                    page.imp().local_folder_ids.replace(defs);
                                     page.refresh_mail();
                                 }
                                 Err(error) => {
@@ -14450,14 +14647,15 @@ impl MailPage {
             .borrow()
             .iter()
             .find(|folder| {
-                folder.source_uid == source_uid
-                    && folder.folder_name == folder_name
+                account_sources_match(&folder.source_uid, source_uid)
+                    && (folder.folder_name == folder_name
+                        || folder_names_match(&folder.folder_name, folder_name))
                     && folder.is_selectable
             })
             .map(|folder| {
                 (
-                    source_uid.to_string(),
-                    folder_name.to_string(),
+                    folder.source_uid.clone(),
+                    folder.folder_name.clone(),
                     folder.display_name.clone(),
                 )
             })
@@ -14634,6 +14832,15 @@ impl MailPage {
             self.start_mail_load(MailLoadRequest::initial(), true);
             return;
         }
+        if matches!(kind, CamelFolderMutationKind::Rename) {
+            if let (Some(old_name), Some(new_leaf)) =
+                (selection.folder_name.as_deref(), target_name)
+            {
+                let new_name = folder_path_with_replaced_leaf(old_name, new_leaf);
+                let _ = crate::services::mail_filter_service::MailFilterStore::default()
+                    .rename_folder_references(old_name, &new_name);
+            }
+        }
         if mutated_active && matches!(kind, CamelFolderMutationKind::Rename) {
             let Some(old_name) = selection.folder_name.as_deref() else {
                 self.refresh_mail();
@@ -14766,17 +14973,18 @@ impl MailPage {
                 &self.imp().mail_folder_summaries.borrow(),
             );
         }
-        let local_store_loaded = self
-            .imp()
-            .active_request
-            .borrow()
-            .as_ref()
-            .is_none_or(|request| request.source_uid.is_none());
+        let mut local_ids = self.imp().local_folder_ids.borrow().clone();
+        for id in crate::services::mail_store_service::MailStoreService::new()
+            .local_folder_definitions()
+        {
+            Self::add_local_folder_tree_ids(&mut local_ids, &id);
+            local_ids.insert(id);
+        }
         local_folder_properties_snapshot(
             selection,
             &self.current_local_folder_counts(),
-            &self.imp().local_folder_ids.borrow(),
-            local_store_loaded,
+            &local_ids,
+            true,
         )
     }
 
@@ -14837,6 +15045,44 @@ impl MailPage {
             return;
         };
         let dialog = crate::dialogs::FolderPropertiesDialog::new(snapshot);
+        let page_weak = self.downgrade();
+        dialog.connect_closed(move |_| {
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            if let Some(folder_list) = page.imp().folder_list.borrow().as_ref().cloned() {
+                for idx in 0..folder_list.observe_children().n_items() {
+                    if let Some(row) = folder_list
+                        .row_at_index(idx as i32)
+                        .and_downcast::<gtk::ListBoxRow>()
+                    {
+                        if let (Some(fid), Some(icon)) = (
+                            Self::folder_id(&row),
+                            unsafe { row.data::<gtk::Image>("folder-icon") }
+                                .map(|ptr| unsafe { ptr.as_ref().clone() }),
+                        ) {
+                            let default_icon = unsafe { row.data::<String>("folder-default-icon") }
+                                .map(|ptr| unsafe { ptr.as_ref().clone() })
+                                .unwrap_or_else(|| "folder-symbolic".to_string());
+                            let raw_id = fid.strip_prefix("custom:").unwrap_or(&fid);
+                            let key = if raw_id == "spam" {
+                                "local:junk".to_string()
+                            } else {
+                                format!("local:{}", raw_id.to_ascii_lowercase())
+                            };
+                            crate::dialogs::folder_properties_dialog::apply_folder_icon_customization(
+                                &icon,
+                                &key,
+                                &default_icon,
+                            );
+                        }
+                    }
+                }
+                let summaries = page.imp().mail_folder_summaries.borrow().clone();
+                page.force_rebuild_camel_folder_rows(&folder_list, &summaries);
+            }
+            page.refresh_mail();
+        });
         dialog.present(self.root().as_ref());
     }
 
@@ -16177,8 +16423,30 @@ impl MailPage {
         let filter_store = MailFilterStore::default();
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let result = MailStoreService::new_worker_safe(store_config)
-                .run_all_active_filters_with_store(&filter_store);
+            let store = MailStoreService::new_worker_safe(store_config);
+            let mut result = store.run_all_active_filters_with_store(&filter_store);
+            if let Ok(ref mut report) = result {
+                let active_rules = filter_store
+                    .load()
+                    .into_iter()
+                    .filter(|r| r.enabled)
+                    .collect::<Vec<_>>();
+                if !active_rules.is_empty() {
+                    if let Some(cached) = camel_mail_service::load_mail_load_cache() {
+                        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+                        let remote_report = store.apply_local_first_rules_to_remote_messages(
+                            &active_rules,
+                            &cached.messages,
+                            &cancelled,
+                        );
+                        report.matched_messages += remote_report.matched_messages;
+                        report.changed_messages += remote_report.changed_messages;
+                        report.moved_messages += remote_report.moved_messages;
+                        report.copied_messages += remote_report.copied_messages;
+                        report.deleted_messages += remote_report.deleted_messages;
+                    }
+                }
+            }
             if let Err(error) = sender.send_blocking(result) {
                 tracing::debug!(%error, "Apply filters result channel dropped");
             }
@@ -16248,20 +16516,23 @@ impl MailPage {
         destination_folder: &str,
     ) -> Result<bool, MailOperationError> {
         let command = if destination_source == "local" {
-            if message.backend_location().is_some() {
-                return Err(MailOperationError::Unsupported {
-                    operation: crate::services::mail_operations_service::MailOperationKind::Move,
-                    backend: "message from account to local import",
-                });
+            if let Some(location) = message.backend_location() {
+                MailCommand::move_remote_to_local(
+                    message.id(),
+                    location,
+                    destination_folder.to_string(),
+                    None,
+                )
+            } else {
+                if message.folder_id().eq_ignore_ascii_case(destination_folder) {
+                    return Ok(false);
+                }
+                MailCommand::move_local(
+                    message.id(),
+                    message.folder_id(),
+                    destination_folder.to_string(),
+                )
             }
-            if message.folder_id().eq_ignore_ascii_case(destination_folder) {
-                return Ok(false);
-            }
-            MailCommand::move_local(
-                message.id(),
-                message.folder_id(),
-                destination_folder.to_string(),
-            )
         } else {
             let Some(location) = message.backend_location() else {
                 return Err(MailOperationError::Unsupported {
@@ -16295,22 +16566,25 @@ impl MailPage {
         destination_folder: &str,
     ) -> Result<bool, MailOperationError> {
         let command = if destination_source == "local" {
-            if message.backend_location().is_some() {
-                return Err(MailOperationError::Unsupported {
-                    operation: crate::services::mail_operations_service::MailOperationKind::Copy,
-                    backend: "online message to local import",
-                });
+            if let Some(location) = message.backend_location() {
+                MailCommand::copy_remote_to_local(
+                    message.id(),
+                    location,
+                    destination_folder.to_string(),
+                    None,
+                )
+            } else {
+                if message.id().contains("::copy::") {
+                    return Err(MailOperationError::Unsupported {
+                        operation: crate::services::mail_operations_service::MailOperationKind::Copy,
+                        backend: "local copy of a copy",
+                    });
+                }
+                if message.folder_id().eq_ignore_ascii_case(destination_folder) {
+                    return Ok(false);
+                }
+                MailCommand::copy_local(message.id(), destination_folder.to_string())
             }
-            if message.id().contains("::copy::") {
-                return Err(MailOperationError::Unsupported {
-                    operation: crate::services::mail_operations_service::MailOperationKind::Copy,
-                    backend: "local copy of a copy",
-                });
-            }
-            if message.folder_id().eq_ignore_ascii_case(destination_folder) {
-                return Ok(false);
-            }
-            MailCommand::copy_local(message.id(), destination_folder.to_string())
         } else {
             let Some(location) = message.backend_location() else {
                 return Err(MailOperationError::Unsupported {
@@ -17115,10 +17389,7 @@ impl MailPage {
             }
         }
 
-        let has_local_messages = messages
-            .iter()
-            .any(|message| message.backend_location().is_none());
-        if has_local_messages {
+        if !messages.is_empty() {
             for (folder_name, label) in [
                 ("inbox", gettext("Local Inbox")),
                 ("sent", gettext("Local · Sent")),
@@ -17217,13 +17488,23 @@ impl MailPage {
         let commands = if destination_source == "local" {
             messages
                 .iter()
-                .filter(|message| message.backend_location().is_none())
-                .map(|message| {
-                    MailCommand::move_local(
-                        message.id(),
-                        message.folder_id(),
-                        destination_folder.to_string(),
-                    )
+                .filter_map(|message| {
+                    if let Some(location) = message.backend_location() {
+                        Some(MailCommand::move_remote_to_local(
+                            message.id(),
+                            location,
+                            destination_folder.to_string(),
+                            None,
+                        ))
+                    } else if !message.folder_id().eq_ignore_ascii_case(destination_folder) {
+                        Some(MailCommand::move_local(
+                            message.id(),
+                            message.folder_id(),
+                            destination_folder.to_string(),
+                        ))
+                    } else {
+                        None
+                    }
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -17278,17 +17559,6 @@ impl MailPage {
         }
 
         let commands = if destination_source == "local" {
-            if has_remote {
-                self.report_operation_error(
-                    &gettext("Copy not possible"),
-                    &MailOperationError::Unsupported {
-                        operation:
-                            crate::services::mail_operations_service::MailOperationKind::Copy,
-                        backend: "online message to local import",
-                    },
-                );
-                return;
-            }
             if messages
                 .iter()
                 .any(|message| message.id().contains("::copy::"))
@@ -17305,9 +17575,22 @@ impl MailPage {
             }
             messages
                 .iter()
-                .filter(|message| !message.folder_id().eq_ignore_ascii_case(destination_folder))
-                .map(|message| {
-                    MailCommand::copy_local(message.id(), destination_folder.to_string())
+                .filter_map(|message| {
+                    if let Some(location) = message.backend_location() {
+                        Some(MailCommand::copy_remote_to_local(
+                            message.id(),
+                            location,
+                            destination_folder.to_string(),
+                            None,
+                        ))
+                    } else if !message.folder_id().eq_ignore_ascii_case(destination_folder) {
+                        Some(MailCommand::copy_local(
+                            message.id(),
+                            destination_folder.to_string(),
+                        ))
+                    } else {
+                        None
+                    }
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -17529,10 +17812,18 @@ impl MailPage {
 
         for (id, icon, label, badge) in folders {
             let row = Self::create_folder_row(id, icon, label, badge);
-            if id != "all" {
+            if id == "all" {
+                row.set_visible(false);
+            } else {
                 self.install_local_folder_drag_and_drop(&row, id);
             }
             folder_list.append(&row);
+        }
+        let initial_local_defs = crate::services::mail_store_service::MailStoreService::new()
+            .local_folder_definitions();
+        if !initial_local_defs.is_empty() {
+            self.rebuild_local_folder_rows(&folder_list, &HashMap::new(), &initial_local_defs);
+            self.imp().local_folder_ids.replace(initial_local_defs);
         }
 
         let local_folder_click = gtk::GestureClick::builder()
@@ -17732,7 +18023,31 @@ impl MailPage {
                         .folder_name()
                         .filter(|folder_name| !folder_name.trim().is_empty()),
                 };
-                let Some(target) = popup_folder_target(selection, folder.selectable()) else {
+                let target = popup_folder_target(selection.clone(), folder.selectable()).or_else(|| {
+                    if tree_row.depth() != 0 {
+                        return None;
+                    }
+                    let root_uid = selection.source_uid.as_deref()?;
+                    let summaries = page.imp().mail_folder_summaries.borrow();
+                    summaries
+                        .iter()
+                        .find(|f| {
+                            account_sources_match(&f.source_uid, root_uid)
+                                && f.is_selectable
+                                && f.folder_name.eq_ignore_ascii_case("INBOX")
+                        })
+                        .or_else(|| {
+                            summaries
+                                .iter()
+                                .find(|f| account_sources_match(&f.source_uid, root_uid) && f.is_selectable)
+                        })
+                        .map(|f| FolderSelection {
+                            folder_id: Self::dynamic_folder_key(&f.source_uid, &f.folder_name),
+                            source_uid: Some(f.source_uid.clone()),
+                            folder_name: Some(f.folder_name.clone()),
+                        })
+                });
+                let Some(target) = target else {
                     return;
                 };
                 page.present_folder_context_menu(&row, x, y, target);
@@ -17767,7 +18082,31 @@ impl MailPage {
                         .folder_name()
                         .filter(|folder_name| !folder_name.trim().is_empty()),
                 };
-                let Some(target) = popup_folder_target(selection, folder.selectable()) else {
+                let target = popup_folder_target(selection.clone(), folder.selectable()).or_else(|| {
+                    if tree_row.depth() != 0 {
+                        return None;
+                    }
+                    let root_uid = selection.source_uid.as_deref()?;
+                    let summaries = page.imp().mail_folder_summaries.borrow();
+                    summaries
+                        .iter()
+                        .find(|f| {
+                            account_sources_match(&f.source_uid, root_uid)
+                                && f.is_selectable
+                                && f.folder_name.eq_ignore_ascii_case("INBOX")
+                        })
+                        .or_else(|| {
+                            summaries
+                                .iter()
+                                .find(|f| account_sources_match(&f.source_uid, root_uid) && f.is_selectable)
+                        })
+                        .map(|f| FolderSelection {
+                            folder_id: Self::dynamic_folder_key(&f.source_uid, &f.folder_name),
+                            source_uid: Some(f.source_uid.clone()),
+                            folder_name: Some(f.folder_name.clone()),
+                        })
+                });
+                let Some(target) = target else {
                     return;
                 };
                 page.present_folder_context_menu(&row, x, y, target);
@@ -17848,7 +18187,7 @@ impl MailPage {
                 let Some(folder) = tree_row.item().and_downcast::<FolderObject>() else {
                     return None;
                 };
-                if tree_row.depth() == 0 || !folder.selectable() {
+                if tree_row.depth() > 0 && !folder.selectable() {
                     return None;
                 }
                 let payload = FolderDragPayload {
@@ -18125,7 +18464,24 @@ impl MailPage {
                     icon.set_tooltip_text(None);
                 } else {
                     icon.set_visible(true);
-                    set_image_icon_with_fallback(&icon, &folder.icon_name(), "folder-symbolic");
+                    let default_icon = folder.icon_name();
+                    set_image_icon_with_fallback(&icon, &default_icon, "folder-symbolic");
+                    let remote_key = format!(
+                        "remote:{}",
+                        folder
+                            .folder_name()
+                            .unwrap_or_else(|| folder.name())
+                            .to_ascii_lowercase()
+                    );
+                    crate::dialogs::folder_properties_dialog::apply_folder_icon_customization(
+                        &icon,
+                        &remote_key,
+                        if default_icon.is_empty() {
+                            "folder-symbolic"
+                        } else {
+                            &default_icon
+                        },
+                    );
                     icon.set_tooltip_text(None);
                 }
             }
@@ -18561,29 +18917,109 @@ impl MailPage {
         search_list.set_margin_start(2);
         Self::populate_search_folders(&search_list);
 
-        let local_folder_toolbar = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
-            .margin_start(4)
-            .margin_end(4)
-            .margin_top(3)
-            .margin_bottom(1)
+        let is_local_expanded = self
+            .imp()
+            .dynamic_folder_expanded
+            .borrow()
+            .contains("local:expanded");
+        let is_local_collapsed = !is_local_expanded;
+        folder_list.set_visible(!is_local_collapsed);
+
+        let local_arrow = gtk::Image::builder()
+            .icon_name(if is_local_collapsed {
+                "pan-end-symbolic"
+            } else {
+                "pan-down-symbolic"
+            })
+            .pixel_size(16)
+            .valign(gtk::Align::Center)
             .build();
         let local_folder_header = gtk::Label::builder()
             .label(gettext("On This Computer"))
-            .css_classes(["sidebar-section-header"])
+            .css_classes(["account-heading"])
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(pango::EllipsizeMode::End)
             .build();
-        let new_local_folder_button = gtk::Button::builder()
-            .icon_name("folder-new-symbolic")
-            .tooltip_text(gettext("Create local folder"))
-            .css_classes(["flat", "circular"])
-            .valign(gtk::Align::Center)
+        let local_folder_toolbar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .margin_start(1)
+            .margin_end(5)
+            .margin_top(1)
+            .margin_bottom(0)
+            .css_classes([
+                "sidebar-account-row",
+                "account-root-row",
+                "mail-sidebar-row",
+            ])
+            .tooltip_text(if is_local_collapsed {
+                gettext("Expand group")
+            } else {
+                gettext("Collapse group")
+            })
             .build();
+        local_folder_toolbar.set_cursor_from_name(Some("pointer"));
+        local_folder_toolbar.append(&local_arrow);
         local_folder_toolbar.append(&local_folder_header);
-        local_folder_toolbar.append(&new_local_folder_button);
+
+        let local_toggle_click = gtk::GestureClick::builder()
+            .button(gtk::gdk::BUTTON_PRIMARY)
+            .build();
+        let page_for_local_toggle = self.downgrade();
+        let local_arrow_for_toggle = local_arrow.clone();
+        let local_header_for_toggle = local_folder_toolbar.clone();
+        let local_list_for_toggle = folder_list.clone();
+        local_toggle_click.connect_released(move |_, _, _, _| {
+            let Some(page) = page_for_local_toggle.upgrade() else {
+                return;
+            };
+            let mut set = page.imp().dynamic_folder_expanded.borrow_mut();
+            let is_now_collapsed = if set.contains("local:expanded") {
+                set.remove("local:expanded");
+                true
+            } else {
+                set.insert("local:expanded".to_string());
+                false
+            };
+            let set_clone = set.clone();
+            drop(set);
+            page.persist_dynamic_folder_expanded(&set_clone);
+
+            local_arrow_for_toggle.set_icon_name(Some(if is_now_collapsed {
+                "pan-end-symbolic"
+            } else {
+                "pan-down-symbolic"
+            }));
+            local_header_for_toggle.set_tooltip_text(Some(&if is_now_collapsed {
+                gettext("Expand group")
+            } else {
+                gettext("Collapse group")
+            }));
+            local_list_for_toggle.set_visible(!is_now_collapsed);
+        });
+        local_folder_toolbar.add_controller(local_toggle_click);
+
+        let local_header_rc = gtk::GestureClick::builder()
+            .button(gtk::gdk::BUTTON_SECONDARY)
+            .build();
+        let page_for_local_header_rc = self.downgrade();
+        let toolbar_for_rc = local_folder_toolbar.downgrade();
+        local_header_rc.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let (Some(page), Some(toolbar)) =
+                (page_for_local_header_rc.upgrade(), toolbar_for_rc.upgrade())
+            else {
+                return;
+            };
+            page.present_folder_context_menu(
+                &toolbar,
+                x,
+                y,
+                FolderSelection::from_folder_id("inbox"),
+            );
+        });
+        local_folder_toolbar.add_controller(local_header_rc);
 
         let is_collapsed = self
             .imp()
@@ -18624,7 +19060,6 @@ impl MailPage {
             })
             .pixel_size(16)
             .valign(gtk::Align::Center)
-            .css_classes(["dim-label"])
             .build();
 
         let unified_folder_header = gtk::Label::builder()
@@ -18644,11 +19079,11 @@ impl MailPage {
 
         let unified_folder_toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(5)
-            .margin_start(4)
-            .margin_end(4)
-            .margin_top(3)
-            .margin_bottom(1)
+            .spacing(2)
+            .margin_start(1)
+            .margin_end(5)
+            .margin_top(1)
+            .margin_bottom(0)
             .css_classes([
                 "sidebar-account-row",
                 "account-root-row",
@@ -18737,16 +19172,10 @@ impl MailPage {
             .spacing(0)
             .visible(true)
             .build();
-        let page_for_new_local_folder = self.downgrade();
-        new_local_folder_button.connect_clicked(move |_| {
-            if let Some(page) = page_for_new_local_folder.upgrade() {
-                page.present_local_folder_dialog(None);
-            }
-        });
         let local_folder_section = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
-            .visible(false)
+            .visible(true)
             .build();
         local_folder_section.append(&local_folder_toolbar);
         local_folder_section.append(&folder_list);
@@ -18754,7 +19183,6 @@ impl MailPage {
             .local_folder_section
             .replace(Some(local_folder_section.clone()));
         folder_section.append(&unified_folder_section);
-        folder_section.append(&local_folder_section);
         let search_section = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
@@ -18764,6 +19192,7 @@ impl MailPage {
         search_section.append(&search_list);
 
         folder_section.append(&dynamic_folder_view);
+        folder_section.append(&local_folder_section);
         folder_section.append(&search_section);
 
         let sidebar_box = gtk::Box::builder()
@@ -18893,7 +19322,8 @@ impl MailPage {
             folder_id, icon_name, label_text, badge_text, None, None, false,
         );
         if let Some(hbox) = row.child().and_downcast::<gtk::Box>() {
-            hbox.set_margin_start(20);
+            hbox.set_margin_start(16);
+            hbox.set_margin_end(2);
             hbox.set_spacing(5);
         }
         row
@@ -19016,9 +19446,9 @@ impl MailPage {
     ) -> gtk::ListBoxRow {
         let hbox = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .margin_start(6)
-            .margin_end(6)
+            .spacing(5)
+            .margin_start(16)
+            .margin_end(2)
             .css_classes(["mail-sidebar-row"])
             .build();
 
@@ -19028,6 +19458,17 @@ impl MailPage {
             .build();
         set_image_icon_with_fallback(&icon, icon_name, "folder-symbolic");
         icon.add_css_class("dim-label");
+        let raw_local = folder_id.strip_prefix("custom:").unwrap_or(folder_id);
+        let local_key = if raw_local == "spam" {
+            "local:junk".to_string()
+        } else {
+            format!("local:{}", raw_local.to_ascii_lowercase())
+        };
+        crate::dialogs::folder_properties_dialog::apply_folder_icon_customization(
+            &icon,
+            &local_key,
+            icon_name,
+        );
 
         let label = gtk::Label::builder()
             .label(label_text)
@@ -19055,6 +19496,8 @@ impl MailPage {
         let row = gtk::ListBoxRow::builder().child(&hbox).build();
         unsafe {
             row.set_data("folder-id", folder_id.to_string());
+            row.set_data("folder-icon", icon);
+            row.set_data("folder-default-icon", icon_name.to_string());
             row.set_data("folder-badge", badge);
             row.set_data("folder-label", label);
             row.set_data(
@@ -19205,17 +19648,21 @@ impl MailPage {
                 "",
                 None,
                 None,
-                true,
+                false,
             );
             if let Some(container) = row.child().and_downcast::<gtk::Box>() {
-                container
-                    .set_margin_start(compact_folder_indent(Self::local_folder_depth(&folder_id)));
+                let depth = Self::local_folder_depth(&folder_id);
+                let indent = if has_children {
+                    (depth * 16) as i32
+                } else {
+                    ((depth + 1) * 16) as i32
+                };
+                container.set_margin_start(indent);
             }
             unsafe {
                 row.set_data("folder-local-dynamic", true);
             }
             self.add_local_folder_expander(&row, &folder_id, has_children);
-            self.add_local_folder_actions(&row, &folder_id);
             self.install_local_folder_drag_and_drop(&row, &folder_id);
             folder_list.append(&row);
         }
@@ -19313,94 +19760,60 @@ impl MailPage {
             .local_folder_collapsed
             .borrow()
             .contains(folder_id);
-        let button = gtk::Button::builder()
+        let arrow = gtk::Image::builder()
             .icon_name(if collapsed {
                 "pan-end-symbolic"
             } else {
                 "pan-down-symbolic"
             })
-            .tooltip_text(if collapsed {
-                "Unterordner einblenden"
-            } else {
-                "Unterordner ausblenden"
-            })
-            .css_classes(["flat", "circular"])
+            .pixel_size(16)
             .valign(gtk::Align::Center)
+            .tooltip_text(if collapsed {
+                gettext("Show subfolders")
+            } else {
+                gettext("Hide subfolders")
+            })
             .build();
         if let Some(container) = row.child().and_downcast::<gtk::Box>() {
-            container.prepend(&button);
+            if let Some(first_child) = container.first_child() {
+                container.remove(&first_child);
+                let pair = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(0)
+                    .valign(gtk::Align::Center)
+                    .build();
+                pair.append(&arrow);
+                pair.append(&first_child);
+                container.prepend(&pair);
+            } else {
+                container.prepend(&arrow);
+            }
         }
         let folder_id = folder_id.to_string();
         let page = self.downgrade();
-        button.connect_clicked(move |_| {
+        let click = gtk::GestureClick::new();
+        click.set_button(gtk::gdk::ffi::GDK_BUTTON_PRIMARY as u32);
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        click.connect_pressed(move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
             let Some(page) = page.upgrade() else {
                 return;
             };
             let mut collapsed = page.imp().local_folder_collapsed.borrow_mut();
-            if !collapsed.insert(folder_id.clone()) {
+            let is_now_collapsed = if !collapsed.insert(folder_id.clone()) {
                 collapsed.remove(&folder_id);
-            }
+                false
+            } else {
+                true
+            };
             drop(collapsed);
+            page.set_dynamic_folder_expanded(
+                &format!("local-collapsed:{folder_id}"),
+                is_now_collapsed,
+            );
             page.refresh_mail();
         });
-    }
-
-    fn add_local_folder_actions(&self, row: &gtk::ListBoxRow, folder_id: &str) {
-        let Some(container) = row.child().and_downcast::<gtk::Box>() else {
-            return;
-        };
-
-        let rename_button = gtk::Button::builder()
-            .icon_name("document-edit-symbolic")
-            .tooltip_text(gettext("Rename local folder"))
-            .css_classes(["flat", "circular"])
-            .valign(gtk::Align::Center)
-            .build();
-        let delete_button = gtk::Button::builder()
-            .icon_name("user-trash-symbolic")
-            .tooltip_text(gettext("Delete empty local folder"))
-            .css_classes(["flat", "circular"])
-            .valign(gtk::Align::Center)
-            .build();
-        container.append(&rename_button);
-        container.append(&delete_button);
-
-        let folder_id_for_rename = folder_id.to_string();
-        let page_for_rename = self.downgrade();
-        rename_button.connect_clicked(move |_| {
-            if let Some(page) = page_for_rename.upgrade() {
-                page.present_local_folder_dialog(Some(&folder_id_for_rename));
-            }
-        });
-
-        let folder_id_for_delete = folder_id.to_string();
-        let page_for_delete = self.downgrade();
-        delete_button.connect_clicked(move |button| {
-            let folder_id = folder_id_for_delete.clone();
-            let page = page_for_delete.clone();
-            let heading = gettext("Delete local folder?");
-            let body = gettext("Only empty app-owned folders can be deleted. Imported mail files remain unchanged.");
-            let del_lbl = gettext("Delete");
-            crate::dialogs::run_destructive_action(
-                button,
-                &heading,
-                &body,
-                &del_lbl,
-                move || {
-                    let result = crate::services::MailStoreService::new()
-                        .delete_local_folder(&folder_id);
-                    if let Some(page) = page.upgrade() {
-                        match result {
-                            Ok(()) => page.refresh_mail(),
-                            Err(error) => page.show_toast(&format!(
-                                "{}: {error}",
-                                gettext("Local folder could not be deleted")
-                            )),
-                        }
-                    }
-                },
-            );
-        });
+        arrow.add_controller(click);
     }
     fn localize_folder_name(name: &str) -> String {
         let clean = name.trim();
@@ -19490,7 +19903,12 @@ impl MailPage {
                     .map(|value| *value.as_ref())
                     .unwrap_or(false)
             };
-            if is_dynamic {
+            let is_local_dynamic = unsafe {
+                row.data::<bool>("folder-local-dynamic")
+                    .map(|value| *value.as_ref())
+                    .unwrap_or(false)
+            };
+            if is_dynamic && !is_local_dynamic {
                 dynamic_rows.push(row);
             }
         }
@@ -19569,10 +19987,18 @@ impl MailPage {
                         .and_downcast::<gtk::TreeListRow>()
                     {
                         if let Some(folder) = row.item().and_downcast::<FolderObject>() {
+                            let id = folder.id();
+                            let trimmed = id.trim_end_matches('\0');
                             if row.is_expanded() {
-                                expanded_ids.insert(folder.id());
+                                expanded_ids.insert(id.clone());
+                                if row.depth() == 0 {
+                                    expanded_ids.remove(&format!("account-collapsed:{trimmed}"));
+                                }
                             } else {
-                                expanded_ids.remove(&folder.id());
+                                expanded_ids.remove(&id);
+                                if row.depth() == 0 {
+                                    expanded_ids.insert(format!("account-collapsed:{trimmed}"));
+                                }
                             }
                         }
                     }
@@ -20127,12 +20553,19 @@ impl MailPage {
                         .map(|folder| {
                             let id = folder.id();
                             let trimmed = id.trim_end_matches('\0');
-                            expanded_ids.contains(&id)
+                            let explicitly_collapsed =
+                                expanded_ids.contains(&format!("account-collapsed:{trimmed}"));
+                            let explicitly_expanded = expanded_ids.contains(&id)
                                 || (!trimmed.is_empty() && expanded_ids.contains(trimmed))
-                                || expanded_ids.contains(&format!("{trimmed}\0"))
+                                || expanded_ids.contains(&format!("{trimmed}\0"));
+                            if row.depth() == 0 {
+                                !explicitly_collapsed
+                            } else {
+                                explicitly_expanded
+                            }
                         })
                         .unwrap_or(false);
-                    if should_expand || row.depth() == 0 {
+                    if should_expand {
                         row.set_expanded(true);
                     }
                 }
@@ -20242,6 +20675,14 @@ impl MailPage {
             }
         }
 
+        if let Some(settings) = AppSettings::try_new() {
+            for (key, order) in folder_sort_order_from_setting(&settings.mail_folder_sort_order()) {
+                if let Some(uid) = key.strip_prefix("account-order:") {
+                    order_map.insert(uid.to_string(), order as usize);
+                }
+            }
+        }
+
         (order_map, shared_uids)
     }
 
@@ -20320,13 +20761,65 @@ impl MailPage {
         }
     }
 
+    pub(crate) fn reorder_account_roots_by_drag(
+        &self,
+        dragged_source_uid: &str,
+        target_source_uid: &str,
+        is_before: bool,
+    ) -> bool {
+        let Some(root_store) = self.imp().dynamic_folder_store.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let dragged_canon = Self::canonical_account_uid(dragged_source_uid).to_string();
+        let target_canon = Self::canonical_account_uid(target_source_uid).to_string();
+        if dragged_canon.is_empty() || target_canon.is_empty() || dragged_canon == target_canon {
+            return false;
+        }
+        let mut ordered_uids = Vec::new();
+        for index in 0..root_store.n_items() {
+            if let Some(root) = root_store.item(index).and_downcast::<FolderObject>() {
+                if let Some(uid) = root.source_uid() {
+                    ordered_uids.push(Self::canonical_account_uid(&uid).to_string());
+                }
+            }
+        }
+        let Some(from_idx) = ordered_uids.iter().position(|u| u == &dragged_canon) else {
+            return false;
+        };
+        let removed = ordered_uids.remove(from_idx);
+        let Some(target_idx) = ordered_uids.iter().position(|u| u == &target_canon) else {
+            return false;
+        };
+        let insert_idx = if is_before { target_idx } else { target_idx + 1 };
+        ordered_uids.insert(insert_idx, removed);
+
+        let mut sort_order = self.folder_sort_order();
+        for (idx, uid) in ordered_uids.iter().enumerate() {
+            sort_order.insert(format!("account-order:{uid}"), (idx + 1) as u32);
+        }
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_folder_sort_order(&folder_sort_order_to_setting(&sort_order));
+        }
+        self.reorder_account_roots();
+        true
+    }
+
     pub(crate) fn set_dynamic_folder_expanded(&self, folder_id: &str, expanded: bool) {
         let mut set = self.imp().dynamic_folder_expanded.borrow_mut();
-        let changed = if expanded {
+        let trimmed = folder_id.trim_end_matches('\0');
+        let collapsed_marker = format!("account-collapsed:{trimmed}");
+        let mut changed = if expanded {
             set.insert(folder_id.to_string())
         } else {
             set.remove(folder_id)
         };
+        if folder_id.ends_with('\0') {
+            if expanded {
+                changed |= set.remove(&collapsed_marker);
+            } else {
+                changed |= set.insert(collapsed_marker);
+            }
+        }
         if changed {
             let set_clone = set.clone();
             drop(set);
@@ -20336,7 +20829,17 @@ impl MailPage {
 
     pub(crate) fn persist_dynamic_folder_expanded(&self, expanded: &HashSet<String>) {
         if let Some(settings) = AppSettings::try_new() {
-            let mut list: Vec<String> = expanded.iter().cloned().collect();
+            let explicit_local = settings.mail_show_local_folders_explicit();
+            let mut list: Vec<String> = expanded
+                .iter()
+                .filter(|s| s.as_str() != "local:show" && s.as_str() != "local:hide")
+                .cloned()
+                .collect();
+            match explicit_local {
+                Some(true) => list.push("local:show".to_string()),
+                Some(false) => list.push("local:hide".to_string()),
+                None => {}
+            }
             list.sort();
             settings.set_mail_expanded_folders(&list);
         }
@@ -20848,7 +21351,7 @@ impl MailPage {
 
         let target_unified_id = if selection.folder_id.starts_with("unified_") {
             Some(selection.folder_id.clone())
-        } else if unified_is_visible && selection.source_uid.is_none() {
+        } else if unified_is_visible && !local_section_visible && selection.source_uid.is_none() {
             match selection.folder_id.as_str() {
                 "inbox" | "all" => Some("unified_inbox".to_string()),
                 "sent" => Some("unified_sent".to_string()),
@@ -20860,7 +21363,7 @@ impl MailPage {
 
         let was_updating = self.imp().updating_folder_rows.replace(true);
 
-        if target_unified_id.is_none() && !local_section_visible {
+        if target_unified_id.is_none() && (!local_section_visible || selection.source_uid.is_some()) {
             if let Some(dynamic_selection) = self.imp().dynamic_folder_selection.borrow().as_ref() {
                 if let Some(row) = dynamic_selection.selected_item().and_downcast::<gtk::TreeListRow>() {
                     if !(row.depth() == 0 && selection.folder_name.is_some()) {
@@ -21016,14 +21519,26 @@ impl MailPage {
                             };
                             if is_match {
                                 if !row.is_expanded() {
-                                    row.set_expanded(true);
-                                    any_newly_expanded = true;
-                                    if row.depth() == 0 {
-                                        self.imp()
+                                    let id = folder.id();
+                                    let trimmed = id.trim_end_matches('\0');
+                                    let explicitly_collapsed = row.depth() == 0
+                                        && self
+                                            .imp()
                                             .dynamic_folder_expanded
-                                            .borrow_mut()
-                                            .insert(folder.id());
-                                        newly_expanded = true;
+                                            .borrow()
+                                            .contains(&format!("account-collapsed:{trimmed}"));
+                                    if !(was_updating && explicitly_collapsed) {
+                                        row.set_expanded(true);
+                                        any_newly_expanded = true;
+                                        if row.depth() == 0 {
+                                            let collapsed_key =
+                                                format!("account-collapsed:{trimmed}");
+                                            let mut exp =
+                                                self.imp().dynamic_folder_expanded.borrow_mut();
+                                            exp.remove(&collapsed_key);
+                                            exp.insert(id);
+                                            newly_expanded = true;
+                                        }
                                     }
                                 }
                                 break;
@@ -22195,7 +22710,7 @@ impl MailPage {
                 "select-all" => ("edit-select-all-symbolic", gettext("Select All"), Some("win.select-all-messages")),
                 "refresh-mail" => ("view-refresh-symbolic", gettext("Refresh"), Some("win.refresh-mail")),
                 "apply-filters" => ("system-run-symbolic", gettext("Run Filters"), Some("win.apply-filters")),
-                "filter-editor" => ("emblem-system-symbolic", gettext("Filter Rules"), Some("win.open-filter-editor")),
+                "filter-editor" => ("emblem-system-symbolic", gettext("Filter Rules"), Some("win.filter-editor")),
                 "search-advanced" => ("system-search-symbolic", gettext("Adv. Search"), Some("win.search-advanced")),
                 "oof-settings" => ("user-away-symbolic", gettext("Out of Office"), Some("win.open-oof-settings")),
                 "expunge" => ("user-trash-symbolic", gettext("Expunge"), Some("win.folder-expunge")),
@@ -44409,6 +44924,7 @@ impl MailPage {
 
             // SQLite-First Fast Path: Deliver local database summary immediately (<10ms)
             // Skip sending an intermediate cache snapshot if Stage 0 already applied the initial page synchronously.
+            let mut fast_path_sent = sync_fast_path_applied;
             if !req_offline && req_offset == 0 {
                 if let Some(hint) = req_source_uid.as_deref() {
                     let folder_to_load = req_folder_name.as_deref().unwrap_or("");
@@ -44461,6 +44977,7 @@ impl MailPage {
                             let cached_result = prepared_camel_result(fast_load, &cancellation);
                             if !cancellation.load(Ordering::Relaxed) {
                                 let _ = sender.send_blocking((cached_result, true));
+                                fast_path_sent = true;
                             }
                         }
                     }
@@ -44492,10 +45009,12 @@ impl MailPage {
                         let cached_result = prepared_camel_result(fast_load, &cancellation);
                         if !cancellation.load(Ordering::Relaxed) {
                             let _ = sender.send_blocking((cached_result, true));
+                            fast_path_sent = true;
                         }
                     }
                 }
-            } else if load_startup_cache && !req_offline {
+            }
+            if !fast_path_sent && !req_offline && req_offset == 0 {
                 if let Some(mut cached) = camel_mail_service::load_mail_load_cache() {
                     if !deleted_snapshot.is_empty() {
                         cached.messages.retain(|m| !deleted_snapshot.contains(&m.id));
@@ -45788,7 +46307,9 @@ impl MailPage {
 
         if pending.result_kind != "local" {
             if pending.replace {
-                self.imp().local_folder_ids.replace(HashSet::new());
+                let defs = crate::services::mail_store_service::MailStoreService::new()
+                    .local_folder_definitions();
+                self.imp().local_folder_ids.replace(defs);
             }
             self.imp().graph_backend_active.set(pending.camel_is_graph);
             if !pending.camel_is_graph {
@@ -46060,21 +46581,31 @@ impl MailPage {
                 .is_some_and(|s| s.n_items() > 0);
         let mut visible_local_folders = pending.local_folders.clone();
         visible_local_folders.extend(
+            crate::services::mail_store_service::MailStoreService::new()
+                .local_folder_definitions(),
+        );
+        visible_local_folders.extend(
             pending
                 .local_counts
                 .keys()
                 .filter(|folder_id| folder_id.starts_with("custom:"))
                 .cloned(),
         );
+        let effective_local_counts = if pending.local_counts.is_empty() && !is_local {
+            self.current_local_folder_counts()
+        } else {
+            pending.local_counts.clone()
+        };
+        let show_local_section = true;
         if let Some(section) = self.imp().local_folder_section.borrow().as_ref() {
-            section.set_visible(is_local && !has_dynamic_accounts);
+            section.set_visible(show_local_section);
         }
 
         if is_local {
             if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
                 self.rebuild_local_folder_rows(
                     folder_list,
-                    &pending.local_counts,
+                    &effective_local_counts,
                     &visible_local_folders,
                 );
             }
@@ -46099,18 +46630,21 @@ impl MailPage {
                 state.set_label(&format!("{reason} · {count_str}"));
             }
         } else {
-            if pending.combined {
+            if pending.combined || show_local_section {
                 if let Some(folder_list) = self.imp().folder_list.borrow().as_ref() {
                     self.rebuild_local_folder_rows(
                         folder_list,
-                        &pending.local_counts,
+                        &effective_local_counts,
                         &visible_local_folders,
                     );
                     self.update_camel_folder_counts(
                         folder_list,
                         &pending.camel_folders,
-                        Some(&pending.local_counts),
+                        Some(&effective_local_counts),
                     );
+                    if show_local_section && has_dynamic_accounts {
+                        Self::update_folder_counts(folder_list, &effective_local_counts);
+                    }
                 }
                 self.imp()
                     .local_folder_ids
@@ -46908,49 +47442,26 @@ impl MailPage {
                     .map(|folder| (folder.unread_count, folder.total_count))
                     .unwrap_or((0, 0))
             } else {
+                let Some(counts) = local_counts else {
+                    continue;
+                };
                 let local_key = if data.folder_id == "spam" {
                     "junk"
                 } else {
                     data.folder_id.as_str()
                 };
-                let local = if !folders.is_empty() {
-                    (0, 0)
-                } else if data.folder_id == "all" {
-                    local_counts
-                        .map(|counts| {
-                            counts
-                                .values()
-                                .fold((0_u32, 0_u32), |(unread, total), value| {
-                                    (
-                                        unread.saturating_add(value.0),
-                                        total.saturating_add(value.1),
-                                    )
-                                })
+                if data.folder_id == "all" {
+                    counts
+                        .values()
+                        .fold((0_u32, 0_u32), |(unread, total), value| {
+                            (
+                                unread.saturating_add(value.0),
+                                total.saturating_add(value.1),
+                            )
                         })
-                        .unwrap_or((0, 0))
                 } else {
-                    local_counts
-                        .and_then(|counts| counts.get(local_key).copied())
-                        .unwrap_or((0, 0))
-                };
-                folders
-                    .iter()
-                    .filter(|folder| {
-                        self.is_mail_account_active(&folder.source_uid)
-                            && (data.folder_id == "all"
-                                || folder.folder_id
-                                    == if data.folder_id == "spam" {
-                                        "junk"
-                                    } else {
-                                        data.folder_id.as_str()
-                                    })
-                    })
-                    .fold(local, |(unread, total), folder| {
-                        (
-                            unread.saturating_add(folder.unread_count),
-                            total.saturating_add(folder.total_count),
-                        )
-                    })
+                    counts.get(local_key).copied().unwrap_or((0, 0))
+                }
             };
             let Some(badge) = (unsafe {
                 row.data::<gtk::Label>("folder-badge")

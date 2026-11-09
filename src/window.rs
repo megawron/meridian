@@ -76,6 +76,7 @@ mod imp {
         pub hovered_link_previous_status: RefCell<Option<String>>,
         pub status_progress: RefCell<Option<gtk::ProgressBar>>,
         pub online_toggle: RefCell<Option<gtk::Button>>,
+        pub offline_header_badge: RefCell<Option<gtk::Button>>,
         pub debug_revealer: RefCell<Option<gtk::Revealer>>,
         pub statusbar_box: RefCell<Option<gtk::Box>>,
         pub(crate) transport_service: MailTransportService,
@@ -2647,8 +2648,8 @@ impl MeridianWindow {
         self.imp().transport_generation.set(snapshot.generation);
         self.imp().transport_queued_items.set(snapshot.queued_items);
 
+        let offline = snapshot.mode == MailTransportMode::Offline;
         if let Some(toggle) = self.imp().online_toggle.borrow().as_ref() {
-            let offline = snapshot.mode == MailTransportMode::Offline;
             toggle.set_icon_name(if offline {
                 "network-offline-symbolic"
             } else {
@@ -2660,6 +2661,9 @@ impl MeridianWindow {
                 gettext("Online mode active; click to switch offline")
             };
             toggle.set_tooltip_text(Some(&tooltip));
+        }
+        if let Some(badge) = self.imp().offline_header_badge.borrow().as_ref() {
+            badge.set_visible(offline);
         }
 
         if let Some(label) = self.imp().status_label.borrow().as_ref() {
@@ -2696,9 +2700,10 @@ impl MeridianWindow {
         } else {
             MailTransportMode::Online
         };
+        let mode_changed = self.imp().transport_service.snapshot().mode != mode;
         let snapshot = self.imp().transport_service.set_mode(mode);
         self.update_transport_presentation(&snapshot);
-        if refresh_mail {
+        if refresh_mail || mode_changed {
             // MailPage's existing generation/cancellation gate is the owner
             // of its model load.  Refreshing after the setting change makes
             // that gate stop remote work and load the local snapshot offline,
@@ -2712,10 +2717,11 @@ impl MeridianWindow {
 
     fn set_offline_mode(&self, offline: bool) {
         if let Some(settings) = AppSettings::try_new() {
-            settings.set_offline_mode(offline);
-        } else {
-            self.sync_transport_mode(offline, true);
+            if settings.offline_mode() != offline {
+                settings.set_offline_mode(offline);
+            }
         }
+        self.sync_transport_mode(offline, true);
     }
 
     fn start_mail_transport(&self, action: MailTransportAction) {
@@ -4204,9 +4210,44 @@ impl MeridianWindow {
         });
         self.imp().agenda_preview_toggle.replace(Some(agenda_preview_toggle.clone()));
 
+        let offline_badge_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(5)
+            .valign(gtk::Align::Center)
+            .build();
+        let offline_badge_icon = gtk::Image::builder()
+            .icon_name("network-offline-symbolic")
+            .pixel_size(14)
+            .valign(gtk::Align::Center)
+            .build();
+        let offline_badge_label = gtk::Label::builder()
+            .label(gettext("Offline"))
+            .css_classes(["caption"])
+            .valign(gtk::Align::Center)
+            .build();
+        offline_badge_box.append(&offline_badge_icon);
+        offline_badge_box.append(&offline_badge_label);
+        let offline_header_badge = gtk::Button::builder()
+            .child(&offline_badge_box)
+            .tooltip_text(gettext("Offline mode active — click to switch online"))
+            .css_classes(["flat", "offline-header-badge"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        let win_weak_offline_badge = self.downgrade();
+        offline_header_badge.connect_clicked(move |_| {
+            if let Some(win) = win_weak_offline_badge.upgrade() {
+                win.set_offline_mode(false);
+            }
+        });
+        self.imp()
+            .offline_header_badge
+            .replace(Some(offline_header_badge.clone()));
+
         header_bar.pack_end(&menu_button);
         header_bar.pack_end(&right_sidebar_toggle);
         header_bar.pack_end(&agenda_preview_toggle);
+        header_bar.pack_end(&offline_header_badge);
         if let Some(view_btn) = mail_page.view_options_split_button() {
             let is_initially_mail = view_stack.visible_child_name().as_deref() == Some("mail");
             view_btn.set_visible(is_initially_mail);
@@ -4961,6 +5002,16 @@ impl MeridianWindow {
             self,
             move |_, _| {
                 let dialog = crate::dialogs::PreferencesDialog::new();
+                if std::env::var_os("MERIDIAN_PREF_PAGE").is_none()
+                    && std::env::var_os("EVOLUTION_PREF_PAGE").is_none()
+                {
+                    match win.active_view_name().as_str() {
+                        "calendar" => dialog.select_page("calendar"),
+                        "contacts" => dialog.select_page("contacts"),
+                        "tasks" => dialog.select_page("tasks"),
+                        _ => {}
+                    }
+                }
                 let win_clone = win.clone();
                 dialog.connect_closed(move |_| {
                     win_clone.reorder_account_roots();
@@ -6110,8 +6161,13 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
-                let dialog = crate::dialogs::FilterEditorDialog::new();
-                dialog.present(Some(&win));
+                let dialog = crate::dialogs::PreferencesDialog::new();
+                dialog.select_page("filters");
+                let win_clone = win.clone();
+                dialog.connect_closed(move |_| {
+                    win_clone.reorder_account_roots();
+                });
+                dialog.present_standalone();
             }
         ));
         self.add_action(&action_filter);

@@ -614,11 +614,26 @@ impl MeridianApplication {
         // ── Preferences ──
         let action_preferences = gio::SimpleAction::new("preferences", None);
         action_preferences.connect_activate(glib::clone!(
-            #[weak(rename_to = _app)]
+            #[weak(rename_to = app)]
             self,
             move |_, _| {
                 tracing::info!("Preferences action triggered");
                 let dialog = crate::dialogs::PreferencesDialog::new();
+                if std::env::var_os("MERIDIAN_PREF_PAGE").is_none()
+                    && std::env::var_os("EVOLUTION_PREF_PAGE").is_none()
+                {
+                    if let Some(win) = app
+                        .active_window()
+                        .and_downcast::<crate::window::MeridianWindow>()
+                    {
+                        match win.active_view_name().as_str() {
+                            "calendar" => dialog.select_page("calendar"),
+                            "contacts" => dialog.select_page("contacts"),
+                            "tasks" => dialog.select_page("tasks"),
+                            _ => {}
+                        }
+                    }
+                }
                 dialog.present_standalone();
             }
         ));
