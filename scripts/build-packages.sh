@@ -222,6 +222,7 @@ EOF
         --socket=fallback-x11 \
         --socket=wayland \
         --device=dri \
+        --filesystem=xdg-download:create \
         --filesystem=xdg-config/evolution:create \
         --filesystem=xdg-cache/evolution:create \
         --filesystem=xdg-data/evolution:create \
@@ -236,6 +237,7 @@ EOF
         --talk-name=org.gnome.OnlineAccounts \
         --talk-name=org.gnome.Settings \
         --talk-name=org.gnome.ControlCenter \
+        --talk-name=org.gnome.NautilusPreviewer \
         --talk-name=org.freedesktop.secrets >/dev/null
 
     local gpg_args=()

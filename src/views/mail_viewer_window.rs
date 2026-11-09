@@ -214,8 +214,13 @@ impl MailViewerWindow {
         let toast = adw::Toast::new(message);
         toast.set_button_label(Some(&gettext("Open Folder")));
         let folder_path = folder.to_path_buf();
+        let win_weak = self.downgrade();
         toast.connect_button_clicked(move |_| {
-            let _ = crate::services::quick_preview_service::open_folder_in_file_manager(&folder_path);
+            let parent = win_weak.upgrade().map(|w| w.upcast::<gtk::Window>());
+            let _ = crate::services::quick_preview_service::open_folder_in_file_manager_with_parent(
+                &folder_path,
+                parent.as_ref(),
+            );
         });
         self.add_toast(&toast);
     }
@@ -275,25 +280,25 @@ impl MailViewerWindow {
         // Start actions: Reply, Reply-All, Forward
         let btn_reply = gtk::Button::builder()
             .icon_name("mail-reply-sender-symbolic")
-            .tooltip_text(&gettext("Reply (Ctrl+R)"))
+            .tooltip_text(gettext("Reply (Ctrl+R)"))
             .action_name("win.reply")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_reply, &gettext("Reply"));
 
         let btn_reply_all = gtk::Button::builder()
             .icon_name("mail-reply-all-symbolic")
-            .tooltip_text(&gettext("Reply all (Ctrl+Shift+R)"))
+            .tooltip_text(gettext("Reply all (Ctrl+Shift+R)"))
             .action_name("win.reply-all")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_reply_all, &gettext("Reply all"));
 
         let btn_forward = gtk::Button::builder()
             .icon_name("mail-forward-symbolic")
-            .tooltip_text(&gettext("Forward (Ctrl+L)"))
+            .tooltip_text(gettext("Forward (Ctrl+L)"))
             .action_name("win.forward")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_forward, &gettext("Forward"));
 
@@ -303,7 +308,7 @@ impl MailViewerWindow {
 
         // Title widget: Subject + Sender
         let title_widget = adw::WindowTitle::builder()
-            .title("E-Mail")
+            .title(gettext("Email"))
             .subtitle("")
             .build();
         header_bar.set_title_widget(Some(&title_widget));
@@ -328,42 +333,42 @@ impl MailViewerWindow {
 
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
-            .tooltip_text(&gettext("Main menu"))
+            .tooltip_text(gettext("Main menu"))
             .menu_model(&menu)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&menu_button, &gettext("Main menu"));
 
         let btn_print = gtk::Button::builder()
             .icon_name("document-print-symbolic")
-            .tooltip_text(&gettext("Print (Ctrl+P)"))
+            .tooltip_text(gettext("Print (Ctrl+P)"))
             .action_name("win.mail-print")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_print, &gettext("Print"));
 
         let btn_mark_read_unread = gtk::Button::builder()
             .icon_name("mail-mark-read-symbolic")
-            .tooltip_text(&gettext("Mark as read/unread"))
+            .tooltip_text(gettext("Mark as read/unread"))
             .action_name("win.toggle-read-unread")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_mark_read_unread, &gettext("Mark as read or unread"));
         self.imp().btn_mark_read_unread.replace(Some(btn_mark_read_unread.clone()));
 
         let btn_junk = gtk::Button::builder()
             .icon_name("mail-mark-junk-symbolic")
-            .tooltip_text(&gettext("Mark as junk (Ctrl+J)"))
+            .tooltip_text(gettext("Mark as junk (Ctrl+J)"))
             .action_name("win.mark-junk")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_junk, &gettext("Mark as junk"));
 
         let btn_delete = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text(&gettext("Delete message (Del)"))
+            .tooltip_text(gettext("Delete message (Del)"))
             .action_name("win.delete")
-            .css_classes(vec!["flat", "destructive-action"])
+            .css_classes(["flat", "destructive-action"])
             .build();
         set_accessible_label(&btn_delete, &gettext("Delete message"));
 
@@ -385,7 +390,7 @@ impl MailViewerWindow {
         // Header area
         let header_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["mail-detail-header"])
+            .css_classes(["mail-detail-header"])
             .spacing(2)
             .margin_start(12)
             .margin_end(12)
@@ -397,7 +402,7 @@ impl MailViewerWindow {
             .row_spacing(2)
             .column_spacing(8)
             .hexpand(true)
-            .css_classes(vec!["mail-normal-headers"])
+            .css_classes(["mail-normal-headers"])
             .build();
         self.imp().normal_headers_grid.replace(Some(normal_headers_grid.clone()));
 
@@ -408,8 +413,8 @@ impl MailViewerWindow {
             .build();
 
         let crypto_label = gtk::Label::builder()
-            .label(&gettext("Security:"))
-            .css_classes(vec!["dim-label", "caption"])
+            .label(gettext("Security:"))
+            .css_classes(["dim-label", "caption"])
             .halign(gtk::Align::End)
             .visible(false)
             .build();
@@ -417,15 +422,15 @@ impl MailViewerWindow {
         let crypto_chip = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
-            .css_classes(vec!["badge"])
+            .css_classes(["badge"])
             .halign(gtk::Align::Start)
             .visible(false)
             .build();
         let icon_lock = gtk::Image::new();
         set_image_icon_with_fallback(&icon_lock, "security-high-symbolic", "dialog-information-symbolic");
         let lbl_crypto = gtk::Label::builder()
-            .label(&gettext("No OpenPGP/S/MIME protection detected"))
-            .css_classes(vec!["caption"])
+            .label(gettext("No OpenPGP/S/MIME protection detected"))
+            .css_classes(["caption"])
             .build();
         crypto_chip.append(&icon_lock);
         crypto_chip.append(&lbl_crypto);
@@ -445,7 +450,7 @@ impl MailViewerWindow {
             .margin_bottom(6)
             .hexpand(true)
             .halign(gtk::Align::Fill)
-            .css_classes(vec!["mail-all-headers"])
+            .css_classes(["mail-all-headers"])
             .build();
         let all_headers_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -475,30 +480,30 @@ impl MailViewerWindow {
 
         // Find in message bar
         let message_find_entry = gtk::SearchEntry::builder()
-            .placeholder_text(&gettext("Find in message"))
+            .placeholder_text(gettext("Find in message"))
             .hexpand(true)
             .build();
         let message_find_status = gtk::Label::builder()
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .width_chars(14)
             .xalign(0.0)
             .build();
         let find_previous = gtk::Button::builder()
             .icon_name("go-up-symbolic")
-            .tooltip_text(&gettext("Previous match"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Previous match"))
+            .css_classes(["flat"])
             .sensitive(false)
             .build();
         let find_next = gtk::Button::builder()
             .icon_name("go-down-symbolic")
-            .tooltip_text(&gettext("Next match"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Next match"))
+            .css_classes(["flat"])
             .sensitive(false)
             .build();
         let find_close = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text(&gettext("Close search (Esc)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Close search (Esc)"))
+            .css_classes(["flat"])
             .build();
 
         let message_find_bar = gtk::Box::builder()
@@ -553,7 +558,7 @@ impl MailViewerWindow {
             .spacing(0)
             .valign(gtk::Align::Start)
             .vexpand(false)
-            .css_classes(vec!["attachment-section-container"])
+            .css_classes(["attachment-section-container"])
             .visible(false)
             .build();
         let att_sec_for_vexpand = attachment_section.clone();
@@ -579,14 +584,14 @@ impl MailViewerWindow {
             .valign(gtk::Align::Center)
             .margin_top(2)
             .margin_bottom(1)
-            .css_classes(vec!["attachment-handle-container"])
+            .css_classes(["attachment-handle-container"])
             .focusable(false)
             .visible(false)
             .build();
         handle_box.set_cursor_from_name(Some("pointer"));
 
         let handle_pill = gtk::Box::builder()
-            .css_classes(vec!["attachment-bar-handle"])
+            .css_classes(["attachment-bar-handle"])
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .build();
@@ -600,7 +605,7 @@ impl MailViewerWindow {
             .margin_end(8)
             .margin_top(5)
             .margin_bottom(5)
-            .css_classes(vec!["attachment-header-bar"])
+            .css_classes(["attachment-header-bar"])
             .build();
 
         let title_box = gtk::Box::builder()
@@ -608,8 +613,8 @@ impl MailViewerWindow {
             .spacing(0)
             .valign(gtk::Align::Center)
             .hexpand(false)
-            .css_classes(vec!["attachment-title-box"])
-            .tooltip_text(&gettext("Attachments"))
+            .css_classes(["attachment-title-box"])
+            .tooltip_text(gettext("Attachments"))
             .focusable(true)
             .build();
         title_box.set_cursor_from_name(Some("pointer"));
@@ -627,7 +632,7 @@ impl MailViewerWindow {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["attachment-summary-clickable"])
+            .css_classes(["attachment-summary-clickable"])
             .focusable(true)
             .visible(false)
             .build();
@@ -636,7 +641,7 @@ impl MailViewerWindow {
         let summary_label = gtk::Label::builder()
             .valign(gtk::Align::Center)
             .use_markup(true)
-            .css_classes(vec!["attachment-summary-label"])
+            .css_classes(["attachment-summary-label"])
             .build();
         summary_box.append(&summary_label);
         attachment_header.append(&summary_box);
@@ -646,7 +651,7 @@ impl MailViewerWindow {
             .spacing(6)
             .valign(gtk::Align::Center)
             .hexpand(false)
-            .css_classes(vec!["attachment-bar-chip-container"])
+            .css_classes(["attachment-bar-chip-container"])
             .visible(true)
             .build();
         attachment_header.append(&chip_box);
@@ -658,13 +663,13 @@ impl MailViewerWindow {
         let save_all_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["attachment-save-all-box"])
+            .css_classes(["attachment-save-all-box"])
             .build();
         attachment_header.append(&save_all_box);
 
         let view_toggle_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked", "attachment-view-toggle"])
+            .css_classes(["linked", "attachment-view-toggle"])
             .valign(gtk::Align::Center)
             .margin_start(4)
             .visible(false)
@@ -672,16 +677,16 @@ impl MailViewerWindow {
 
         let btn_icons = gtk::Button::builder()
             .icon_name("view-grid-symbolic")
-            .tooltip_text(&gettext("Icon view"))
-            .css_classes(vec!["flat", "active", "attachment-view-icons-btn"])
+            .tooltip_text(gettext("Icon view"))
+            .css_classes(["flat", "active", "attachment-view-icons-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_icons, &gettext("Icon view"));
 
         let btn_list = gtk::Button::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text(&gettext("List view"))
-            .css_classes(vec!["flat", "attachment-view-list-btn"])
+            .tooltip_text(gettext("List view"))
+            .css_classes(["flat", "attachment-view-list-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_list, &gettext("List view"));
@@ -696,8 +701,8 @@ impl MailViewerWindow {
         chevron_icon.add_css_class("attachment-chevron");
         let btn_collapse = gtk::Button::builder()
             .child(&chevron_icon)
-            .tooltip_text(&gettext("Expand attachments"))
-            .css_classes(vec!["flat", "attachment-collapse-btn"])
+            .tooltip_text(gettext("Expand attachments"))
+            .css_classes(["flat", "attachment-collapse-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&btn_collapse, &gettext("Expand attachments"));
@@ -716,7 +721,7 @@ impl MailViewerWindow {
             .transition_duration(150)
             .hhomogeneous(false)
             .vhomogeneous(false)
-            .css_classes(vec!["attachment-drawer-stack"])
+            .css_classes(["attachment-drawer-stack"])
             .build();
 
         // Attachment bar (icons view)
@@ -759,7 +764,7 @@ impl MailViewerWindow {
             .spacing(12)
             .margin_start(8)
             .margin_end(8)
-            .css_classes(vec!["attachment-list-header"])
+            .css_classes(["attachment-list-header"])
             .height_request(26)
             .visible(false)
             .build();
@@ -768,26 +773,26 @@ impl MailViewerWindow {
         list_header_box.append(&icon_spacer);
 
         let col_name = gtk::Label::builder()
-            .label(&gettext("Name"))
+            .label(gettext("Name"))
             .hexpand(true)
             .xalign(0.0)
-            .css_classes(vec!["attachment-col-header-label"])
+            .css_classes(["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_name);
 
         let col_type = gtk::Label::builder()
-            .label(&gettext("Type"))
+            .label(gettext("Type"))
             .width_request(140)
             .xalign(0.0)
-            .css_classes(vec!["attachment-col-header-label"])
+            .css_classes(["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_type);
 
         let col_size = gtk::Label::builder()
-            .label(&gettext("Size"))
+            .label(gettext("Size"))
             .width_request(85)
             .xalign(1.0)
-            .css_classes(vec!["attachment-col-header-label"])
+            .css_classes(["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_size);
 
@@ -797,7 +802,7 @@ impl MailViewerWindow {
 
         let attachment_listbox = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["attachment-listbox"])
+            .css_classes(["attachment-listbox"])
             .build();
 
         let list_scrolled = gtk::ScrolledWindow::builder()
@@ -935,16 +940,16 @@ impl MailViewerWindow {
 
         // Print status area
         let print_status_label = gtk::Label::builder()
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
         let print_cancel_button = gtk::Button::builder()
-            .label(&gettext("Cancel"))
-            .tooltip_text(&gettext("Cancel print preparation"))
+            .label(gettext("Cancel"))
+            .tooltip_text(gettext("Cancel print preparation"))
             .action_name("win.mail-print-cancel")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .visible(false)
             .build();
         let print_status_area = gtk::Box::builder()
@@ -1577,7 +1582,7 @@ impl MailViewerWindow {
                 .valign(gtk::Align::Start)
                 .halign(gtk::Align::Fill)
                 .hexpand(true)
-                .css_classes(vec!["attachment-flowbox"])
+                .css_classes(["attachment-flowbox"])
                 .build();
             bar.append(&fb);
             Some(fb)
@@ -1589,7 +1594,7 @@ impl MailViewerWindow {
             let card = self.create_attachment_drawer_card(att);
             if let Some(ref fb) = cards_flowbox {
                 let fb_child = gtk::FlowBoxChild::builder()
-                    .css_classes(vec!["attachment-flow-child"])
+                    .css_classes(["attachment-flow-child"])
                     .focusable(false)
                     .child(&card)
                     .build();
@@ -1625,7 +1630,7 @@ impl MailViewerWindow {
                 let lbl_name = gtk::Label::builder()
                     .label(&att.filename)
                     .ellipsize(gtk::pango::EllipsizeMode::End)
-                    .css_classes(vec!["attachment-list-label"])
+                    .css_classes(["attachment-list-label"])
                     .hexpand(true)
                     .xalign(0.0)
                     .valign(gtk::Align::Center)
@@ -1636,7 +1641,7 @@ impl MailViewerWindow {
                 let lbl_type = gtk::Label::builder()
                     .label(&type_desc)
                     .ellipsize(gtk::pango::EllipsizeMode::End)
-                    .css_classes(vec!["dim-label", "caption", "attachment-col-type"])
+                    .css_classes(["dim-label", "caption", "attachment-col-type"])
                     .width_request(140)
                     .xalign(0.0)
                     .valign(gtk::Align::Center)
@@ -1645,7 +1650,7 @@ impl MailViewerWindow {
 
                 let lbl_size = gtk::Label::builder()
                     .label(&att.size_formatted)
-                    .css_classes(vec!["dim-label", "caption", "attachment-col-size"])
+                    .css_classes(["dim-label", "caption", "attachment-col-size"])
                     .width_request(85)
                     .xalign(1.0)
                     .valign(gtk::Align::Center)
@@ -1662,8 +1667,8 @@ impl MailViewerWindow {
                 save_icon.set_pixel_size(14);
                 let btn_save_list = gtk::Button::builder()
                     .child(&save_icon)
-                    .tooltip_text(&gettext("Save to Downloads (Right-click for options)"))
-                    .css_classes(vec!["flat", "circular", "attachment-list-download-btn"])
+                    .tooltip_text(gettext("Save to Downloads (Right-click for options)"))
+                    .css_classes(["flat", "circular", "attachment-list-download-btn"])
                     .valign(gtk::Align::Center)
                     .focusable(false)
                     .build();
@@ -1673,17 +1678,7 @@ impl MailViewerWindow {
                 let win_weak_list = self.downgrade();
                 btn_save_list.connect_clicked(move |_| {
                     let Some(win) = win_weak_list.upgrade() else { return; };
-                    match crate::services::quick_preview_service::download_attachment_to_downloads(&fname_save_list, content_save_list.as_ref()) {
-                        Ok(path) => {
-                            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&fname_save_list);
-                            let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                            let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
-                            win.show_toast_with_folder_action(&msg, dir);
-                        }
-                        Err(e) => {
-                            tracing::error!(%e, "Failed to download attachment");
-                        }
-                    }
+                    win.save_single_attachment(&fname_save_list, &content_save_list);
                 });
 
                 let fname_rc = att.filename.clone();
@@ -1718,32 +1713,40 @@ impl MailViewerWindow {
 
                 let fn_open_row = att.filename.clone();
                 let ct_open_row = att.content.clone();
-                let click = gtk::GestureClick::new();
-                click.connect_released(move |_, n_press, _, _| {
-                    if n_press == 2 {
-                        let temp_dir = std::env::temp_dir().join("meridian-attachments");
-                        let _ = fs::create_dir_all(&temp_dir);
-                        let temp_path = temp_dir.join(&fn_open_row);
-                        if fs::write(&temp_path, ct_open_row.as_ref()).is_ok() {
-                            let uri = format!("file://{}", temp_path.to_string_lossy());
-                            let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
+                let win_weak_open_row = self.downgrade();
+                let row_for_pick = row.clone();
+                let btn_save_for_pick = btn_save_list.clone();
+                let click = gtk::GestureClick::builder().button(1).build();
+                click.connect_released(move |gesture, n_press, x, y| {
+                    if n_press >= 1 {
+                        if let Some(picked) = row_for_pick.pick(x, y, gtk::PickFlags::DEFAULT) {
+                            if picked == btn_save_for_pick || picked.is_ancestor(&btn_save_for_pick) {
+                                return;
+                            }
                         }
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                        let parent = win_weak_open_row.upgrade().map(|w| w.upcast::<gtk::Window>());
+                        let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                            &fn_open_row,
+                            ct_open_row.as_ref(),
+                            parent.as_ref(),
+                        );
                     }
                 });
                 row.add_controller(click);
 
                 let fn_key_row = att.filename.clone();
                 let ct_key_row = att.content.clone();
+                let win_weak_key_row = self.downgrade();
                 let key_ctrl = gtk::EventControllerKey::new();
                 key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
                     if keyval == gdk::Key::space || keyval == gdk::Key::Return {
-                        let temp_dir = std::env::temp_dir().join("meridian-attachments");
-                        let _ = fs::create_dir_all(&temp_dir);
-                        let temp_path = temp_dir.join(&fn_key_row);
-                        if fs::write(&temp_path, ct_key_row.as_ref()).is_ok() {
-                            let uri = format!("file://{}", temp_path.to_string_lossy());
-                            let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
-                        }
+                        let parent = win_weak_key_row.upgrade().map(|w| w.upcast::<gtk::Window>());
+                        let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                            &fn_key_row,
+                            ct_key_row.as_ref(),
+                            parent.as_ref(),
+                        );
                         return glib::Propagation::Stop;
                     }
                     glib::Propagation::Proceed
@@ -1756,14 +1759,94 @@ impl MailViewerWindow {
         }
     }
 
+    fn save_single_attachment(&self, filename: &str, content: &std::sync::Arc<[u8]>) {
+        match crate::services::quick_preview_service::download_attachment_to_downloads(filename, content.as_ref()) {
+            Ok(path) => {
+                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(filename);
+                let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
+                self.show_toast_with_folder_action(&msg, &path);
+            }
+            Err(_) => {
+                self.prompt_save_attachment_as(filename, content);
+            }
+        }
+    }
+
+    fn prompt_save_attachment_as(&self, filename: &str, content: &std::sync::Arc<[u8]>) {
+        let file_dialog = gtk::FileDialog::builder()
+            .title(gettext("Save Attachment"))
+            .modal(true)
+            .initial_name(filename)
+            .build();
+        let cont = content.clone();
+        let f_name = filename.to_string();
+        let win_for_toast = self.downgrade();
+        file_dialog.save(Some(self), None::<&gio::Cancellable>, move |result| {
+            if let Ok(file) = result {
+                if let Some(path) = file.path() {
+                    if fs::write(&path, cont.as_ref()).is_ok() {
+                        if let Some(win) = win_for_toast.upgrade() {
+                            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&f_name);
+                            let msg = gettext("Saved: {}").replace("{}", file_name);
+                            win.show_toast_with_folder_action(&msg, &path);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn save_all_attachments(&self, attachments: &[crate::models::mail_message::AttachmentInfo]) {
+        match crate::services::quick_preview_service::download_all_attachments_to_downloads(attachments) {
+            Ok((saved_count, dir)) => {
+                let msg = if saved_count == 1 {
+                    gettext("1 attachment saved to Downloads")
+                } else {
+                    gettext("{} attachments saved to Downloads").replace("{}", &saved_count.to_string())
+                };
+                self.show_toast_with_folder_action(&msg, &dir);
+            }
+            Err(_) => {
+                self.prompt_save_all_attachments_folder(attachments);
+            }
+        }
+    }
+
+    fn prompt_save_all_attachments_folder(&self, attachments: &[crate::models::mail_message::AttachmentInfo]) {
+        let folder_dialog = gtk::FileDialog::builder()
+            .title(gettext("Select folder for all attachments"))
+            .modal(true)
+            .build();
+        let atts = attachments.to_vec();
+        let win_for_toast = self.downgrade();
+        folder_dialog.select_folder(Some(self), None::<&gio::Cancellable>, move |result| {
+            if let Ok(folder) = result {
+                if let Some(folder_path) = folder.path() {
+                    let mut saved_count = 0;
+                    for att in &atts {
+                        let safe_name = crate::services::quick_preview_service::sanitize_attachment_filename(&att.filename);
+                        let target_path = folder_path.join(&safe_name);
+                        if std::fs::write(&target_path, att.content.as_ref()).is_ok() {
+                            saved_count += 1;
+                        }
+                    }
+                    if let Some(win) = win_for_toast.upgrade() {
+                        let msg = gettext("{} attachments saved").replace("{}", &saved_count.to_string());
+                        win.show_toast_with_folder_action(&msg, &folder_path);
+                    }
+                }
+            }
+        });
+    }
+
     fn create_save_all_button(
         &self,
         attachments: &[crate::models::mail_message::AttachmentInfo],
     ) -> gtk::Button {
         let btn = gtk::Button::builder()
-            .css_classes(vec!["attachment-save-all-btn"])
+            .css_classes(["attachment-save-all-btn"])
             .valign(gtk::Align::Center)
-            .tooltip_text(&gettext("Save all attachments to Downloads (Right-click for options)"))
+            .tooltip_text(gettext("Save all attachments to Downloads (Right-click for options)"))
             .build();
         set_accessible_label(&btn, &gettext("Save all attachments"));
 
@@ -1776,8 +1859,8 @@ impl MailViewerWindow {
         let save_icon = gtk::Image::from_icon_name("document-save-symbolic");
         save_icon.set_pixel_size(15);
         let save_label = gtk::Label::builder()
-            .label(&gettext("Save all…"))
-            .css_classes(vec!["attachment-save-all-label"])
+            .label(gettext("Save all…"))
+            .css_classes(["attachment-save-all-label"])
             .build();
 
         btn_box.append(&save_icon);
@@ -1788,19 +1871,7 @@ impl MailViewerWindow {
         let win_weak = self.downgrade();
         btn.connect_clicked(move |_| {
             let Some(win) = win_weak.upgrade() else { return; };
-            match crate::services::quick_preview_service::download_all_attachments_to_downloads(&atts_click) {
-                Ok((saved_count, dir)) => {
-                    let msg = if saved_count == 1 {
-                        gettext("1 attachment saved to Downloads")
-                    } else {
-                        gettext("{} attachments saved to Downloads").replace("{}", &saved_count.to_string())
-                    };
-                    win.show_toast_with_folder_action(&msg, &dir);
-                }
-                Err(e) => {
-                    tracing::error!(%e, "Failed to download attachments");
-                }
-            }
+            win.save_all_attachments(&atts_click);
         });
 
         let atts_rc = attachments.to_vec();
@@ -1839,19 +1910,7 @@ impl MailViewerWindow {
         btn_quick.connect_clicked(move |_| {
             pop_quick.popdown();
             let Some(win) = win_weak_quick.upgrade() else { return; };
-            match crate::services::quick_preview_service::download_all_attachments_to_downloads(&atts_for_quick) {
-                Ok((saved_count, dir)) => {
-                    let msg = if saved_count == 1 {
-                        gettext("1 attachment saved to Downloads")
-                    } else {
-                        gettext("{} attachments saved to Downloads").replace("{}", &saved_count.to_string())
-                    };
-                    win.show_toast_with_folder_action(&msg, &dir);
-                }
-                Err(e) => {
-                    tracing::error!(%e, "Failed to download attachments");
-                }
-            }
+            win.save_all_attachments(&atts_for_quick);
         });
         menu_box.append(&btn_quick);
 
@@ -1866,29 +1925,7 @@ impl MailViewerWindow {
         btn_choose.connect_clicked(move |_| {
             pop_choose.popdown();
             let Some(win) = win_weak_choose.upgrade() else { return; };
-            let folder_dialog = gtk::FileDialog::builder()
-                .title(&gettext("Select folder for all attachments"))
-                .modal(true)
-                .build();
-            let atts = atts_for_choose.clone();
-            let win_for_toast = win.downgrade();
-            folder_dialog.select_folder(Some(&win), None::<&gio::Cancellable>, move |result| {
-                if let Ok(folder) = result {
-                    if let Some(folder_path) = folder.path() {
-                        let mut saved_count = 0;
-                        for att in &atts {
-                            let target_path = folder_path.join(&att.filename);
-                            if std::fs::write(&target_path, att.content.as_ref()).is_ok() {
-                                saved_count += 1;
-                            }
-                        }
-                        if let Some(win) = win_for_toast.upgrade() {
-                            let msg = gettext("{} attachments saved").replace("{}", &saved_count.to_string());
-                            win.show_toast_with_folder_action(&msg, &folder_path);
-                        }
-                    }
-                }
-            });
+            win.prompt_save_all_attachments_folder(&atts_for_choose);
         });
         menu_box.append(&btn_choose);
 
@@ -1911,7 +1948,7 @@ impl MailViewerWindow {
             .spacing(10)
             .halign(gtk::Align::Fill)
             .hexpand(true)
-            .css_classes(vec!["attachment-drawer-card"])
+            .css_classes(["attachment-drawer-card"])
             .margin_top(0)
             .margin_bottom(0)
             .focusable(true)
@@ -1937,7 +1974,7 @@ impl MailViewerWindow {
             .label(&att.filename)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(28)
-            .css_classes(vec!["attachment-card-name"])
+            .css_classes(["attachment-card-name"])
             .xalign(0.0)
             .build();
         text_box.append(&lbl_name);
@@ -1946,7 +1983,7 @@ impl MailViewerWindow {
             .label(&format!("{} • {}", att.size_formatted, att.type_description()))
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(28)
-            .css_classes(vec!["dim-label", "caption", "attachment-card-meta"])
+            .css_classes(["dim-label", "caption", "attachment-card-meta"])
             .xalign(0.0)
             .build();
         text_box.append(&lbl_meta);
@@ -1957,8 +1994,8 @@ impl MailViewerWindow {
         save_icon.set_pixel_size(15);
         let btn_save = gtk::Button::builder()
             .child(&save_icon)
-            .tooltip_text(&gettext("Save to Downloads (Right-click for options)"))
-            .css_classes(vec!["flat", "circular", "attachment-card-download-btn"])
+            .tooltip_text(gettext("Save to Downloads (Right-click for options)"))
+            .css_classes(["flat", "circular", "attachment-card-download-btn"])
             .valign(gtk::Align::Center)
             .focusable(false)
             .build();
@@ -1969,17 +2006,7 @@ impl MailViewerWindow {
         let win_weak_save = self.downgrade();
         btn_save.connect_clicked(move |_| {
             let Some(win) = win_weak_save.upgrade() else { return; };
-            match crate::services::quick_preview_service::download_attachment_to_downloads(&fn_save, ct_save.as_ref()) {
-                Ok(path) => {
-                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&fn_save);
-                    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                    let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
-                    win.show_toast_with_folder_action(&msg, dir);
-                }
-                Err(e) => {
-                    tracing::error!(%e, "Failed to download attachment");
-                }
-            }
+            win.save_single_attachment(&fn_save, &ct_save);
         });
 
         let fn_save_rc = att.filename.clone();
@@ -1999,32 +2026,40 @@ impl MailViewerWindow {
 
         let fn_open = att.filename.clone();
         let ct_open = att.content.clone();
-        let click = gtk::GestureClick::new();
-        click.connect_released(move |_, n_press, _, _| {
+        let win_weak_open = self.downgrade();
+        let card_for_pick = card.clone();
+        let btn_save_for_pick = btn_save.clone();
+        let click = gtk::GestureClick::builder().button(1).build();
+        click.connect_released(move |gesture, n_press, x, y| {
             if n_press >= 1 {
-                let temp_dir = std::env::temp_dir().join("meridian-attachments");
-                let _ = fs::create_dir_all(&temp_dir);
-                let temp_path = temp_dir.join(&fn_open);
-                if fs::write(&temp_path, ct_open.as_ref()).is_ok() {
-                    let uri = format!("file://{}", temp_path.to_string_lossy());
-                    let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
+                if let Some(picked) = card_for_pick.pick(x, y, gtk::PickFlags::DEFAULT) {
+                    if picked == btn_save_for_pick || picked.is_ancestor(&btn_save_for_pick) {
+                        return;
+                    }
                 }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let parent = win_weak_open.upgrade().map(|w| w.upcast::<gtk::Window>());
+                let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                    &fn_open,
+                    ct_open.as_ref(),
+                    parent.as_ref(),
+                );
             }
         });
         card.add_controller(click);
 
         let fn_key = att.filename.clone();
         let ct_key = att.content.clone();
+        let win_weak_key = self.downgrade();
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
             if keyval == gdk::Key::space || keyval == gdk::Key::Return {
-                let temp_dir = std::env::temp_dir().join("meridian-attachments");
-                let _ = fs::create_dir_all(&temp_dir);
-                let temp_path = temp_dir.join(&fn_key);
-                if fs::write(&temp_path, ct_key.as_ref()).is_ok() {
-                    let uri = format!("file://{}", temp_path.to_string_lossy());
-                    let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
-                }
+                let parent = win_weak_key.upgrade().map(|w| w.upcast::<gtk::Window>());
+                let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                    &fn_key,
+                    ct_key.as_ref(),
+                    parent.as_ref(),
+                );
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -2056,7 +2091,7 @@ impl MailViewerWindow {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["attachment-chip"])
+            .css_classes(["attachment-chip"])
             .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
             .focusable(true)
             .build();
@@ -2073,14 +2108,14 @@ impl MailViewerWindow {
             .label(&att.filename)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(max_chars)
-            .css_classes(vec!["attachment-chip-label"])
+            .css_classes(["attachment-chip-label"])
             .valign(gtk::Align::Center)
             .build();
         chip_box.append(&lbl);
 
         let lbl_size = gtk::Label::builder()
             .label(&format!("· {}", att.size_formatted))
-            .css_classes(vec!["dim-label", "caption", "attachment-chip-size"])
+            .css_classes(["dim-label", "caption", "attachment-chip-size"])
             .valign(gtk::Align::Center)
             .build();
         chip_box.append(&lbl_size);
@@ -2089,8 +2124,8 @@ impl MailViewerWindow {
         save_icon.set_pixel_size(12);
         let btn_save = gtk::Button::builder()
             .child(&save_icon)
-            .tooltip_text(&gettext("Save to Downloads (Right-click for options)"))
-            .css_classes(vec!["flat", "circular", "attachment-chip-download-btn", "attachment-chip-btn"])
+            .tooltip_text(gettext("Save to Downloads (Right-click for options)"))
+            .css_classes(["flat", "circular", "attachment-chip-download-btn", "attachment-chip-btn"])
             .valign(gtk::Align::Center)
             .focusable(false)
             .build();
@@ -2101,17 +2136,7 @@ impl MailViewerWindow {
         let win_weak_save = self.downgrade();
         btn_save.connect_clicked(move |_| {
             let Some(win) = win_weak_save.upgrade() else { return; };
-            match crate::services::quick_preview_service::download_attachment_to_downloads(&filename_for_save, content_for_save.as_ref()) {
-                Ok(path) => {
-                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&filename_for_save);
-                    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                    let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
-                    win.show_toast_with_folder_action(&msg, dir);
-                }
-                Err(e) => {
-                    tracing::error!(%e, "Failed to download attachment");
-                }
-            }
+            win.save_single_attachment(&filename_for_save, &content_for_save);
         });
 
         let fn_save_rc = att.filename.clone();
@@ -2131,32 +2156,40 @@ impl MailViewerWindow {
 
         let fn_open = att.filename.clone();
         let ct_open = att.content.clone();
-        let click = gtk::GestureClick::new();
-        click.connect_released(move |_, n_press, _, _| {
+        let win_weak_open = self.downgrade();
+        let chip_for_pick = chip_box.clone();
+        let btn_save_for_pick = btn_save.clone();
+        let click = gtk::GestureClick::builder().button(1).build();
+        click.connect_released(move |gesture, n_press, x, y| {
             if n_press >= 1 {
-                let temp_dir = std::env::temp_dir().join("meridian-attachments");
-                let _ = fs::create_dir_all(&temp_dir);
-                let temp_path = temp_dir.join(&fn_open);
-                if fs::write(&temp_path, ct_open.as_ref()).is_ok() {
-                    let uri = format!("file://{}", temp_path.to_string_lossy());
-                    let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
+                if let Some(picked) = chip_for_pick.pick(x, y, gtk::PickFlags::DEFAULT) {
+                    if picked == btn_save_for_pick || picked.is_ancestor(&btn_save_for_pick) {
+                        return;
+                    }
                 }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let parent = win_weak_open.upgrade().map(|w| w.upcast::<gtk::Window>());
+                let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                    &fn_open,
+                    ct_open.as_ref(),
+                    parent.as_ref(),
+                );
             }
         });
         chip_box.add_controller(click);
 
         let fn_key = att.filename.clone();
         let ct_key = att.content.clone();
+        let win_weak_key = self.downgrade();
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
             if keyval == gdk::Key::space || keyval == gdk::Key::Return {
-                let temp_dir = std::env::temp_dir().join("meridian-attachments");
-                let _ = fs::create_dir_all(&temp_dir);
-                let temp_path = temp_dir.join(&fn_key);
-                if fs::write(&temp_path, ct_key.as_ref()).is_ok() {
-                    let uri = format!("file://{}", temp_path.to_string_lossy());
-                    let _ = crate::services::quick_preview_service::preview_file_or_uri(&uri, None);
-                }
+                let parent = win_weak_key.upgrade().map(|w| w.upcast::<gtk::Window>());
+                let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                    &fn_key,
+                    ct_key.as_ref(),
+                    parent.as_ref(),
+                );
                 return glib::Propagation::Stop;
             }
             glib::Propagation::Proceed
@@ -2198,18 +2231,15 @@ impl MailViewerWindow {
         let pop_open = popover.clone();
         let fname_open = filename.to_string();
         let cont_open = content.clone();
+        let win_weak_open = self.downgrade();
         btn_open.connect_clicked(move |_| {
             pop_open.popdown();
-            let temp_dir = std::env::temp_dir().join("meridian-attachments");
-            let _ = fs::create_dir_all(&temp_dir);
-            let temp_path = temp_dir.join(&fname_open);
-            if fs::write(&temp_path, cont_open.as_ref()).is_ok() {
-                let uri = format!("file://{}", temp_path.to_string_lossy());
-                let _ = gio::AppInfo::launch_default_for_uri(
-                    &uri,
-                    None::<&gio::AppLaunchContext>,
-                );
-            }
+            let parent = win_weak_open.upgrade().map(|w| w.upcast::<gtk::Window>());
+            let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                &fname_open,
+                cont_open.as_ref(),
+                parent.as_ref(),
+            );
         });
         menu_box.append(&btn_open);
 
@@ -2225,17 +2255,7 @@ impl MailViewerWindow {
         btn_quick.connect_clicked(move |_| {
             pop_quick.popdown();
             let Some(win) = win_weak_quick.upgrade() else { return; };
-            match crate::services::quick_preview_service::download_attachment_to_downloads(&fname_quick, cont_quick.as_ref()) {
-                Ok(path) => {
-                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&fname_quick);
-                    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                    let msg = gettext("Saved to Downloads: {}").replace("{}", file_name);
-                    win.show_toast_with_folder_action(&msg, dir);
-                }
-                Err(e) => {
-                    tracing::error!(%e, "Failed to download attachment");
-                }
-            }
+            win.save_single_attachment(&fname_quick, &cont_quick);
         });
         menu_box.append(&btn_quick);
 
@@ -2251,27 +2271,7 @@ impl MailViewerWindow {
         btn_save.connect_clicked(move |_| {
             pop_save.popdown();
             let Some(win) = win_weak_save.upgrade() else { return; };
-            let file_dialog = gtk::FileDialog::builder()
-                .title(&gettext("Save Attachment"))
-                .modal(true)
-                .initial_name(&fname_save)
-                .build();
-            let cont = cont_save.clone();
-            let f_name = fname_save.clone();
-            let win_for_toast = win.downgrade();
-            file_dialog.save(Some(&win), None::<&gio::Cancellable>, move |result| {
-                if let Ok(file) = result {
-                    if let Some(path) = file.path() {
-                        if fs::write(&path, cont.as_ref()).is_ok() {
-                            if let Some(win) = win_for_toast.upgrade() {
-                                let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                                let msg = gettext("Saved: {}").replace("{}", &f_name);
-                                win.show_toast_with_folder_action(&msg, dir);
-                            }
-                        }
-                    }
-                }
-            });
+            win.prompt_save_attachment_as(&fname_save, &cont_save);
         });
         menu_box.append(&btn_save);
 
@@ -2674,7 +2674,7 @@ impl MailViewerWindow {
         let filename = export_filename(&message.subject());
 
         let file_dialog = gtk::FileDialog::builder()
-            .title(&gettext("Save email as EML"))
+            .title(gettext("Save email as EML"))
             .accept_label(&gettext("Save"))
             .initial_name(&filename)
             .modal(true)
