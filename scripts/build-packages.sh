@@ -361,12 +361,12 @@ fi
 %{_datadir}/locale/*/LC_MESSAGES/meridian.mo
 
 %changelog
-* Mon Nov 09 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
-- Multi-language localization support (de, es, fr, ko, zh_CN)
-- Composer undo/redo history, fixed-width toolbar dropdowns, font family selector, and reply sender/signature fixes
-- Browser-style link hover preview pill in mail viewer and composer
-- Flatpak attachment opening and downloading support
-- Consistent filtering of disabled GOA and EDS accounts across all views
+* Tue Nov 10 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
+- Persistent On This Computer local mail tree with full right-click CRUD and subfolder hierarchy
+- Full account and folder tree picker in Filter Rule Editor with wildcard, regex, and All Messages matching
+- GNOME HIG overhaul for Folder Properties dialog with custom icons, colors, and retention settings
+- Camel IMAP/Exchange folder CRUD and persistent expanded/collapsed sidebar state
+- Subtle header-bar Offline Mode indicator and online-by-default first launch
 EOF
 
     rpmbuild -bb --define "_topdir $work/rpmbuild" "$work/rpmbuild/SPECS/meridian.spec"

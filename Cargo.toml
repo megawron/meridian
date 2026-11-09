@@ -4,7 +4,7 @@ default-members = ["src"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0-beta.1"
+version = "0.3.0-beta.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 authors = ["megawron"]

@@ -81,6 +81,18 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.3.0-beta.1" date="2026-11-10" type="development">
+      <description>
+        <p>Meridian 0.3.0-beta.1 improvements and fixes:</p>
+        <ul>
+          <li>Persistent "On This Computer" local mail tree with full right-click CRUD, custom subfolder hierarchy, and automatic filter rule target updates on rename</li>
+          <li>Full account &amp; folder tree picker in the Filter Rule Editor across all online accounts and local folders, plus wildcard (*), regex, and All Messages matching</li>
+          <li>GNOME HIG overhaul for Folder Properties dialog with custom icons, color swatches, retention policy, and quick filter rule creation</li>
+          <li>Camel IMAP/Exchange folder creation, renaming, and deletion directly from the sidebar context menu, plus persistent expanded/collapsed sidebar state</li>
+          <li>Default to Online Mode on first launch while persisting manual toggles, accompanied by a subtle header-bar Offline Mode indicator</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0-beta.1" date="2026-11-09" type="development">
       <description>
         <p>Meridian 0.2.0-beta.1 improvements and fixes:</p>
