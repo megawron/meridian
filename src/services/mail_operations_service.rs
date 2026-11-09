@@ -297,6 +297,20 @@ pub(crate) enum MailOperation {
         id: String,
         location: Option<MailBackendLocation>,
     },
+    MoveRemoteToLocal {
+        id: String,
+        location: MailBackendLocation,
+        destination: String,
+        #[serde(default)]
+        fallback_raw: Option<Vec<u8>>,
+    },
+    CopyRemoteToLocal {
+        id: String,
+        location: MailBackendLocation,
+        destination: String,
+        #[serde(default)]
+        fallback_raw: Option<Vec<u8>>,
+    },
 }
 
 /// A reversible user action.  The backend mutation is executed before a
@@ -713,6 +727,53 @@ impl MailCommand {
         )
     }
 
+    pub(crate) fn move_remote_to_local(
+        id: impl Into<String>,
+        location: MailBackendLocation,
+        destination: impl Into<String>,
+        fallback_raw: Option<Vec<u8>>,
+    ) -> Self {
+        let id = id.into();
+        let destination = destination.into();
+        Self::new(
+            MailOperation::MoveRemoteToLocal {
+                id: id.clone(),
+                location: location.clone(),
+                destination: destination.clone(),
+                fallback_raw,
+            },
+            MailOperation::RestoreDeleted {
+                id,
+                location: Some(location),
+            },
+            format!("Downloaded message locally to {destination} and removed from server"),
+        )
+    }
+
+    pub(crate) fn copy_remote_to_local(
+        id: impl Into<String>,
+        location: MailBackendLocation,
+        destination: impl Into<String>,
+        fallback_raw: Option<Vec<u8>>,
+    ) -> Self {
+        let id = id.into();
+        let destination = destination.into();
+        Self::new(
+            MailOperation::CopyRemoteToLocal {
+                id: id.clone(),
+                location,
+                destination: destination.clone(),
+                fallback_raw,
+            },
+            MailOperation::RemoveCopy {
+                id,
+                location: None,
+                destination: destination.clone(),
+            },
+            format!("Saved local copy to {destination}"),
+        )
+    }
+
     fn update_inverse_from_result(&mut self, result: Option<MailBackendLocation>) {
         let Some(copy_location) = result else {
             return;
@@ -748,8 +809,10 @@ impl MailOperation {
         match self {
             Self::SetMessageState { .. } => MailOperationKind::SetMessageState,
             Self::Delete { .. } | Self::RestoreDeleted { .. } => MailOperationKind::Delete,
-            Self::Move { .. } => MailOperationKind::Move,
-            Self::Copy { .. } | Self::RemoveCopy { .. } => MailOperationKind::Copy,
+            Self::Move { .. } | Self::MoveRemoteToLocal { .. } => MailOperationKind::Move,
+            Self::Copy { .. }
+            | Self::RemoveCopy { .. }
+            | Self::CopyRemoteToLocal { .. } => MailOperationKind::Copy,
             Self::Archive { .. } | Self::RestoreArchived { .. } => MailOperationKind::Archive,
             Self::SetJunk { is_junk: true, .. } => MailOperationKind::MarkJunk,
             Self::SetJunk { is_junk: false, .. } => MailOperationKind::MarkNotJunk,
@@ -778,9 +841,11 @@ impl MailOperation {
             | Self::SetLabel { id, location, .. }
             | Self::SetFollowUp { id, location, .. }
             | Self::RestoreDeleted { id, location }
-            | Self::RestoreArchived { id, location } => (id, location),
+            | Self::RestoreArchived { id, location } => (id, location.as_ref()),
+            Self::MoveRemoteToLocal { id, location, .. }
+            | Self::CopyRemoteToLocal { id, location, .. } => (id, Some(location)),
         };
-        let identity = location.as_ref().map_or_else(
+        let identity = location.map_or_else(
             || format!("local:{id}"),
             |location| {
                 location
@@ -1893,6 +1958,46 @@ impl MailOperationsService {
                     .set_folder_override(&id, None)
                     .map_err(Into::into),
             },
+            MailOperation::CopyRemoteToLocal {
+                id,
+                location,
+                destination,
+                fallback_raw,
+            } => {
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let raw = match camel_mail_service::load_raw_message(&location, &cancelled) {
+                    Ok(bytes) => bytes,
+                    Err(err) => fallback_raw.ok_or(MailOperationError::Backend {
+                        operation: MailOperationKind::Copy,
+                        message: err,
+                    })?,
+                };
+                self.store
+                    .save_raw_message_to_folder(&raw, &id, &destination)
+                    .map(|_| ())
+                    .map_err(Into::into)
+            }
+            MailOperation::MoveRemoteToLocal {
+                id,
+                location,
+                destination,
+                fallback_raw,
+            } => {
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let raw = match camel_mail_service::load_raw_message(&location, &cancelled) {
+                    Ok(bytes) => bytes,
+                    Err(err) => fallback_raw.ok_or(MailOperationError::Backend {
+                        operation: MailOperationKind::Move,
+                        message: err,
+                    })?,
+                };
+                self.store
+                    .save_raw_message_to_folder(&raw, &id, &destination)?;
+                self.apply_camel(
+                    CamelMailOperation::Delete { location },
+                    MailOperationKind::Move,
+                )
+            }
         }
     }
 

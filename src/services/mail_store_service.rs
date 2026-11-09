@@ -436,6 +436,271 @@ Enjoy using Meridian!\r\n";
         Ok(imported)
     }
 
+    /// Persist a raw RFC822 message payload into a target local folder on disk.
+    ///
+    /// Used by cross-store Move/Copy ("On This Computer") and local-first filter
+    /// rules. Writing uses a temporary file and atomic rename so an interrupted
+    /// transfer never leaves a truncated `.eml` file or triggers premature
+    /// remote deletion.
+    pub fn save_raw_message_to_folder(
+        &self,
+        raw_mime: &[u8],
+        file_stem_hint: &str,
+        target_folder_id: &str,
+    ) -> std::io::Result<PathBuf> {
+        if !self.writable {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "configured local mail store is read-only",
+            ));
+        }
+        if raw_mime.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "cannot save an empty RFC822 message to local mail store",
+            ));
+        }
+
+        let normalized_folder = local_folder_id(target_folder_id);
+        let target_dir = if normalized_folder.is_empty() || normalized_folder == "inbox" {
+            self.mail_dir.clone()
+        } else if let Some(custom_name) = normalized_folder.strip_prefix("custom:") {
+            let sub = custom_name
+                .split('/')
+                .map(|part| format!(".{}", part.trim_start_matches('.')))
+                .collect::<Vec<_>>()
+                .join("/");
+            self.mail_dir.join(sub)
+        } else {
+            self.mail_dir
+                .join(format!(".{}", normalized_folder.trim_start_matches('.')))
+        };
+
+        fs::create_dir_all(&target_dir)?;
+
+        let sanitized_stem: String = file_stem_hint
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(80)
+            .collect();
+        let stem = if sanitized_stem.trim_matches('_').is_empty() {
+            "message".to_string()
+        } else {
+            sanitized_stem.trim_matches('_').to_string()
+        };
+
+        let mut destination = target_dir.join(format!("{stem}.eml"));
+        let mut suffix = 1usize;
+        while destination.exists() {
+            if fs::read(&destination).ok().as_deref() == Some(raw_mime) {
+                if normalized_folder.starts_with("custom:") {
+                    let _ = self.metadata.set_local_folder(&normalized_folder, true);
+                }
+                return Ok(destination);
+            }
+            destination = target_dir.join(format!("{stem}-{suffix}.eml"));
+            suffix += 1;
+        }
+
+        let tmp_path = target_dir.join(format!(
+            ".{stem}.{}.tmp",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&tmp_path, raw_mime)?;
+        if let Err(err) = fs::rename(&tmp_path, &destination) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+
+        if normalized_folder.starts_with("custom:") {
+            let _ = self.metadata.set_local_folder(&normalized_folder, true);
+        }
+
+        Ok(destination)
+    }
+
+    /// Execute local-first filter rules (`MoveToFolder("local:...")` or
+    /// `CopyToFolder("local:...")`) against remote messages.
+    ///
+    /// For `MoveToFolder`, the remote message is deleted from the server ONLY
+    /// after its RFC822 payload has been safely written to the local disk.
+    pub(crate) fn apply_local_first_rules_to_remote_messages(
+        &self,
+        rules: &[MailFilterRule],
+        remote_messages: &[ParsedMail],
+        cancelled: &std::sync::Arc<AtomicBool>,
+    ) -> LocalFilterRunReport {
+        let mut report = LocalFilterRunReport::default();
+        if !self.writable || rules.is_empty() || remote_messages.is_empty() {
+            return report;
+        }
+
+        for message in remote_messages {
+            if cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            let Some(location) = message.backend_location.as_ref() else {
+                continue;
+            };
+            for rule in rules {
+                if !rule.enabled {
+                    continue;
+                }
+                match rule.scope {
+                    FilterScope::Incoming if !message.folder_id.eq_ignore_ascii_case("inbox") => {
+                        continue;
+                    }
+                    FilterScope::Outgoing
+                        if !message.folder_id.eq_ignore_ascii_case("sent")
+                            && !message.folder_id.eq_ignore_ascii_case("outbox") =>
+                    {
+                        continue;
+                    }
+                    _ => {}
+                }
+                if !message_matches_rule(rule, message) {
+                    continue;
+                }
+                let mut rule_matched_local_action = false;
+                let mut rule_moved = false;
+                let mut rule_copied = false;
+                let mut rule_deleted = false;
+                let wants_explicit_delete = rule
+                    .effective_actions()
+                    .into_iter()
+                    .any(|a| matches!(a, FilterAction::Delete));
+
+                for action in rule.effective_actions() {
+                    match action {
+                        FilterAction::CopyToFolder(target)
+                            if crate::services::mail_filter_service::is_explicit_local_folder_target(target) =>
+                        {
+                            rule_matched_local_action = true;
+                            let raw = message
+                                .raw_mime
+                                .clone()
+                                .or_else(|| {
+                                    crate::services::camel_mail_service::load_raw_message(
+                                        location, cancelled,
+                                    )
+                                    .ok()
+                                })
+                                .unwrap_or_else(|| synthesize_rfc822_from_parsed(message));
+                            if self
+                                .save_raw_message_to_folder(&raw, &message.id, target)
+                                .is_ok()
+                            {
+                                rule_copied = true;
+                            }
+                        }
+                        FilterAction::MoveToFolder(target)
+                            if crate::services::mail_filter_service::is_explicit_local_folder_target(target) =>
+                        {
+                            rule_matched_local_action = true;
+                            let raw = message
+                                .raw_mime
+                                .clone()
+                                .or_else(|| {
+                                    crate::services::camel_mail_service::load_raw_message(
+                                        location, cancelled,
+                                    )
+                                    .ok()
+                                })
+                                .unwrap_or_else(|| synthesize_rfc822_from_parsed(message));
+                            if self
+                                .save_raw_message_to_folder(&raw, &message.id, target)
+                                .is_ok()
+                            {
+                                rule_moved = true;
+                                if crate::services::camel_mail_service::apply_operation_with_result(
+                                    crate::services::camel_mail_service::CamelMailOperation::Delete {
+                                        location: location.clone(),
+                                    },
+                                )
+                                .is_ok()
+                                {
+                                    rule_deleted = true;
+                                }
+                            }
+                        }
+                        FilterAction::CopyToFolder(target) => {
+                            let dest_folder = target
+                                .split_once("::")
+                                .map(|(_, fname)| fname.trim())
+                                .unwrap_or_else(|| target.trim());
+                            if !dest_folder.is_empty() {
+                                rule_matched_local_action = true;
+                                if crate::services::camel_mail_service::apply_operation_with_result(
+                                    crate::services::camel_mail_service::CamelMailOperation::Copy {
+                                        location: location.clone(),
+                                        destination: dest_folder.to_string(),
+                                    },
+                                )
+                                .is_ok()
+                                {
+                                    rule_copied = true;
+                                }
+                            }
+                        }
+                        FilterAction::MoveToFolder(target) => {
+                            let dest_folder = target
+                                .split_once("::")
+                                .map(|(_, fname)| fname.trim())
+                                .unwrap_or_else(|| target.trim());
+                            if !dest_folder.is_empty() {
+                                rule_matched_local_action = true;
+                                if crate::services::camel_mail_service::apply_operation_with_result(
+                                    crate::services::camel_mail_service::CamelMailOperation::Move {
+                                        location: location.clone(),
+                                        destination: dest_folder.to_string(),
+                                    },
+                                )
+                                .is_ok()
+                                {
+                                    rule_moved = true;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if rule_copied && wants_explicit_delete && !rule_deleted {
+                    if crate::services::camel_mail_service::apply_operation_with_result(
+                        crate::services::camel_mail_service::CamelMailOperation::Delete {
+                            location: location.clone(),
+                        },
+                    )
+                    .is_ok()
+                    {
+                        rule_deleted = true;
+                    }
+                }
+
+                if rule_matched_local_action {
+                    report.matched_messages += 1;
+                    if rule_moved || rule_copied || rule_deleted {
+                        report.changed_messages += 1;
+                    }
+                    report.moved_messages += usize::from(rule_moved);
+                    report.copied_messages += usize::from(rule_copied);
+                    report.deleted_messages += usize::from(rule_deleted);
+                    if rule_moved || rule_deleted {
+                        break;
+                    }
+                }
+            }
+        }
+
+        report
+    }
+
     /// Copy imported files while preserving their relative Evolution mailbox
     /// layout.  In particular, `mail/local/.Projects/cur/message` remains in
     /// `.Projects/cur` so the local folder can be reconstructed after the
@@ -633,6 +898,8 @@ Enjoy using Meridian!\r\n";
 
         self.metadata
             .rename_local_folder(&from, &to, &message_targets)?;
+        let _ = crate::services::mail_filter_service::MailFilterStore::default()
+            .rename_folder_references(&from, &to);
         Ok(to)
     }
 
@@ -2010,10 +2277,49 @@ fn apply_local_filter_folder_action(
     }
 }
 
-fn local_folder_id(folder: &str) -> String {
-    let normalized = folder.trim().trim_start_matches('.');
+fn synthesize_rfc822_from_parsed(message: &ParsedMail) -> Vec<u8> {
+    let from = if message.sender_name.trim().is_empty() {
+        message.sender_email.clone()
+    } else {
+        format!("{} <{}>", message.sender_name, message.sender_email)
+    };
+    let msg_id = message
+        .message_id
+        .clone()
+        .unwrap_or_else(|| format!("<{}@meridian.local>", message.id));
+    let body = if !message.html_body.trim().is_empty() {
+        message.html_body.clone()
+    } else {
+        message.preview_snippet.clone()
+    };
+    format!(
+        "From: {from}\r\nTo: {}\r\nSubject: {}\r\nDate: {}\r\nMessage-ID: {msg_id}\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n{body}\r\n",
+        message.recipient_to, message.subject, message.date_str
+    )
+    .into_bytes()
+}
+
+pub(crate) fn local_folder_id(folder: &str) -> String {
+    let trimmed = folder.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+    let stripped = if let Some(rest) = lowered.strip_prefix("local:") {
+        &trimmed[trimmed.len() - rest.len()..]
+    } else if let Some(rest) = lowered.strip_prefix("local/") {
+        &trimmed[trimmed.len() - rest.len()..]
+    } else if let Some(rest) = lowered.strip_prefix("on this computer:") {
+        &trimmed[trimmed.len() - rest.len()..]
+    } else if let Some(rest) = lowered.strip_prefix("on this computer/") {
+        &trimmed[trimmed.len() - rest.len()..]
+    } else if let Some(rest) = lowered.strip_prefix("auf diesem computer:") {
+        &trimmed[trimmed.len() - rest.len()..]
+    } else if let Some(rest) = lowered.strip_prefix("auf diesem computer/") {
+        &trimmed[trimmed.len() - rest.len()..]
+    } else {
+        trimmed
+    };
+    let normalized = stripped.trim().trim_start_matches('.');
     match normalized.to_ascii_lowercase().as_str() {
-        "inbox" => "inbox".to_string(),
+        "" | "inbox" => "inbox".to_string(),
         "sent" | "sent-mail" => "sent".to_string(),
         "draft" | "drafts" => "drafts".to_string(),
         "trash" | "deleted" => "trash".to_string(),
@@ -5636,6 +5942,63 @@ JVBERi0xLjQK\r\n\
             .unwrap();
         assert_eq!(imported_again, 1);
         assert!(mail_dir.join("test-1.eml").is_file());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_save_raw_message_and_apply_local_first_rules_to_remote_messages() {
+        let temp_dir = temporary_directory("local-first-remote-rules");
+        let mail_dir = temp_dir.join("mail");
+        let store = MailStoreService::with_mail_dir(&mail_dir);
+
+        let raw_bytes = b"From: Alice <alice@example.com>\r\nTo: Bob <bob@example.com>\r\nSubject: Local First Invoice\r\nMessage-ID: <local-first-1@example.com>\r\n\r\nHello local world!\r\n";
+        let path1 = store
+            .save_raw_message_to_folder(raw_bytes, "remote-uid-42", "local:archive")
+            .unwrap();
+        assert!(path1.is_file());
+        // Idempotent when saving identical content with same stem
+        let path2 = store
+            .save_raw_message_to_folder(raw_bytes, "remote-uid-42", "local:archive")
+            .unwrap();
+        assert_eq!(path1, path2);
+
+        // Apply enabled preset-style CopyToFolder("local:inbox") rule to a remote message
+        let mut parsed = parse_rfc822_bytes("remote-msg-99", "inbox", raw_bytes, false).unwrap();
+        parsed.backend_location = Some(MailBackendLocation {
+            source_uid: "imap-account-1".to_string(),
+            folder_name: "INBOX".to_string(),
+            message_uid: "99".to_string(),
+            message_id: None,
+        });
+        parsed.raw_mime = Some(raw_bytes.to_vec());
+
+        let mut backup_rule = crate::services::mail_filter_service::MailFilterStore::preset_rules()
+            .into_iter()
+            .find(|r| r.id == crate::services::mail_filter_service::PRESET_LOCAL_BACKUP_RULE_ID)
+            .unwrap();
+        backup_rule.enabled = true;
+        backup_rule.action = crate::services::mail_filter_service::FilterAction::CopyToFolder(
+            "local:inbox".to_string(),
+        );
+        backup_rule.actions = vec![backup_rule.action.clone()];
+
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let report = store.apply_local_first_rules_to_remote_messages(
+            &[backup_rule],
+            &[parsed],
+            &cancelled,
+        );
+        assert_eq!(report.matched_messages, 1);
+        assert_eq!(report.copied_messages, 1);
+
+        let local_records = store.load_local_records();
+        assert!(local_records
+            .iter()
+            .any(|m| m.subject == "Local First Invoice" && m.folder_id == "inbox"));
+        assert!(local_records
+            .iter()
+            .any(|m| m.subject == "Local First Invoice" && m.folder_id == "archive"));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

@@ -6,6 +6,7 @@
 // to CamelFilterDriver later, while local imports and tests can already use
 // the same matching semantics without inventing successful server actions.
 
+use crate::i18n::gettext;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -14,6 +15,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 const CURRENT_VERSION: u32 = 1;
+
+pub const PRESET_LOCAL_BACKUP_RULE_ID: &str = "preset-local-backup";
+pub const PRESET_LOCAL_FIRST_RULE_ID: &str = "preset-local-first-download-delete";
+
+pub fn is_explicit_local_folder_target(target: &str) -> bool {
+    let trimmed = target.trim().to_ascii_lowercase();
+    trimmed.starts_with("local:")
+        || trimmed.starts_with("local/")
+        || trimmed.starts_with("custom:")
+        || trimmed.starts_with("on this computer:")
+        || trimmed.starts_with("on this computer/")
+        || trimmed.starts_with("auf diesem computer:")
+        || trimmed.starts_with("auf diesem computer/")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FilterScope {
@@ -37,6 +52,7 @@ pub enum FilterField {
     Date,
     Folder,
     Junk,
+    AllMessages,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -51,10 +67,14 @@ pub enum FilterOperator {
     Before,
     After,
     Exists,
+    MatchesRegex,
 }
 
 impl FilterOperator {
     pub fn matches(self, field: FilterField, haystack: &str, value: &str) -> bool {
+        if field == FilterField::AllMessages {
+            return true;
+        }
         let value = value.trim();
         match self {
             Self::Exists => {
@@ -64,12 +84,46 @@ impl FilterOperator {
                     !haystack.trim().is_empty()
                 }
             }
-            Self::Contains => !value.is_empty() && lowercase(haystack).contains(&lowercase(value)),
-            Self::NotContains => {
-                !value.is_empty() && !lowercase(haystack).contains(&lowercase(value))
+            Self::Contains => {
+                if value.is_empty() {
+                    false
+                } else if value == "*" {
+                    true
+                } else if value.contains('*') || value.contains('?') {
+                    wildcard_matches(&lowercase(haystack), &lowercase(value), false)
+                } else {
+                    lowercase(haystack).contains(&lowercase(value))
+                }
             }
-            Self::Equals => !value.is_empty() && haystack.trim().eq_ignore_ascii_case(value),
-            Self::NotEquals => !value.is_empty() && !haystack.trim().eq_ignore_ascii_case(value),
+            Self::NotContains => {
+                if value.is_empty() || value == "*" {
+                    false
+                } else if value.contains('*') || value.contains('?') {
+                    !wildcard_matches(&lowercase(haystack), &lowercase(value), false)
+                } else {
+                    !lowercase(haystack).contains(&lowercase(value))
+                }
+            }
+            Self::Equals => {
+                if value.is_empty() {
+                    false
+                } else if value == "*" {
+                    true
+                } else if value.contains('*') || value.contains('?') {
+                    wildcard_matches(&lowercase(haystack.trim()), &lowercase(value), true)
+                } else {
+                    haystack.trim().eq_ignore_ascii_case(value)
+                }
+            }
+            Self::NotEquals => {
+                if value.is_empty() || value == "*" {
+                    false
+                } else if value.contains('*') || value.contains('?') {
+                    !wildcard_matches(&lowercase(haystack.trim()), &lowercase(value), true)
+                } else {
+                    !haystack.trim().eq_ignore_ascii_case(value)
+                }
+            }
             Self::StartsWith => {
                 !value.is_empty() && lowercase(haystack.trim()).starts_with(&lowercase(value))
             }
@@ -78,11 +132,22 @@ impl FilterOperator {
             }
             Self::Before => !value.is_empty() && haystack.trim() < value,
             Self::After => !value.is_empty() && haystack.trim() > value,
+            Self::MatchesRegex => {
+                if value.is_empty() {
+                    false
+                } else {
+                    regex::RegexBuilder::new(value)
+                        .case_insensitive(true)
+                        .build()
+                        .map(|re| re.is_match(haystack))
+                        .unwrap_or(false)
+                }
+            }
         }
     }
 
     pub fn allows_empty_value(self, field: FilterField) -> bool {
-        self == Self::Exists && field != FilterField::Header
+        field == FilterField::AllMessages || (self == Self::Exists && field != FilterField::Header)
     }
 }
 
@@ -379,6 +444,7 @@ impl MailFilterRule {
                 FilterField::Attachment => {
                     boolean_condition_matches(condition.operator, &value, context.has_attachment)
                 }
+                FilterField::AllMessages => true,
                 field => {
                     if value.is_empty() && !condition.operator.allows_empty_value(field) {
                         return false;
@@ -391,7 +457,9 @@ impl MailFilterRule {
                         FilterField::Header => headers,
                         FilterField::Label => &label_text,
                         FilterField::Folder => context.folder,
-                        FilterField::Date | FilterField::Junk => unreachable!(),
+                        FilterField::Date | FilterField::Junk | FilterField::AllMessages => {
+                            unreachable!()
+                        }
                         FilterField::Unread
                         | FilterField::Flagged
                         | FilterField::Important
@@ -594,6 +662,7 @@ impl FilterCondition {
                 _ => format!("(sent-date-is {})", camel_escape_string(val)),
             },
             FilterField::Folder => format!("(folder-name {})", camel_escape_string(val)),
+            FilterField::AllMessages => "(match-all #t)".to_string(),
         }
     }
 }
@@ -686,8 +755,38 @@ fn date_condition_matches(operator: FilterOperator, actual: &str, wanted: &str) 
         FilterOperator::EndsWith => actual.ends_with(&wanted),
         FilterOperator::Before => actual < wanted,
         FilterOperator::After => actual > wanted,
+        FilterOperator::MatchesRegex => regex::RegexBuilder::new(&wanted)
+            .case_insensitive(true)
+            .build()
+            .map(|re| re.is_match(&actual))
+            .unwrap_or(false),
         FilterOperator::Exists => unreachable!(),
     }
+}
+
+fn wildcard_matches(haystack: &str, pattern: &str, full_match: bool) -> bool {
+    let mut regex_src = String::new();
+    if full_match {
+        regex_src.push('^');
+    }
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex_src.push_str(".*"),
+            '?' => regex_src.push('.'),
+            other => {
+                regex_src.push_str(&regex::escape(&other.to_string()));
+            }
+        }
+    }
+    if full_match {
+        regex_src.push('$');
+    }
+    regex::RegexBuilder::new(&regex_src)
+        .case_insensitive(true)
+        .dot_matches_new_line(true)
+        .build()
+        .map(|re| re.is_match(haystack))
+        .unwrap_or(false)
 }
 
 fn normalize_date_value(value: &str) -> String {
@@ -735,11 +834,71 @@ fn header_exists(headers: &str, wanted: &str) -> bool {
     })
 }
 
+fn rewrite_renamed_folder_target(target: &str, old_folder: &str, new_folder: &str) -> Option<String> {
+    let strip_prefix_ci = |s: &str| -> String {
+        let t = s.trim();
+        let lower = t.to_ascii_lowercase();
+        for p in ["custom:", "local:", "local/"] {
+            if lower.starts_with(p) {
+                return t[p.len()..].trim().trim_matches('/').to_string();
+            }
+        }
+        t.trim_matches('/').to_string()
+    };
+    let old_clean = strip_prefix_ci(old_folder);
+    let new_clean = strip_prefix_ci(new_folder);
+    if old_clean.is_empty() || new_clean.is_empty() || old_clean == new_clean {
+        return None;
+    }
+
+    let trimmed = target.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let prefixes = [
+        "local:",
+        "local/",
+        "custom:",
+        "on this computer:",
+        "on this computer/",
+        "auf diesem computer:",
+        "auf diesem computer/",
+        "",
+    ];
+    for prefix in prefixes {
+        if lower.starts_with(prefix) {
+            let actual_prefix = &trimmed[..prefix.len()];
+            let rest = trimmed[prefix.len()..].trim().trim_matches('/');
+            if rest.eq_ignore_ascii_case(&old_clean) {
+                let out_prefix = if actual_prefix.is_empty() {
+                    ""
+                } else {
+                    actual_prefix
+                };
+                return Some(format!("{out_prefix}{new_clean}"));
+            }
+            if rest.len() > old_clean.len()
+                && rest[..old_clean.len()].eq_ignore_ascii_case(&old_clean)
+                && rest.as_bytes().get(old_clean.len()) == Some(&b'/')
+            {
+                let suffix = &rest[old_clean.len()..];
+                let out_prefix = if actual_prefix.is_empty() {
+                    ""
+                } else {
+                    actual_prefix
+                };
+                return Some(format!("{out_prefix}{new_clean}{suffix}"));
+            }
+        }
+    }
+    None
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct FilterFile {
     version: u32,
     #[serde(default)]
     rules: Vec<MailFilterRule>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    presets_seeded: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -757,6 +916,186 @@ impl MailFilterStore {
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::services::app_data_dir().join("mail-filters.json"));
         Self::new(path)
+    }
+
+    /// Ready-to-use, disabled-by-default filter presets for local-first workflows.
+    ///
+    /// Normal users never have their disk filled or server messages deleted
+    /// because both rules ship with `enabled: false`. Users who want a local
+    /// backup or a POP3-like "download to disk & delete from server" workflow
+    /// can simply flip the switch in Preferences -> Mail Filters.
+    pub fn preset_rules() -> Vec<MailFilterRule> {
+        vec![
+            MailFilterRule {
+                id: PRESET_LOCAL_BACKUP_RULE_ID.to_string(),
+                name: gettext("Local Backup"),
+                enabled: false,
+                scope: FilterScope::Incoming,
+                condition: FilterCondition {
+                    field: FilterField::AllMessages,
+                    value: String::new(),
+                    operator: FilterOperator::Exists,
+                },
+                action: FilterAction::CopyToFolder("local:archive".to_string()),
+                conditions: vec![FilterCondition {
+                    field: FilterField::AllMessages,
+                    value: String::new(),
+                    operator: FilterOperator::Exists,
+                }],
+                actions: vec![FilterAction::CopyToFolder("local:archive".to_string())],
+                match_all: true,
+            },
+            MailFilterRule {
+                id: PRESET_LOCAL_FIRST_RULE_ID.to_string(),
+                name: gettext("Local-First Mode"),
+                enabled: false,
+                scope: FilterScope::Incoming,
+                condition: FilterCondition {
+                    field: FilterField::AllMessages,
+                    value: String::new(),
+                    operator: FilterOperator::Exists,
+                },
+                action: FilterAction::MoveToFolder("local:inbox".to_string()),
+                conditions: vec![FilterCondition {
+                    field: FilterField::AllMessages,
+                    value: String::new(),
+                    operator: FilterOperator::Exists,
+                }],
+                actions: vec![FilterAction::MoveToFolder("local:inbox".to_string())],
+                match_all: true,
+            },
+        ]
+    }
+
+    /// Load filter rules and seed the disabled local-first presets once when
+    /// the filter store has not yet been initialized with presets.
+    pub fn load_or_init_presets(&self) -> Vec<MailFilterRule> {
+        if let Ok(raw) = fs::read(&self.path) {
+            if let Ok(mut file) = serde_json::from_slice::<FilterFile>(&raw) {
+                if file.version == CURRENT_VERSION {
+                    let mut dirty = false;
+                    if !file.presets_seeded {
+                        for preset in Self::preset_rules() {
+                            if !file.rules.iter().any(|r| r.id == preset.id) {
+                                file.rules.push(preset);
+                            }
+                        }
+                        dirty = true;
+                    }
+                    for rule in &mut file.rules {
+                        if rule.id == PRESET_LOCAL_BACKUP_RULE_ID
+                            && (rule.name.trim().is_empty()
+                                || matches!(
+                                    rule.name.as_str(),
+                                    "Local Backup: Keep a copy on this computer"
+                                        | "Local Backup (Keep Copy)"
+                                ))
+                        {
+                            rule.name = gettext("Local Backup");
+                            dirty = true;
+                        } else if rule.id == PRESET_LOCAL_FIRST_RULE_ID
+                            && (rule.name.trim().is_empty()
+                                || matches!(
+                                    rule.name.as_str(),
+                                    "Local-First: Download to this computer & delete from server"
+                                        | "Local-First (Download & Remove from Server)"
+                                ))
+                        {
+                            rule.name = gettext("Local-First Mode");
+                            dirty = true;
+                        }
+                        if matches!(
+                            rule.id.as_str(),
+                            PRESET_LOCAL_BACKUP_RULE_ID | PRESET_LOCAL_FIRST_RULE_ID
+                        ) {
+                            if rule.condition.field == FilterField::Subject
+                                && rule.condition.operator == FilterOperator::Exists
+                                && rule.condition.value.trim().is_empty()
+                            {
+                                rule.condition.field = FilterField::AllMessages;
+                                dirty = true;
+                            }
+                            for cond in &mut rule.conditions {
+                                if cond.field == FilterField::Subject
+                                    && cond.operator == FilterOperator::Exists
+                                    && cond.value.trim().is_empty()
+                                {
+                                    cond.field = FilterField::AllMessages;
+                                    dirty = true;
+                                }
+                            }
+                        }
+                    }
+                    if dirty {
+                        let _ = self.save_with_preset_flag(&file.rules, true);
+                    }
+                    return file.rules;
+                }
+            }
+        }
+        let presets = Self::preset_rules();
+        let _ = self.save_with_preset_flag(&presets, true);
+        presets
+    }
+
+    pub fn rename_folder_references(&self, old_folder: &str, new_folder: &str) -> io::Result<usize> {
+        let mut rules = self.load();
+        if rules.is_empty() {
+            return Ok(0);
+        }
+        let mut updated_rules = 0usize;
+        for rule in &mut rules {
+            let mut changed = false;
+            match &mut rule.action {
+                FilterAction::MoveToFolder(target) | FilterAction::CopyToFolder(target) => {
+                    if let Some(new_target) =
+                        rewrite_renamed_folder_target(target, old_folder, new_folder)
+                    {
+                        *target = new_target;
+                        changed = true;
+                    }
+                }
+                _ => {}
+            }
+            for action in &mut rule.actions {
+                match action {
+                    FilterAction::MoveToFolder(target) | FilterAction::CopyToFolder(target) => {
+                        if let Some(new_target) =
+                            rewrite_renamed_folder_target(target, old_folder, new_folder)
+                        {
+                            *target = new_target;
+                            changed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if rule.condition.field == FilterField::Folder {
+                if let Some(new_target) =
+                    rewrite_renamed_folder_target(&rule.condition.value, old_folder, new_folder)
+                {
+                    rule.condition.value = new_target;
+                    changed = true;
+                }
+            }
+            for cond in &mut rule.conditions {
+                if cond.field == FilterField::Folder {
+                    if let Some(new_target) =
+                        rewrite_renamed_folder_target(&cond.value, old_folder, new_folder)
+                    {
+                        cond.value = new_target;
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                updated_rules += 1;
+            }
+        }
+        if updated_rules > 0 {
+            self.save(&rules)?;
+        }
+        Ok(updated_rules)
     }
 
     #[allow(dead_code)]
@@ -785,12 +1124,25 @@ impl MailFilterStore {
     }
 
     pub fn save(&self, rules: &[MailFilterRule]) -> io::Result<()> {
+        let presets_seeded = fs::read(&self.path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<FilterFile>(&raw).ok())
+            .is_some_and(|f| f.presets_seeded);
+        self.save_with_preset_flag(rules, presets_seeded)
+    }
+
+    fn save_with_preset_flag(
+        &self,
+        rules: &[MailFilterRule],
+        presets_seeded: bool,
+    ) -> io::Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
         let file = FilterFile {
             version: CURRENT_VERSION,
             rules: rules.to_vec(),
+            presets_seeded,
         };
         let encoded = serde_json::to_vec_pretty(&file)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -1471,6 +1823,80 @@ mod tests {
 
         logger.clear();
         assert!(logger.entries().is_empty());
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn load_or_init_presets_seeds_disabled_local_first_presets_once() {
+        let temp = temporary_directory("preset-seed-test");
+        let store = MailFilterStore::new(temp.join("mail-filters.json"));
+
+        // Plain load() remains empty for uninitialized stores.
+        assert!(store.load().is_empty());
+
+        // load_or_init_presets() seeds both disabled-by-default rules.
+        let seeded = store.load_or_init_presets();
+        assert_eq!(seeded.len(), 2);
+        assert!(seeded.iter().all(|rule| !rule.enabled));
+        assert!(seeded.iter().any(|rule| rule.id == PRESET_LOCAL_BACKUP_RULE_ID));
+        assert!(seeded.iter().any(|rule| rule.id == PRESET_LOCAL_FIRST_RULE_ID));
+
+        // If the user deletes the presets and saves, load_or_init_presets() does not re-add them.
+        store.save(&[]).unwrap();
+        assert!(store.load_or_init_presets().is_empty());
+
+        assert!(is_explicit_local_folder_target("local:inbox"));
+        assert!(is_explicit_local_folder_target("local:archive"));
+        assert!(is_explicit_local_folder_target("custom:Taxes"));
+        assert!(!is_explicit_local_folder_target("Archive"));
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn all_messages_wildcards_regex_and_folder_rename_sync_work() {
+        let mut all_rule = test_rule(FilterField::AllMessages, "");
+        all_rule.condition.operator = FilterOperator::Exists;
+        assert!(all_rule.validate().is_ok());
+        assert!(all_rule.matches("", "", "", "", "", &[]));
+        assert_eq!(all_rule.to_camel_sexp().0, "(match-all #t)");
+
+        let wildcard_rule = test_rule(FilterField::Subject, "inv*2026");
+        assert!(wildcard_rule.matches("Invoice #42 for 2026", "", "", "", "", &[]));
+        assert!(!wildcard_rule.matches("Invoice #42 for 2025", "", "", "", "", &[]));
+
+        let star_all_rule = test_rule(FilterField::Subject, "*");
+        assert!(star_all_rule.matches("", "", "", "", "", &[]));
+
+        let mut regex_rule = test_rule(FilterField::Subject, r"^\[URGENT\]\s+#\d+");
+        regex_rule.condition.operator = FilterOperator::MatchesRegex;
+        assert!(regex_rule.matches("[urgent] #123 Server down", "", "", "", "", &[]));
+        assert!(!regex_rule.matches("Normal #123 Server ok", "", "", "", "", &[]));
+
+        let temp = temporary_directory("folder-rename-sync");
+        let store = MailFilterStore::new(temp.join("mail-filters.json"));
+        let mut folder_rule = test_rule(FilterField::AllMessages, "");
+        folder_rule.action = FilterAction::MoveToFolder("local:Projects".to_string());
+        folder_rule.actions = vec![
+            FilterAction::MoveToFolder("local:Projects".to_string()),
+            FilterAction::CopyToFolder("local:Projects/2026".to_string()),
+        ];
+        store.upsert(folder_rule).unwrap();
+
+        let changed = store
+            .rename_folder_references("Projects", "Clients")
+            .unwrap();
+        assert_eq!(changed, 1);
+        let reloaded = store.load();
+        assert_eq!(
+            reloaded[0].action,
+            FilterAction::MoveToFolder("local:Clients".to_string())
+        );
+        assert_eq!(
+            reloaded[0].actions[1],
+            FilterAction::CopyToFolder("local:Clients/2026".to_string())
+        );
 
         let _ = fs::remove_dir_all(temp);
     }
