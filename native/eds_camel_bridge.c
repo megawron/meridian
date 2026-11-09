@@ -1402,6 +1402,11 @@ load_folder (LoadContext *context,
             folder = camel_store_get_folder_sync (
                 store, current->full_name, CAMEL_STORE_FOLDER_NONE,
                 cancellable, &error);
+            if (!folder && current->full_name && is_inbox_alias (current->full_name)) {
+                g_clear_error (&error);
+                folder = camel_store_get_inbox_folder_sync (
+                    store, cancellable, &error);
+            }
             if (!folder) {
                 remember_error (context, current->full_name, error);
                 g_clear_error (&error);
@@ -1886,10 +1891,11 @@ is_source_foreign_or_shared (ESource *source)
 }
 
 static CamelStore *
-open_store_for_source (EdsCamelSession *session,
-                       ESource *source,
-                       GCancellable *cancellable,
-                       GError **error)
+open_store_for_source_with_offline_fallback (EdsCamelSession *session,
+                                             ESource *source,
+                                             gboolean allow_offline_cache,
+                                             GCancellable *cancellable,
+                                             GError **error)
 {
     ESourceBackend *backend_extension;
     const gchar *backend_name;
@@ -1992,6 +1998,15 @@ open_store_for_source (EdsCamelSession *session,
 
     if (camel_service_get_connection_status (service) != CAMEL_SERVICE_CONNECTED) {
         if (!camel_service_connect_sync (service, cancellable, error)) {
+            if (allow_offline_cache && CAMEL_IS_OFFLINE_STORE (service)) {
+                g_printerr ("[EDS] Connect failed for %s (%s); falling back to offline store cache\n",
+                            source_uid, backend_name);
+                if (error)
+                    g_clear_error (error);
+                camel_offline_store_set_online_sync (
+                    CAMEL_OFFLINE_STORE (service), FALSE, cancellable, NULL);
+                return CAMEL_STORE (service);
+            }
             g_printerr ("[EDS] camel_service_connect_sync failed for %s (%s): %s\n",
                         source_uid, backend_name,
                         error && *error ? (*error)->message : "unknown error");
@@ -2009,6 +2024,16 @@ open_store_for_source (EdsCamelSession *session,
     }
 
     return CAMEL_STORE (service);
+}
+
+static CamelStore *
+open_store_for_source (EdsCamelSession *session,
+                       ESource *source,
+                       GCancellable *cancellable,
+                       GError **error)
+{
+    return open_store_for_source_with_offline_fallback (
+        session, source, FALSE, cancellable, error);
 }
 
 typedef struct _BridgeEEwsConnection BridgeEEwsConnection;
@@ -2310,6 +2335,15 @@ load_source (LoadContext *context,
             store, NULL,
             CAMEL_STORE_FOLDER_INFO_RECURSIVE | CAMEL_STORE_FOLDER_INFO_REFRESH,
             cancellable, &error);
+    }
+    if (!folder_info && backend_name && g_str_equal (backend_name, "pop3")) {
+        g_clear_error (&error);
+        folder_info = camel_folder_info_new ();
+        folder_info->full_name = g_strdup ("INBOX");
+        folder_info->display_name = g_strdup ("Inbox");
+        folder_info->flags = CAMEL_FOLDER_TYPE_INBOX;
+        folder_info->unread = -1;
+        folder_info->total = -1;
     }
     if (!folder_info) {
         context->failed_sources++;
@@ -2833,13 +2867,19 @@ meridian_eds_camel_load_messages_by_uid (
     cancellable = g_cancellable_new ();
     cancellation_monitor = cancellation_monitor_start (
         cancellable, cancellation_callback, cancellation_user_data);
-    store = open_store_for_source (session, source, cancellable, &error);
+    store = open_store_for_source_with_offline_fallback (
+        session, source, TRUE, cancellable, &error);
     if (!store)
         goto finish;
 
     folder = camel_store_get_folder_sync (
         store, folder_name, CAMEL_STORE_FOLDER_NONE,
         cancellable, &error);
+    if (!folder && folder_name && is_inbox_alias (folder_name)) {
+        g_clear_error (&error);
+        folder = camel_store_get_inbox_folder_sync (
+            store, cancellable, &error);
+    }
     if (!folder)
         goto finish;
 
@@ -3404,8 +3444,11 @@ set_folder_mutation_capabilities (CamelStore *store,
         return;
 
     editable = folder_can_edit (store, folder_info);
-    capabilities->can_create_child = editable &&
-        (folder_info->flags & CAMEL_FOLDER_NOINFERIORS) == 0;
+    capabilities->can_create_child = folder_can_refresh (folder_info) &&
+        (folder_info->flags & (CAMEL_FOLDER_VIRTUAL |
+                               CAMEL_FOLDER_VTRASH |
+                               CAMEL_FOLDER_READONLY)) == 0 &&
+        (camel_store_get_flags (store) & CAMEL_STORE_CAN_EDIT_FOLDERS) != 0;
     capabilities->can_rename = editable;
     capabilities->can_delete = editable &&
         (!folder_info->child ||
@@ -3628,20 +3671,28 @@ meridian_eds_camel_apply_folder_mutation (
     set_folder_mutation_capabilities (store, matching_folder, &capabilities);
 
     switch (kind) {
-    case MERIDIAN_EDS_CAMEL_FOLDER_CREATE_CHILD:
+    case MERIDIAN_EDS_CAMEL_FOLDER_CREATE_CHILD: {
+        const gchar *parent_folder = NULL;
         if (!capabilities.can_create_child) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
                 "This Camel folder does not support creating subfolders");
             goto finish;
         }
-        expected_name = g_strdup_printf ("%s/%s", folder_name, target_name);
+        if (folder_is_protected_for_mutation (matching_folder) ||
+            (matching_folder->flags & CAMEL_FOLDER_NOINFERIORS) != 0) {
+            parent_folder = NULL;
+            expected_name = g_strdup (target_name);
+        } else {
+            parent_folder = folder_name;
+            expected_name = g_strdup_printf ("%s/%s", folder_name, target_name);
+        }
         if (find_folder_info_by_name (folder_info, expected_name)) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_EXISTS,
                 "A Camel folder with this name already exists");
             goto finish;
         }
         verified_folder = camel_store_create_folder_sync (
-            store, folder_name, target_name, cancellable, &error);
+            store, parent_folder, target_name, cancellable, &error);
         if (!verified_folder)
             goto finish;
         camel_folder_info_free (verified_folder);
@@ -3652,6 +3703,7 @@ meridian_eds_camel_apply_folder_mutation (
                 cancellable, &error))
             goto finish;
         break;
+    }
     case MERIDIAN_EDS_CAMEL_FOLDER_RENAME:
         if (!capabilities.can_rename) {
             g_set_error_literal (&error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
@@ -4042,6 +4094,11 @@ watcher_add_folder_tree (MeridianEdsCamelWatcher *watcher,
             folder = camel_store_get_folder_sync (
                 store, current->full_name, CAMEL_STORE_FOLDER_NONE,
                 cancellable, &error);
+            if (!folder && current->full_name && is_inbox_alias (current->full_name)) {
+                g_clear_error (&error);
+                folder = camel_store_get_inbox_folder_sync (
+                    store, cancellable, &error);
+            }
             if (folder) {
                 watcher_add_folder (
                     watcher, folder, source_uid, current->full_name);
@@ -6199,13 +6256,19 @@ meridian_eds_camel_search_folder (
     cancellation_monitor = cancellation_monitor_start (
         cancellable, cancellation_callback, cancellation_user_data);
 
-    store = open_store_for_source (session, source, cancellable, &error);
+    store = open_store_for_source_with_offline_fallback (
+        session, source, TRUE, cancellable, &error);
     if (!store)
         goto finish;
 
     folder = camel_store_get_folder_sync (
         store, folder_name, CAMEL_STORE_FOLDER_NONE,
         cancellable, &error);
+    if (!folder && folder_name && is_inbox_alias (folder_name)) {
+        g_clear_error (&error);
+        folder = camel_store_get_inbox_folder_sync (
+            store, cancellable, &error);
+    }
     if (!folder)
         goto finish;
 

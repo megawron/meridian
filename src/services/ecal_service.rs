@@ -2337,6 +2337,50 @@ fn read_calendar_load_cache(path: &std::path::Path) -> Option<CalendarSnapshot> 
 }
 
 pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
+    let offline_mode = crate::services::mail_transport_service::MailTransportService::shared()
+        .snapshot()
+        .mode
+        == crate::services::mail_transport_service::MailTransportMode::Offline;
+    if offline_mode {
+        let mut snapshot = load_calendar_load_cache().unwrap_or_default();
+        let local_service = CalendarStoreService::new();
+        let local = local_service.load_snapshot();
+        for event in local.events {
+            if !snapshot
+                .events
+                .iter()
+                .any(|e| e.source_uid == event.source_uid && e.uid == event.uid)
+            {
+                snapshot.events.push(event);
+            }
+        }
+        for task in local.tasks {
+            if !snapshot
+                .tasks
+                .iter()
+                .any(|t| t.source_uid == task.source_uid && t.uid == task.uid)
+            {
+                snapshot.tasks.push(task);
+            }
+        }
+        for memo in local.memos {
+            if !snapshot
+                .memos
+                .iter()
+                .any(|m| m.source_uid == memo.source_uid && m.uid == memo.uid)
+            {
+                snapshot.memos.push(memo);
+            }
+        }
+        super::calendar_store_service::sort_snapshot(&mut snapshot);
+        register_snapshot_components(&snapshot);
+        return CalendarLoadResult {
+            snapshot,
+            origin: CalendarDataOrigin::Local,
+            warning: None,
+        };
+    }
+
     let ecal = ECalService::new();
     match ecal.load_snapshot() {
         Ok(mut snapshot) => {

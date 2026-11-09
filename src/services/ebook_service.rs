@@ -1239,15 +1239,23 @@ pub(crate) fn load_contacts_prefer_eds_cached(use_cache: bool) -> EBookLoadResul
 }
 
 fn load_contacts_prefer_eds_fresh() -> EBookLoadResult {
-    let (mut contacts, warning) = match EBookService::new().load_contacts() {
-        Ok((loaded, warn)) => (loaded, warn),
-        Err(err) => {
-            tracing::warn!("Native EBookService load_contacts error: {:?}", err);
-            let warn = match err {
-                EBookServiceError::Unsupported => None,
-                other => Some(other.to_string()),
-            };
-            (Vec::new(), warn)
+    let offline_mode = crate::services::mail_transport_service::MailTransportService::shared()
+        .snapshot()
+        .mode
+        == crate::services::mail_transport_service::MailTransportMode::Offline;
+    let (mut contacts, warning) = if offline_mode {
+        (Vec::new(), None)
+    } else {
+        match EBookService::new().load_contacts() {
+            Ok((loaded, warn)) => (loaded, warn),
+            Err(err) => {
+                tracing::warn!("Native EBookService load_contacts error: {:?}", err);
+                let warn = match err {
+                    EBookServiceError::Unsupported => None,
+                    other => Some(other.to_string()),
+                };
+                (Vec::new(), warn)
+            }
         }
     };
 
@@ -1320,7 +1328,7 @@ fn load_contacts_prefer_eds_fresh() -> EBookLoadResult {
         }));
     }
 
-    if contacts.is_empty() {
+    if !offline_mode && contacts.is_empty() {
         if let Some(graph) = load_contacts_from_graph() {
             return graph;
         }
