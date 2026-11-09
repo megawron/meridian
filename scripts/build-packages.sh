@@ -361,11 +361,12 @@ fi
 %{_datadir}/locale/*/LC_MESSAGES/meridian.mo
 
 %changelog
-* Fri Nov 06 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
-- Initial public beta release of Meridian
-- Unified mail workspace with threaded conversations, fast full-text search, OpenPGP and S/MIME support, and sandboxed HTML preview
-- Multi-view calendar supporting Day, Work Week, Week, Month, Agenda, and Year views
-- Integrated Contacts, Tasks, and Memos with Evolution Data Server (EDS) and GNOME Online Accounts integration
+* Mon Nov 09 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
+- Multi-language localization support (de, es, fr, ko, zh_CN)
+- Composer undo/redo history, fixed-width toolbar dropdowns, font family selector, and reply sender/signature fixes
+- Browser-style link hover preview pill in mail viewer and composer
+- Flatpak attachment opening and downloading support
+- Consistent filtering of disabled GOA and EDS accounts across all views
 EOF
 
     rpmbuild -bb --define "_topdir $work/rpmbuild" "$work/rpmbuild/SPECS/meridian.spec"

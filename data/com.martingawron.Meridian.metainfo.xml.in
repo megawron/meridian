@@ -81,6 +81,19 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.0-beta.1" date="2026-11-09" type="development">
+      <description>
+        <p>Meridian 0.2.0-beta.1 improvements and fixes:</p>
+        <ul>
+          <li>Multi-language localization support (English, German, Spanish, French, Korean, Simplified Chinese)</li>
+          <li>Composer undo/redo history (Ctrl+Z / Ctrl+Y), fixed-width formatting dropdowns, font family preferences, blockquote toggling, and reply attribution/signature ordering</li>
+          <li>Browser-style hovered link target preview pill in MailViewer and Composer</li>
+          <li>Flatpak sandbox support for opening and downloading email attachments</li>
+          <li>Consistent filtering of disabled GOA and EDS accounts across Mail, Calendar, Tasks, Memos, and Contacts</li>
+          <li>Improved mail selection stability on background sync, thread root preview updates, and folder drag-and-drop highlighting</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0-beta.1" date="2026-11-04" type="development">
       <description>
         <p>Initial public beta release of Meridian:</p>
