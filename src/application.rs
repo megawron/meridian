@@ -267,6 +267,19 @@ mod imp {
             app.setup_reminder_scheduler();
             app.handle_external_open(files);
         }
+
+        fn shutdown(&self) {
+            self.parent_shutdown();
+            // Inside a Flatpak sandbox, GnuPG daemons (`keyboxd` / `gpg-agent`)
+            // spawned during OpenPGP checks would otherwise stay alive in the
+            // container namespace and keep the old `/app` mount open across
+            // Flatpak updates.
+            if std::path::Path::new("/.flatpak-info").exists() {
+                let _ = std::process::Command::new("gpgconf")
+                    .args(["--kill", "all"])
+                    .status();
+            }
+        }
     }
 
     impl GtkApplicationImpl for MeridianApplication {}

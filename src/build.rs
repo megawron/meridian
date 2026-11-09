@@ -12,6 +12,7 @@ fn main() {
 
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    emit_meridian_version(&manifest_dir);
     prepare_settings_schema(&manifest_dir, &out_dir);
     compile_locales(&manifest_dir, &out_dir);
 
@@ -236,6 +237,43 @@ fn main() {
     println!("cargo:rustc-cfg=eds_camel_bridge");
     println!("cargo:rustc-cfg=eds_ecal_bridge");
     println!("cargo:rustc-cfg=eds_ebook_bridge");
+}
+
+fn emit_meridian_version(manifest_dir: &Path) {
+    let cargo_version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.2.0-beta.1".to_string());
+    let metainfo_name = "com.martingawron.Meridian.metainfo.xml.in";
+    let metainfo_path = if manifest_dir.join("data").join(metainfo_name).is_file() {
+        manifest_dir.join("data").join(metainfo_name)
+    } else {
+        manifest_dir.join("../data").join(metainfo_name)
+    };
+    let mut resolved = cargo_version.clone();
+    if metainfo_path.is_file() {
+        println!("cargo:rerun-if-changed={}", metainfo_path.display());
+        if let Ok(xml) = fs::read_to_string(&metainfo_path) {
+            if let Some(meta_ver) = extract_first_release_version(&xml) {
+                assert_eq!(
+                    cargo_version, meta_ver,
+                    "Version mismatch: Cargo.toml version ({cargo_version}) must match the latest <release version=\"{meta_ver}\"> in {}",
+                    metainfo_path.display()
+                );
+                resolved = meta_ver;
+            }
+        }
+    }
+    println!("cargo:rustc-env=MERIDIAN_VERSION={resolved}");
+}
+
+fn extract_first_release_version(xml: &str) -> Option<String> {
+    let marker = "<release version=\"";
+    let start = xml.find(marker)? + marker.len();
+    let end = xml[start..].find('"')? + start;
+    let ver = xml[start..end].trim();
+    if ver.is_empty() {
+        None
+    } else {
+        Some(ver.to_string())
+    }
 }
 
 /// Make `cargo run` behave like the installed Meson build for developers.

@@ -12,7 +12,7 @@ pub fn show_about_dialog<W: IsA<gtk::Widget>>(parent: &W) {
         .application_name("Meridian")
         .application_icon("com.martingawron.Meridian")
         .developer_name("Martin Gawron")
-        .version("0.2.0-beta.1")
+        .version(env!("MERIDIAN_VERSION"))
         .copyright("© 2026 Martin Gawron")
         .license_type(gtk::License::Gpl30)
         .website("https://github.com/megawron/meridian")

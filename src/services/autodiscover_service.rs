@@ -771,7 +771,7 @@ fn http_fetch_get(
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
-        .user_agent("Meridian/0.1.0 (Autoconfig)")
+        .user_agent(concat!("Meridian/", env!("MERIDIAN_VERSION"), " (Autoconfig)"))
         .build()
         .map_err(|e| e.to_string())?;
 
