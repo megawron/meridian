@@ -73,6 +73,7 @@ mod imp {
         pub view_stack: RefCell<Option<adw::ViewStack>>,
         pub toast_overlay: adw::ToastOverlay,
         pub status_label: RefCell<Option<gtk::Label>>,
+        pub hovered_link_previous_status: RefCell<Option<String>>,
         pub status_progress: RefCell<Option<gtk::ProgressBar>>,
         pub online_toggle: RefCell<Option<gtk::Button>>,
         pub debug_revealer: RefCell<Option<gtk::Revealer>>,
@@ -808,7 +809,7 @@ impl MeridianWindow {
     fn present_welcome_onboarding_dialog(&self) {
         use adw::prelude::*;
         let dialog = adw::Dialog::builder()
-            .title(&gettext("Welcome to Meridian"))
+            .title(gettext("Welcome to Meridian"))
             .content_width(460)
             .build();
 
@@ -838,15 +839,15 @@ impl MeridianWindow {
             .pixel_size(64)
             .build();
         let title_label = gtk::Label::builder()
-            .label(&gettext("Welcome to Meridian"))
-            .css_classes(vec!["title-2"])
+            .label(gettext("Welcome to Meridian"))
+            .css_classes(["title-2"])
             .halign(gtk::Align::Center)
             .build();
         let subtitle_label = gtk::Label::builder()
-            .label(&gettext(
+            .label(gettext(
                 "Connect an account to get started with mail, calendars, contacts, and tasks.",
             ))
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .wrap(true)
             .justify(gtk::Justification::Center)
             .max_width_chars(44)
@@ -859,14 +860,14 @@ impl MeridianWindow {
 
         if crate::services::eds_service::is_gnome_online_accounts_available() {
             let group_system = adw::PreferencesGroup::builder()
-                .title(&gettext("System Account"))
-                .description(&gettext(
+                .title(gettext("System Account"))
+                .description(gettext(
                     "Connect Google, Microsoft 365, Nextcloud, or Exchange across GNOME",
                 ))
                 .build();
             let row_goa = adw::ActionRow::builder()
-                .title(&gettext("GNOME Online Accounts…"))
-                .subtitle(&gettext("Automatically syncs mail, calendars, and contacts"))
+                .title(gettext("GNOME Online Accounts…"))
+                .subtitle(gettext("Automatically syncs mail, calendars, and contacts"))
                 .activatable(true)
                 .build();
             let icon_goa = gtk::Image::from_icon_name("preferences-system-network-symbolic");
@@ -887,14 +888,14 @@ impl MeridianWindow {
         }
 
         let group_direct = adw::PreferencesGroup::builder()
-            .title(&gettext("Direct Setup"))
-            .description(&gettext(
+            .title(gettext("Direct Setup"))
+            .description(gettext(
                 "Configure IMAP/SMTP, Microsoft Exchange (EWS), JMAP, or POP3 directly in Meridian",
             ))
             .build();
         let row_account = adw::ActionRow::builder()
-            .title(&gettext("Add Mail Account…"))
-            .subtitle(&gettext("Set up an email account with automatic server discovery"))
+            .title(gettext("Add Mail Account…"))
+            .subtitle(gettext("Set up an email account with automatic server discovery"))
             .activatable(true)
             .build();
         let icon_account = gtk::Image::from_icon_name("mail-read-symbolic");
@@ -917,8 +918,8 @@ impl MeridianWindow {
         outer_box.append(&group_direct);
 
         let skip_btn = gtk::Button::builder()
-            .label(&gettext("Skip for Now"))
-            .css_classes(vec!["pill"])
+            .label(gettext("Skip for Now"))
+            .css_classes(["pill"])
             .halign(gtk::Align::Center)
             .margin_top(6)
             .build();
@@ -1030,11 +1031,11 @@ impl MeridianWindow {
             "mail" => self
                 .mail_page()
                 .map(|m| m.active_folder_display_title())
-                .unwrap_or_else(|| crate::i18n::gettext("Inbox")),
-            "calendar" => crate::i18n::gettext("Calendar"),
-            "contacts" => crate::i18n::gettext("Contacts"),
-            "tasks" => crate::i18n::gettext("Tasks"),
-            "memos" => crate::i18n::gettext("Memos"),
+                .unwrap_or_else(|| gettext("Inbox")),
+            "calendar" => gettext("Calendar"),
+            "contacts" => gettext("Contacts"),
+            "tasks" => gettext("Tasks"),
+            "memos" => gettext("Memos"),
             _ => String::new(),
         };
         self.update_sidebar_title(&title_str);
@@ -1075,8 +1076,8 @@ impl MeridianWindow {
             }
             if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                 res_btn.set_visible(!is_vis);
-                res_btn.set_tooltip_text(Some(&crate::i18n::gettext("Show Sidebar (F9)")));
-                set_accessible_label(res_btn, &crate::i18n::gettext("Show Sidebar"));
+                res_btn.set_tooltip_text(Some(&gettext("Show Sidebar (F9)")));
+                set_accessible_label(res_btn, &gettext("Show Sidebar"));
             }
             if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
                 hb.set_show_start_title_buttons(!is_vis);
@@ -1269,28 +1270,28 @@ impl MeridianWindow {
 
             let (tooltip, label) = match self.active_view_name().as_str() {
                 "mail" => (
-                    crate::i18n::gettext("Toggle To Do bar for today"),
-                    crate::i18n::gettext("To Do bar for today"),
+                    gettext("Toggle To Do bar for today"),
+                    gettext("To Do bar for today"),
                 ),
                 "calendar" => (
-                    crate::i18n::gettext("Toggle tasks and memos bar (Ctrl+M)"),
-                    crate::i18n::gettext("Tasks and memos bar"),
+                    gettext("Toggle tasks and memos bar (Ctrl+M)"),
+                    gettext("Tasks and memos bar"),
                 ),
                 "contacts" => (
-                    crate::i18n::gettext("Toggle contact preview (Ctrl+M)"),
-                    crate::i18n::gettext("Contact preview"),
+                    gettext("Toggle contact preview (Ctrl+M)"),
+                    gettext("Contact preview"),
                 ),
                 "tasks" => (
-                    crate::i18n::gettext("Toggle task preview (Ctrl+M)"),
-                    crate::i18n::gettext("Task preview"),
+                    gettext("Toggle task preview (Ctrl+M)"),
+                    gettext("Task preview"),
                 ),
                 "memos" => (
-                    crate::i18n::gettext("Toggle memo preview (Ctrl+M)"),
-                    crate::i18n::gettext("Memo preview"),
+                    gettext("Toggle memo preview (Ctrl+M)"),
+                    gettext("Memo preview"),
                 ),
                 _ => (
-                    crate::i18n::gettext("Toggle right side panel"),
-                    crate::i18n::gettext("Right side panel"),
+                    gettext("Toggle right side panel"),
+                    gettext("Right side panel"),
                 ),
             };
 
@@ -1463,13 +1464,13 @@ impl MeridianWindow {
                         if let Some(mail) = self.mail_page() {
                             match mail.drill_down_level() {
                                 crate::views::MailDrillDownLevel::Folders => {
-                                    window_title.set_title(&crate::i18n::gettext("Folders & Accounts"));
-                                    window_title.set_subtitle(&crate::i18n::gettext("Mail"));
+                                    window_title.set_title(&gettext("Folders & Accounts"));
+                                    window_title.set_subtitle(&gettext("Mail"));
                                 }
                                 crate::views::MailDrillDownLevel::Messages => {
                                     let mut folder = mail
                                         .selected_folder_display_name()
-                                        .unwrap_or_else(|| crate::i18n::gettext("Inbox"));
+                                        .unwrap_or_else(|| gettext("Inbox"));
                                     let show_counter = AppSettings::try_new()
                                         .map(|s| s.show_window_title_unread_counter())
                                         .unwrap_or(true);
@@ -1478,14 +1479,14 @@ impl MeridianWindow {
                                         folder = format!("{folder} ({count})");
                                     }
                                     window_title.set_title(&folder);
-                                    window_title.set_subtitle(&crate::i18n::gettext("Messages"));
+                                    window_title.set_subtitle(&gettext("Messages"));
                                 }
                                 crate::views::MailDrillDownLevel::Viewer => {
                                     let subj = mail
                                         .selected_message_subject()
-                                        .unwrap_or_else(|| crate::i18n::gettext("Email"));
+                                        .unwrap_or_else(|| gettext("Email"));
                                     window_title.set_title(&subj);
-                                    window_title.set_subtitle(&crate::i18n::gettext("Message"));
+                                    window_title.set_subtitle(&gettext("Message"));
                                 }
                             }
                         }
@@ -1497,7 +1498,7 @@ impl MeridianWindow {
                             window_title.set_title(&period);
                             window_title.set_subtitle(&view_name);
                         } else {
-                            window_title.set_title(&crate::i18n::gettext("Calendar"));
+                            window_title.set_title(&gettext("Calendar"));
                             window_title.set_subtitle("");
                         }
                     }
@@ -1506,15 +1507,15 @@ impl MeridianWindow {
                             if contacts.is_detail_shown() {
                                 let name = contacts
                                     .selected_contact_display_name()
-                                    .unwrap_or_else(|| crate::i18n::gettext("Contact"));
+                                    .unwrap_or_else(|| gettext("Contact"));
                                 window_title.set_title(&name);
-                                window_title.set_subtitle(&crate::i18n::gettext("Contacts"));
+                                window_title.set_subtitle(&gettext("Contacts"));
                             } else {
-                                window_title.set_title(&crate::i18n::gettext("Contacts"));
+                                window_title.set_title(&gettext("Contacts"));
                                 window_title.set_subtitle("");
                             }
                         } else {
-                            window_title.set_title(&crate::i18n::gettext("Contacts"));
+                            window_title.set_title(&gettext("Contacts"));
                             window_title.set_subtitle("");
                         }
                     }
@@ -1523,15 +1524,15 @@ impl MeridianWindow {
                             if tasks.is_detail_shown() {
                                 let title = tasks
                                     .selected_task_title()
-                                    .unwrap_or_else(|| crate::i18n::gettext("Task"));
+                                    .unwrap_or_else(|| gettext("Task"));
                                 window_title.set_title(&title);
-                                window_title.set_subtitle(&crate::i18n::gettext("Tasks"));
+                                window_title.set_subtitle(&gettext("Tasks"));
                             } else {
-                                window_title.set_title(&crate::i18n::gettext("Tasks"));
+                                window_title.set_title(&gettext("Tasks"));
                                 window_title.set_subtitle("");
                             }
                         } else {
-                            window_title.set_title(&crate::i18n::gettext("Tasks"));
+                            window_title.set_title(&gettext("Tasks"));
                             window_title.set_subtitle("");
                         }
                     }
@@ -1540,15 +1541,15 @@ impl MeridianWindow {
                             if memos.is_detail_shown() {
                                 let title = memos
                                     .selected_memo_title()
-                                    .unwrap_or_else(|| crate::i18n::gettext("Memo"));
+                                    .unwrap_or_else(|| gettext("Memo"));
                                 window_title.set_title(&title);
-                                window_title.set_subtitle(&crate::i18n::gettext("Memos"));
+                                window_title.set_subtitle(&gettext("Memos"));
                             } else {
-                                window_title.set_title(&crate::i18n::gettext("Memos"));
+                                window_title.set_title(&gettext("Memos"));
                                 window_title.set_subtitle("");
                             }
                         } else {
-                            window_title.set_title(&crate::i18n::gettext("Memos"));
+                            window_title.set_title(&gettext("Memos"));
                             window_title.set_subtitle("");
                         }
                     }
@@ -1568,13 +1569,13 @@ impl MeridianWindow {
                         if mail.drill_down_level() == crate::views::MailDrillDownLevel::Viewer {
                             let subj = mail
                                 .selected_message_subject()
-                                .unwrap_or_else(|| crate::i18n::gettext("Email"));
+                                .unwrap_or_else(|| gettext("Email"));
                             window_title.set_title(&subj);
                             window_title.set_subtitle("");
                         } else {
                             let mut folder = mail
                                 .selected_folder_display_name()
-                                .unwrap_or_else(|| crate::i18n::gettext("Inbox"));
+                                .unwrap_or_else(|| gettext("Inbox"));
                             let show_counter = AppSettings::try_new()
                                 .map(|s| s.show_window_title_unread_counter())
                                 .unwrap_or(true);
@@ -1849,8 +1850,8 @@ impl MeridianWindow {
                 }
                 if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                     res_btn.set_visible(!vis);
-                    res_btn.set_tooltip_text(Some(&crate::i18n::gettext("Show Sidebar (F9)")));
-                    set_accessible_label(res_btn, &crate::i18n::gettext("Show Sidebar"));
+                    res_btn.set_tooltip_text(Some(&gettext("Show Sidebar (F9)")));
+                    set_accessible_label(res_btn, &gettext("Show Sidebar"));
                 }
                 if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
                     hb.set_show_start_title_buttons(!vis);
@@ -2038,8 +2039,8 @@ impl MeridianWindow {
             }
             if let Some(res_btn) = self.imp().restore_sidebar_button.borrow().as_ref() {
                 res_btn.set_visible(true);
-                res_btn.set_tooltip_text(Some(&crate::i18n::gettext("Show Sidebar (F9)")));
-                set_accessible_label(res_btn, &crate::i18n::gettext("Show Sidebar"));
+                res_btn.set_tooltip_text(Some(&gettext("Show Sidebar (F9)")));
+                set_accessible_label(res_btn, &gettext("Show Sidebar"));
             }
             if let Some(hb) = self.imp().header_bar.borrow().as_ref() {
                 hb.set_show_start_title_buttons(true);
@@ -2131,8 +2132,8 @@ impl MeridianWindow {
                     }
                     if let Some(res_btn) = win.imp().restore_sidebar_button.borrow().as_ref() {
                         res_btn.set_visible(true);
-                        res_btn.set_tooltip_text(Some(&crate::i18n::gettext("Show Sidebar (F9)")));
-                        set_accessible_label(res_btn, &crate::i18n::gettext("Show Sidebar"));
+                        res_btn.set_tooltip_text(Some(&gettext("Show Sidebar (F9)")));
+                        set_accessible_label(res_btn, &gettext("Show Sidebar"));
                     }
                     if let Some(hb) = win.imp().header_bar.borrow().as_ref() {
                         hb.set_show_start_title_buttons(true);
@@ -2285,6 +2286,7 @@ impl MeridianWindow {
 
     pub(crate) fn reload_accounts(&self) {
         crate::services::eds_service::invalidate_account_collections_cache();
+        crate::services::ecal_service::invalidate_calendar_load_cache();
         crate::services::camel_mail_service::reset_global_session();
         crate::services::camel_mail_service::clear_mail_load_cache();
         if let Some(mail_page) = self.mail_page() {
@@ -2471,21 +2473,47 @@ impl MeridianWindow {
                     .map(|s| s.offline_mode())
                     .unwrap_or(false);
                 if offline {
-                    crate::i18n::gettext("Offline")
+                    gettext("Offline")
                 } else {
-                    crate::i18n::gettext("Ready")
+                    gettext("Ready")
                 }
             } else {
                 status_text.to_string()
             };
-            label.set_label(&status);
-            label.set_tooltip_text(Some(&status));
+            if self.imp().hovered_link_previous_status.borrow().is_some() {
+                self.imp()
+                    .hovered_link_previous_status
+                    .replace(Some(status));
+            } else {
+                label.set_label(&status);
+                label.set_tooltip_text(Some(&status));
+            }
         }
     }
 
     /// Public helper for any view/component to publish a status update to the window statusbar.
     pub fn set_status(&self, status_text: &str) {
         self.update_mail_status(status_text);
+    }
+
+    /// Temporarily display a hovered link target in the window statusbar and restore
+    /// the previous status text when the pointer leaves the link.
+    pub fn set_hovered_link(&self, uri: Option<&str>) {
+        let Some(label) = self.imp().status_label.borrow().as_ref().cloned() else {
+            return;
+        };
+        if let Some(uri) = uri.map(str::trim).filter(|s| !s.is_empty()) {
+            if self.imp().hovered_link_previous_status.borrow().is_none() {
+                self.imp()
+                    .hovered_link_previous_status
+                    .replace(Some(label.label().to_string()));
+            }
+            label.set_label(uri);
+            label.set_tooltip_text(Some(uri));
+        } else if let Some(prev) = self.imp().hovered_link_previous_status.borrow_mut().take() {
+            label.set_label(&prev);
+            label.set_tooltip_text(Some(&prev));
+        }
     }
 
 }
@@ -2627,9 +2655,9 @@ impl MeridianWindow {
                 "network-idle-symbolic"
             });
             let tooltip = if offline {
-                crate::i18n::gettext("Offline mode active; click to switch online")
+                gettext("Offline mode active; click to switch online")
             } else {
-                crate::i18n::gettext("Online mode active; click to switch offline")
+                gettext("Online mode active; click to switch offline")
             };
             toggle.set_tooltip_text(Some(&tooltip));
         }
@@ -3232,32 +3260,32 @@ impl MeridianWindow {
         let (icon_name, label_text, tooltip, action_name) = match view_name {
             "calendar" => (
                 "x-office-calendar-symbolic",
-                crate::i18n::gettext("New Event"),
-                crate::i18n::gettext("Create new event (Ctrl+N)"),
+                gettext("New Event"),
+                gettext("Create new event (Ctrl+N)"),
                 "win.new",
             ),
             "contacts" => (
                 "contact-new-symbolic",
-                crate::i18n::gettext("New Contact"),
-                crate::i18n::gettext("Create new contact (Ctrl+N)"),
+                gettext("New Contact"),
+                gettext("Create new contact (Ctrl+N)"),
                 "win.new",
             ),
             "tasks" => (
                 "task-new-symbolic",
-                crate::i18n::gettext("New Task"),
-                crate::i18n::gettext("Create new task (Ctrl+N)"),
+                gettext("New Task"),
+                gettext("Create new task (Ctrl+N)"),
                 "win.new",
             ),
             "memos" => (
                 "document-new-symbolic",
-                crate::i18n::gettext("New Memo"),
-                crate::i18n::gettext("Create new note (Ctrl+N)"),
+                gettext("New Memo"),
+                gettext("Create new note (Ctrl+N)"),
                 "win.new",
             ),
             _ => (
                 "mail-message-new-symbolic",
-                crate::i18n::gettext("New Mail"),
-                crate::i18n::gettext("Create new email (Ctrl+N)"),
+                gettext("New Mail"),
+                gettext("Create new email (Ctrl+N)"),
                 "win.new",
             ),
         };
@@ -3613,31 +3641,31 @@ impl MeridianWindow {
         // page construction starts native worker activity; eagerly creating
         // every hidden module can overwhelm a cold Linux EDS session before
         // the first frame has settled.
-        let calendar_bin = Self::lazy_module_bin(&crate::i18n::gettext("Calendar"));
+        let calendar_bin = Self::lazy_module_bin(&gettext("Calendar"));
         view_stack.add_titled_with_icon(
             &calendar_bin,
             Some("calendar"),
-            &crate::i18n::gettext("Calendar"),
+            &gettext("Calendar"),
             "x-office-calendar-symbolic",
         );
 
-        let contacts_bin = Self::lazy_module_bin(&crate::i18n::gettext("Contacts"));
+        let contacts_bin = Self::lazy_module_bin(&gettext("Contacts"));
         view_stack.add_titled_with_icon(
             &contacts_bin,
             Some("contacts"),
-            &crate::i18n::gettext("Contacts"),
+            &gettext("Contacts"),
             "x-office-address-book-symbolic",
         );
 
-        let tasks_bin = Self::lazy_module_bin(&crate::i18n::gettext("Tasks"));
+        let tasks_bin = Self::lazy_module_bin(&gettext("Tasks"));
         view_stack.add_titled_with_icon(
             &tasks_bin,
             Some("tasks"),
-            &crate::i18n::gettext("Tasks"),
+            &gettext("Tasks"),
             "view-list-bullet-symbolic",
         );
 
-        let memos_bin = Self::lazy_module_bin(&crate::i18n::gettext("Memos"));
+        let memos_bin = Self::lazy_module_bin(&gettext("Memos"));
         view_stack.add_named(&memos_bin, Some("memos"));
         self.imp().view_stack.replace(Some(view_stack.clone()));
 
@@ -3854,11 +3882,11 @@ impl MeridianWindow {
                         "mail" => window
                             .mail_page()
                             .map(|m| m.active_folder_display_title())
-                            .unwrap_or_else(|| crate::i18n::gettext("Inbox")),
-                        "calendar" => crate::i18n::gettext("Calendar"),
-                        "contacts" => crate::i18n::gettext("Contacts"),
-                        "tasks" => crate::i18n::gettext("Tasks"),
-                        "memos" => crate::i18n::gettext("Memos"),
+                            .unwrap_or_else(|| gettext("Inbox")),
+                        "calendar" => gettext("Calendar"),
+                        "contacts" => gettext("Contacts"),
+                        "tasks" => gettext("Tasks"),
+                        "memos" => gettext("Memos"),
                         _ => String::new(),
                     };
                     window.update_sidebar_title(&title);
@@ -3920,11 +3948,11 @@ impl MeridianWindow {
         let sidebar_header = adw::HeaderBar::builder()
             .show_start_title_buttons(true)
             .show_end_title_buttons(false)
-            .css_classes(vec!["flat", "sidebar-header"])
+            .css_classes(["flat", "sidebar-header"])
             .build();
         sidebar_header.set_overflow(gtk::Overflow::Hidden);
         let sidebar_title = adw::WindowTitle::builder()
-            .title(&crate::i18n::gettext("Inbox"))
+            .title(gettext("Inbox"))
             .build();
         sidebar_header.set_title_widget(Some(&sidebar_title));
         sidebar_header.set_size_request(initial_sidebar_pos, -1);
@@ -3934,10 +3962,10 @@ impl MeridianWindow {
 
         let sidebar_close_btn = gtk::Button::builder()
             .icon_name("sidebar-show-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Collapse Sidebar (F9)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Collapse Sidebar (F9)"))
+            .css_classes(["flat"])
             .build();
-        set_accessible_label(&sidebar_close_btn, &crate::i18n::gettext("Collapse Sidebar"));
+        set_accessible_label(&sidebar_close_btn, &gettext("Collapse Sidebar"));
         let win_weak_close = self.downgrade();
         sidebar_close_btn.connect_clicked(move |_| {
             if let Some(win) = win_weak_close.upgrade() {
@@ -3956,11 +3984,11 @@ impl MeridianWindow {
 
         let restore_sidebar_btn = gtk::Button::builder()
             .icon_name("sidebar-show-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Show Sidebar (F9)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Show Sidebar (F9)"))
+            .css_classes(["flat"])
             .visible(!initial_sidebar_vis)
             .build();
-        set_accessible_label(&restore_sidebar_btn, &crate::i18n::gettext("Show Sidebar"));
+        set_accessible_label(&restore_sidebar_btn, &gettext("Show Sidebar"));
         let win_weak_restore = self.downgrade();
         restore_sidebar_btn.connect_clicked(move |_| {
             if let Some(win) = win_weak_restore.upgrade() {
@@ -3997,10 +4025,10 @@ impl MeridianWindow {
 
         let search_button = gtk::ToggleButton::builder()
             .icon_name("edit-find-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Search (Ctrl+F)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Search (Ctrl+F)"))
+            .css_classes(["flat"])
             .build();
-        set_accessible_label(&search_button, &crate::i18n::gettext("Search"));
+        set_accessible_label(&search_button, &gettext("Search"));
         self.imp().search_button.replace(Some(search_button.clone()));
 
         let win_for_search = self.downgrade();
@@ -4042,11 +4070,11 @@ impl MeridianWindow {
 
         let back_button = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Back"))
+            .tooltip_text(gettext("Back"))
             .visible(false)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
-        set_accessible_label(&back_button, &crate::i18n::gettext("Back"));
+        set_accessible_label(&back_button, &gettext("Back"));
         let win_weak_for_back = self.downgrade();
         back_button.connect_clicked(move |_| {
             if let Some(win) = win_weak_for_back.upgrade() {
@@ -4061,7 +4089,7 @@ impl MeridianWindow {
 
         let compose_button = gtk::Button::builder()
             .action_name("app.compose")
-            .css_classes(vec!["suggested-action"])
+            .css_classes(["suggested-action"])
             .build();
 
         Self::configure_primary_action(&compose_button, &active_view, false);
@@ -4135,16 +4163,16 @@ impl MeridianWindow {
         let menu_button = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
             .menu_model(&menu_model)
-            .tooltip_text(&crate::i18n::gettext("Main Menu"))
+            .tooltip_text(gettext("Main Menu"))
             .primary(true)
             .build();
 
         let right_sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Toggle To Do bar for today"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Toggle To Do bar for today"))
+            .css_classes(["flat"])
             .build();
-        set_accessible_label(&right_sidebar_toggle, &crate::i18n::gettext("To Do bar for today"));
+        set_accessible_label(&right_sidebar_toggle, &gettext("To Do bar for today"));
         let win_weak_right = self.downgrade();
         right_sidebar_toggle.connect_toggled(move |btn| {
             if let Some(win) = win_weak_right.upgrade() {
@@ -4158,11 +4186,11 @@ impl MeridianWindow {
 
         let agenda_preview_toggle = gtk::ToggleButton::builder()
             .icon_name("view-dual-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Toggle event details (Ctrl+Shift+D)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Toggle event details (Ctrl+Shift+D)"))
+            .css_classes(["flat"])
             .visible(false)
             .build();
-        set_accessible_label(&agenda_preview_toggle, &crate::i18n::gettext("Event details"));
+        set_accessible_label(&agenda_preview_toggle, &gettext("Event details"));
         let win_weak_agenda = self.downgrade();
         agenda_preview_toggle.connect_toggled(move |btn| {
             if let Some(win) = win_weak_agenda.upgrade() {
@@ -4257,20 +4285,20 @@ impl MeridianWindow {
         let statusbar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .css_classes(vec!["statusbar"])
+            .css_classes(["statusbar"])
             .build();
 
         let online_toggle = gtk::Button::builder()
             .icon_name("network-idle-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Online status (Toggle online/offline)"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Online status (Toggle online/offline)"))
+            .css_classes(["flat", "circular"])
             .build();
 
-        let initial_status_text = crate::i18n::gettext("Ready");
+        let initial_status_text = gettext("Ready");
         let status_label = gtk::Label::builder()
             .label(&initial_status_text)
             .tooltip_text(&initial_status_text)
-            .css_classes(vec!["caption", "statusbar-message"])
+            .css_classes(["caption", "statusbar-message"])
             .halign(gtk::Align::Start)
             .hexpand(true)
             .selectable(false)
@@ -4312,7 +4340,7 @@ impl MeridianWindow {
 
         let date_label = gtk::Label::builder()
             .label(&format_current_status_date())
-            .css_classes(vec!["caption", "statusbar-date"])
+            .css_classes(["caption", "statusbar-date"])
             .halign(gtk::Align::End)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(10)
@@ -4329,8 +4357,8 @@ impl MeridianWindow {
 
         let debug_toggle = gtk::Button::builder()
             .icon_name("utilities-terminal-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Show / Hide Developer Log Console (Ctrl+F12)"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Show / Hide Developer Log Console (Ctrl+F12)"))
+            .css_classes(["flat", "circular"])
             .visible(true)
             .build();
 
@@ -4395,11 +4423,11 @@ impl MeridianWindow {
         let statusbar_menu = gio::Menu::new();
         let statusbar_section = gio::Menu::new();
         statusbar_section.append(
-            Some(&crate::i18n::gettext("Show / Hide Log Console")),
+            Some(&gettext("Show / Hide Log Console")),
             Some("win.toggle-debug-console"),
         );
         statusbar_section.append(
-            Some(&crate::i18n::gettext("Hide Status Bar")),
+            Some(&gettext("Hide Status Bar")),
             Some("win.toggle-statusbar"),
         );
         statusbar_menu.append_section(None, &statusbar_section);
@@ -4487,7 +4515,7 @@ impl MeridianWindow {
         let header_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
-            .css_classes(vec!["window-header-box"])
+            .css_classes(["window-header-box"])
             .build();
         header_box.append(&sidebar_header);
         header_box.append(&header_bar);
@@ -4741,7 +4769,7 @@ impl MeridianWindow {
 
         let wide_box = find_mail_wide_box(container.as_ref(), title)?;
         let badge = gtk::Label::builder()
-            .css_classes(vec!["mail-tab-badge"])
+            .css_classes(["mail-tab-badge"])
             .visible(false)
             .valign(gtk::Align::Center)
             .build();
@@ -4752,7 +4780,7 @@ impl MeridianWindow {
     fn lazy_module_bin(title: &str) -> adw::Bin {
         let status = adw::StatusPage::builder()
             .title(title)
-            .description(&crate::i18n::gettext("This section will be loaded when opened for the first time."))
+            .description(gettext("This section will be loaded when opened for the first time."))
             .icon_name("view-refresh-symbolic")
             .vexpand(true)
             .hexpand(true)
@@ -4791,11 +4819,11 @@ impl MeridianWindow {
         let message_menu = gio::Menu::new();
         let goto_menu = gio::Menu::new();
         Self::append_contract_menu(&goto_menu, MenuPath::MessageGoto);
-        message_menu.append_submenu(Some(&crate::i18n::gettext("Go to")), &goto_menu);
+        message_menu.append_submenu(Some(&gettext("Go to")), &goto_menu);
         Self::append_contract_menu(&message_menu, MenuPath::MessageBeforeForward);
         let forward_menu = gio::Menu::new();
         Self::append_contract_menu(&forward_menu, MenuPath::MessageForward);
-        message_menu.append_submenu(Some(&crate::i18n::gettext("Forward")), &forward_menu);
+        message_menu.append_submenu(Some(&gettext("Forward")), &forward_menu);
         Self::append_contract_menu(&message_menu, MenuPath::MessageAfterForward);
         message_menu
     }
@@ -4809,7 +4837,7 @@ impl MeridianWindow {
 
     fn append_contract_menu(menu: &gio::Menu, path: MenuPath) {
         for item in menu_actions(path) {
-            menu.append(Some(&crate::i18n::gettext(item.label)), Some(item.action));
+            menu.append(Some(&gettext(item.label)), Some(item.action));
         }
     }
 
@@ -4869,6 +4897,25 @@ impl MeridianWindow {
         let snapshot = self.imp().transport_service.snapshot();
         self.update_transport_presentation(&snapshot);
         self.sync_unread_counter_and_title();
+    }
+
+    fn focused_html_editor(&self) -> Option<crate::views::HtmlEditor> {
+        let focus = gtk::prelude::GtkWindowExt::focus(self)?;
+        focus
+            .clone()
+            .downcast::<crate::views::HtmlEditor>()
+            .ok()
+            .or_else(|| {
+                focus
+                    .ancestor(crate::views::HtmlEditor::static_type())
+                    .and_downcast::<crate::views::HtmlEditor>()
+            })
+    }
+
+    fn is_modal_dialog_focused(&self) -> bool {
+        adw::prelude::AdwApplicationWindowExt::visible_dialog(self).is_some()
+            || gtk::prelude::GtkWindowExt::focus(self)
+                .is_some_and(|f| f.ancestor(adw::Dialog::static_type()).is_some())
     }
 
     fn setup_actions(&self) {
@@ -5206,6 +5253,10 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
+                if let Some(editor) = win.focused_html_editor() {
+                    editor.undo();
+                    return;
+                }
                 if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&win) {
                     if focus.is::<gtk::Editable>()
                         || focus.is::<gtk::Text>()
@@ -5218,6 +5269,9 @@ impl MeridianWindow {
                         let _ = gtk::prelude::WidgetExt::activate_action(&focus, "text.undo", None);
                         return;
                     }
+                }
+                if win.is_modal_dialog_focused() {
+                    return;
                 }
 
                 match win.active_view_name().as_str() {
@@ -5287,6 +5341,10 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
+                if let Some(editor) = win.focused_html_editor() {
+                    editor.redo();
+                    return;
+                }
                 if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&win) {
                     if focus.is::<gtk::Editable>()
                         || focus.is::<gtk::Text>()
@@ -5299,6 +5357,9 @@ impl MeridianWindow {
                         let _ = gtk::prelude::WidgetExt::activate_action(&focus, "text.redo", None);
                         return;
                     }
+                }
+                if win.is_modal_dialog_focused() {
+                    return;
                 }
 
                 match win.active_view_name().as_str() {
@@ -5608,6 +5669,13 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
+                if let Some(editor) = win.focused_html_editor() {
+                    editor.toggle_underline();
+                    return;
+                }
+                if win.is_modal_dialog_focused() {
+                    return;
+                }
                 let shown = win
                     .mail_page()
                     .is_some_and(|mail_page| mail_page.present_message_source());
@@ -5658,6 +5726,30 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
+                if let Some(editor) = win.focused_html_editor() {
+                    editor.forward_delete();
+                    return;
+                }
+                if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&win) {
+                    if focus.is::<gtk::Editable>()
+                        || focus.is::<gtk::Text>()
+                        || focus.is::<gtk::TextView>()
+                        || focus.is::<gtk::SearchEntry>()
+                        || focus.ancestor(gtk::Editable::static_type()).is_some()
+                        || focus.ancestor(gtk::TextView::static_type()).is_some()
+                        || focus.ancestor(gtk::SearchEntry::static_type()).is_some()
+                    {
+                        let _ = gtk::prelude::WidgetExt::activate_action(
+                            &focus,
+                            "text.delete-from-cursor",
+                            Some(&(0i32, 1i32).to_variant()),
+                        );
+                        return;
+                    }
+                }
+                if win.is_modal_dialog_focused() {
+                    return;
+                }
                 let Some(mail_page) = win.mail_page() else {
                     let msg = gettext("Mail view is unavailable");
                     win.add_toast(&adw::Toast::new(&msg));
@@ -5777,6 +5869,10 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
+                if let Some(editor) = win.focused_html_editor() {
+                    editor.select_all();
+                    return;
+                }
                 if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&win) {
                     if let Some(editable) = focus.downcast_ref::<gtk::Editable>() {
                         editable.select_region(0, -1);
@@ -5795,6 +5891,9 @@ impl MeridianWindow {
                         }
                         parent = p.parent();
                     }
+                }
+                if win.is_modal_dialog_focused() {
+                    return;
                 }
 
                 let count = win
@@ -5840,6 +5939,13 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
+                if let Some(editor) = win.focused_html_editor() {
+                    editor.toggle_italic();
+                    return;
+                }
+                if win.is_modal_dialog_focused() {
+                    return;
+                }
                 let result = win
                     .mail_page()
                     .map(|mail_page| mail_page.toggle_selected_important());
@@ -6015,6 +6121,26 @@ impl MeridianWindow {
             #[weak(rename_to = win)]
             self,
             move |_, _| {
+                if let Some(editor) = win.focused_html_editor() {
+                    editor.redo();
+                    return;
+                }
+                if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&win) {
+                    if focus.is::<gtk::Editable>()
+                        || focus.is::<gtk::Text>()
+                        || focus.is::<gtk::TextView>()
+                        || focus.is::<gtk::SearchEntry>()
+                        || focus.ancestor(gtk::Editable::static_type()).is_some()
+                        || focus.ancestor(gtk::TextView::static_type()).is_some()
+                        || focus.ancestor(gtk::SearchEntry::static_type()).is_some()
+                    {
+                        let _ = gtk::prelude::WidgetExt::activate_action(&focus, "text.redo", None);
+                        return;
+                    }
+                }
+                if win.is_modal_dialog_focused() {
+                    return;
+                }
                 if let Some(mail_page) = win.mail_page() {
                     mail_page.apply_filters();
                 }
@@ -6642,27 +6768,27 @@ pub(crate) fn format_current_status_date() -> String {
     use chrono::{Datelike, Local, Weekday};
     let now = Local::now();
     let weekday = match now.weekday() {
-        Weekday::Mon => crate::i18n::gettext("Monday"),
-        Weekday::Tue => crate::i18n::gettext("Tuesday"),
-        Weekday::Wed => crate::i18n::gettext("Wednesday"),
-        Weekday::Thu => crate::i18n::gettext("Thursday"),
-        Weekday::Fri => crate::i18n::gettext("Friday"),
-        Weekday::Sat => crate::i18n::gettext("Saturday"),
-        Weekday::Sun => crate::i18n::gettext("Sunday"),
+        Weekday::Mon => gettext("Monday"),
+        Weekday::Tue => gettext("Tuesday"),
+        Weekday::Wed => gettext("Wednesday"),
+        Weekday::Thu => gettext("Thursday"),
+        Weekday::Fri => gettext("Friday"),
+        Weekday::Sat => gettext("Saturday"),
+        Weekday::Sun => gettext("Sunday"),
     };
     let month = match now.month() {
-        1 => crate::i18n::gettext("January"),
-        2 => crate::i18n::gettext("February"),
-        3 => crate::i18n::gettext("March"),
-        4 => crate::i18n::gettext("April"),
-        5 => crate::i18n::gettext("May"),
-        6 => crate::i18n::gettext("June"),
-        7 => crate::i18n::gettext("July"),
-        8 => crate::i18n::gettext("August"),
-        9 => crate::i18n::gettext("September"),
-        10 => crate::i18n::gettext("October"),
-        11 => crate::i18n::gettext("November"),
-        12 => crate::i18n::gettext("December"),
+        1 => gettext("January"),
+        2 => gettext("February"),
+        3 => gettext("March"),
+        4 => gettext("April"),
+        5 => gettext("May"),
+        6 => gettext("June"),
+        7 => gettext("July"),
+        8 => gettext("August"),
+        9 => gettext("September"),
+        10 => gettext("October"),
+        11 => gettext("November"),
+        12 => gettext("December"),
         _ => String::new(),
     };
     format!("{}, {} {} {}", weekday, now.day(), month, now.year())
@@ -6841,20 +6967,20 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         .orientation(gtk::Orientation::Vertical)
         .vexpand(false)
         .valign(gtk::Align::End)
-        .css_classes(vec!["debug-console-panel"])
+        .css_classes(["debug-console-panel"])
         .build();
 
     let header = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(6)
-        .css_classes(vec!["debug-console-header"])
+        .css_classes(["debug-console-header"])
         .build();
 
     let title_icon = gtk::Image::from_icon_name("utilities-terminal-symbolic");
     let title_label_text = gettext("Log Console");
     let title_label = gtk::Label::builder()
         .label(&title_label_text)
-        .css_classes(vec!["caption", "heading"])
+        .css_classes(["caption", "heading"])
         .halign(gtk::Align::Start)
         .build();
 
@@ -6876,28 +7002,28 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     let filter_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(3)
-        .css_classes(vec!["debug-console-filters"])
+        .css_classes(["debug-console-filters"])
         .build();
 
     let filter_warn_btn = gtk::ToggleButton::builder()
-        .label(&gettext("Warn/Err"))
-        .tooltip_text(&gettext("Show warnings and errors (WARN / ERROR)"))
+        .label(gettext("Warn/Err"))
+        .tooltip_text(gettext("Show warnings and errors (WARN / ERROR)"))
         .active(initial_prefs.show_warn_error)
-        .css_classes(vec!["flat", "debug-filter-chip"])
+        .css_classes(["flat", "debug-filter-chip"])
         .build();
 
     let filter_info_btn = gtk::ToggleButton::builder()
-        .label(&gettext("Info"))
-        .tooltip_text(&gettext("Show status and info messages (INFO)"))
+        .label(gettext("Info"))
+        .tooltip_text(gettext("Show status and info messages (INFO)"))
         .active(initial_prefs.show_info)
-        .css_classes(vec!["flat", "debug-filter-chip"])
+        .css_classes(["flat", "debug-filter-chip"])
         .build();
 
     let filter_debug_btn = gtk::ToggleButton::builder()
-        .label(&gettext("Debug"))
-        .tooltip_text(&gettext("Show automatic verbose background logs (DEBUG / TRACE)"))
+        .label(gettext("Debug"))
+        .tooltip_text(gettext("Show automatic verbose background logs (DEBUG / TRACE)"))
         .active(initial_prefs.show_debug)
-        .css_classes(vec!["flat", "debug-filter-chip"])
+        .css_classes(["flat", "debug-filter-chip"])
         .build();
 
     filter_box.append(&filter_warn_btn);
@@ -6908,28 +7034,28 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
     let pause_button = gtk::ToggleButton::builder()
         .icon_name("media-playback-pause-symbolic")
         .tooltip_text(&pause_tooltip)
-        .css_classes(vec!["flat"])
+        .css_classes(["flat"])
         .build();
 
     let copy_tooltip = gettext("Copy log to clipboard");
     let copy_button = gtk::Button::builder()
         .icon_name("edit-copy-symbolic")
         .tooltip_text(&copy_tooltip)
-        .css_classes(vec!["flat"])
+        .css_classes(["flat"])
         .build();
 
     let clear_tooltip = gettext("Clear log");
     let clear_button = gtk::Button::builder()
         .icon_name("edit-clear-symbolic")
         .tooltip_text(&clear_tooltip)
-        .css_classes(vec!["flat"])
+        .css_classes(["flat"])
         .build();
 
     let collapse_tooltip = gettext("Collapse log console");
     let collapse_button = gtk::Button::builder()
         .icon_name("pan-down-symbolic")
         .tooltip_text(&collapse_tooltip)
-        .css_classes(vec!["flat"])
+        .css_classes(["flat"])
         .build();
 
     header.append(&title_icon);
@@ -6947,7 +7073,7 @@ fn build_debug_console_panel(revealer: &gtk::Revealer) -> gtk::Widget {
         .cursor_visible(false)
         .monospace(true)
         .wrap_mode(gtk::WrapMode::WordChar)
-        .css_classes(vec!["monospace", "terminal-text"])
+        .css_classes(["monospace", "terminal-text"])
         .left_margin(8)
         .right_margin(8)
         .top_margin(4)
@@ -7519,7 +7645,7 @@ mod tests {
         );
         assert_eq!(
             search_route_error_message(SearchRouteError::MissingTarget),
-            crate::i18n::gettext("Global search match has no target")
+            gettext("Global search match has no target")
         );
     }
 
@@ -8886,11 +9012,11 @@ mod tests {
         // Initial title in sidebar header is "All Inboxes" or "Inbox"
         assert!(
             sidebar_title.title().as_str() == "All Inboxes"
-                || sidebar_title.title().as_str() == crate::i18n::gettext("Inbox")
+                || sidebar_title.title().as_str() == gettext("Inbox")
         );
 
         // Update sidebar title test
-        let cal_title = crate::i18n::gettext("Calendar");
+        let cal_title = gettext("Calendar");
         window.update_sidebar_title(&cal_title);
         assert_eq!(sidebar_title.title().as_str(), cal_title.as_str());
 
@@ -9143,32 +9269,32 @@ mod tests {
         MeridianWindow::configure_primary_action(&button, "mail", false);
         let child = button.child().expect("Button child");
         let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
-        assert_eq!(label.label().as_str(), crate::i18n::gettext("New Mail"));
+        assert_eq!(label.label().as_str(), gettext("New Mail"));
         assert!(button.has_css_class("suggested-action"));
 
         // Switch to calendar: pure text label
         MeridianWindow::configure_primary_action(&button, "calendar", false);
         let child = button.child().expect("Button child");
         let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
-        assert_eq!(label.label().as_str(), crate::i18n::gettext("New Event"));
+        assert_eq!(label.label().as_str(), gettext("New Event"));
 
         // Switch to contacts: pure text label
         MeridianWindow::configure_primary_action(&button, "contacts", false);
         let child = button.child().expect("Button child");
         let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
-        assert_eq!(label.label().as_str(), crate::i18n::gettext("New Contact"));
+        assert_eq!(label.label().as_str(), gettext("New Contact"));
 
         // Switch to tasks: pure text label
         MeridianWindow::configure_primary_action(&button, "tasks", false);
         let child = button.child().expect("Button child");
         let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
-        assert_eq!(label.label().as_str(), crate::i18n::gettext("New Task"));
+        assert_eq!(label.label().as_str(), gettext("New Task"));
 
         // Switch to memos: pure text label
         MeridianWindow::configure_primary_action(&button, "memos", false);
         let child = button.child().expect("Button child");
         let label = child.downcast::<gtk::Label>().expect("Label child on desktop");
-        assert_eq!(label.label().as_str(), crate::i18n::gettext("New Memo"));
+        assert_eq!(label.label().as_str(), gettext("New Memo"));
 
         // Compact / Mobile mode: pure icon '+' without text (GNOME HIG)
         MeridianWindow::configure_primary_action(&button, "mail", true);
@@ -9334,7 +9460,7 @@ mod tests {
 
             // Window title should show email subject in viewer level
             if let Some(title) = window.imp().window_title.borrow().as_ref() {
-                assert_eq!(title.subtitle().as_str(), crate::i18n::gettext("Message"));
+                assert_eq!(title.subtitle().as_str(), gettext("Message"));
             }
         }
 

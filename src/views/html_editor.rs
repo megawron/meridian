@@ -18,6 +18,129 @@ use webkit6::prelude::*;
 use crate::services::settings_service::AppSettings;
 use crate::views::accessibility::set_accessible_label;
 
+pub const COMPOSER_FONT_FAMILIES: &[(&str, &str)] = &[
+    ("System Default", "system-ui, sans-serif"),
+    ("Sans-Serif", "sans-serif"),
+    ("Serif", "serif"),
+    ("Monospace", "monospace"),
+    ("Cantarell", "Cantarell, sans-serif"),
+    ("Inter", "Inter, sans-serif"),
+    ("Roboto", "Roboto, sans-serif"),
+    ("Arial", "Arial, Helvetica, sans-serif"),
+    ("Verdana", "Verdana, Geneva, sans-serif"),
+    ("Tahoma", "Tahoma, Geneva, sans-serif"),
+    ("Times New Roman", "'Times New Roman', Times, serif"),
+    ("Georgia", "Georgia, serif"),
+    ("Courier New", "'Courier New', Courier, monospace"),
+];
+
+pub fn font_family_index_for_css(raw: &str) -> u32 {
+    let lower = raw.trim().to_ascii_lowercase();
+    if lower.is_empty() || lower.starts_with("system-ui") {
+        return 0;
+    }
+    if lower.contains("cantarell") {
+        return 4;
+    }
+    if lower.contains("inter") {
+        return 5;
+    }
+    if lower.contains("roboto") {
+        return 6;
+    }
+    if lower.contains("arial") || lower.contains("helvetica") {
+        return 7;
+    }
+    if lower.contains("verdana") {
+        return 8;
+    }
+    if lower.contains("tahoma") {
+        return 9;
+    }
+    if lower.contains("times") {
+        return 10;
+    }
+    if lower.contains("georgia") {
+        return 11;
+    }
+    if lower.contains("courier") {
+        return 12;
+    }
+    if lower == "monospace" || lower.ends_with("monospace") {
+        return 3;
+    }
+    if lower == "serif" {
+        return 2;
+    }
+    if lower == "sans-serif" {
+        return 1;
+    }
+    0
+}
+
+pub const DROPDOWN_FORMAT_WIDTH: i32 = 136;
+pub const DROPDOWN_FONT_FAMILY_WIDTH: i32 = 164;
+pub const DROPDOWN_FONT_SIZE_WIDTH: i32 = 86;
+
+fn configure_fixed_width_dropdown(dropdown: &gtk::DropDown, width_request: i32, label_chars: i32) {
+    dropdown.set_width_request(width_request);
+    dropdown.set_hexpand(false);
+
+    let button_factory = gtk::SignalListItemFactory::new();
+    button_factory.connect_setup(move |_, item| {
+        if let Some(list_item) = item.downcast_ref::<gtk::ListItem>() {
+            let label = gtk::Label::builder()
+                .xalign(0.0)
+                .single_line_mode(true)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .width_chars(label_chars)
+                .max_width_chars(label_chars)
+                .build();
+            list_item.set_child(Some(&label));
+        }
+    });
+    button_factory.connect_bind(|_, item| {
+        if let Some(list_item) = item.downcast_ref::<gtk::ListItem>() {
+            let text = list_item
+                .item()
+                .and_downcast::<gtk::StringObject>()
+                .map(|s| s.string().to_string())
+                .unwrap_or_default();
+            if let Some(label) = list_item.child().and_downcast::<gtk::Label>() {
+                label.set_label(&text);
+            }
+        }
+    });
+
+    let list_factory = gtk::SignalListItemFactory::new();
+    list_factory.connect_setup(|_, item| {
+        if let Some(list_item) = item.downcast_ref::<gtk::ListItem>() {
+            let label = gtk::Label::builder()
+                .xalign(0.0)
+                .single_line_mode(true)
+                .margin_start(4)
+                .margin_end(4)
+                .build();
+            list_item.set_child(Some(&label));
+        }
+    });
+    list_factory.connect_bind(|_, item| {
+        if let Some(list_item) = item.downcast_ref::<gtk::ListItem>() {
+            let text = list_item
+                .item()
+                .and_downcast::<gtk::StringObject>()
+                .map(|s| s.string().to_string())
+                .unwrap_or_default();
+            if let Some(label) = list_item.child().and_downcast::<gtk::Label>() {
+                label.set_label(&text);
+            }
+        }
+    });
+
+    dropdown.set_factory(Some(&button_factory));
+    dropdown.set_list_factory(Some(&list_factory));
+}
+
 mod imp {
     use super::*;
     use std::cell::{Cell, RefCell};
@@ -88,6 +211,19 @@ mod imp {
         pub web_context: RefCell<Option<webkit6::WebContext>>,
         pub format_toolbar: RefCell<Option<gtk::Box>>,
         pub format_toolbar_revealer: RefCell<Option<gtk::Revealer>>,
+        pub dropdown_format: RefCell<Option<gtk::DropDown>>,
+        pub dropdown_font_family: RefCell<Option<gtk::DropDown>>,
+        pub dropdown_font_size: RefCell<Option<gtk::DropDown>>,
+        pub btn_bold: RefCell<Option<gtk::Button>>,
+        pub btn_italic: RefCell<Option<gtk::Button>>,
+        pub btn_underline: RefCell<Option<gtk::Button>>,
+        pub btn_strikethrough: RefCell<Option<gtk::Button>>,
+        pub btn_list: RefCell<Option<gtk::Button>>,
+        pub btn_ordered_list: RefCell<Option<gtk::Button>>,
+        pub btn_blockquote: RefCell<Option<gtk::Button>>,
+        pub btn_undo: RefCell<Option<gtk::Button>>,
+        pub btn_redo: RefCell<Option<gtk::Button>>,
+        pub suppress_toolbar_sync: Cell<bool>,
         pub mode_switcher: RefCell<Option<gtk::Box>>,
         pub mode_html_btn: RefCell<Option<gtk::ToggleButton>>,
         pub mode_txt_btn: RefCell<Option<gtk::ToggleButton>>,
@@ -315,6 +451,7 @@ impl HtmlEditor {
         };
         let js = format!(
             r#"(function() {{
+    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
     const uri = '{data_uri}';
     let sel = window.getSelection();
     const editor = document.body;
@@ -479,6 +616,8 @@ impl HtmlEditor {
             sel.addRange(afterRange);
         }}
     }} catch(e) {{}}
+    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
+    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();
 }})();"#
         );
         if let Some(wv) = self.imp().web_view.borrow().as_ref() {
@@ -520,7 +659,7 @@ impl HtmlEditor {
         let popover = gtk::Popover::builder()
             .has_arrow(true)
             .pointing_to(&gdk::Rectangle::new(payload.x, payload.y, 1, 1))
-            .css_classes(vec!["image-options-popover"])
+            .css_classes(["image-options-popover"])
             .build();
         popover.set_parent(&web_view);
 
@@ -535,8 +674,8 @@ impl HtmlEditor {
         let header_icon = gtk::Image::from_icon_name("insert-image-symbolic");
         header_icon.set_pixel_size(16);
         let header_label = gtk::Label::builder()
-            .label(&gettext("Inline Image"))
-            .css_classes(vec!["heading"])
+            .label(gettext("Inline Image"))
+            .css_classes(["heading"])
             .xalign(0.0)
             .build();
         header_box.append(&header_icon);
@@ -545,8 +684,8 @@ impl HtmlEditor {
 
         // 1. Alignment section
         let align_label = gtk::Label::builder()
-            .label(&gettext("Alignment"))
-            .css_classes(vec!["dim-label", "caption"])
+            .label(gettext("Alignment"))
+            .css_classes(["dim-label", "caption"])
             .xalign(0.0)
             .build();
         content.append(&align_label);
@@ -556,19 +695,19 @@ impl HtmlEditor {
 
         let btn_align_left = gtk::Button::builder()
             .icon_name("format-justify-left-symbolic")
-            .tooltip_text(&gettext("Align Left"))
+            .tooltip_text(gettext("Align Left"))
             .build();
         let btn_align_center = gtk::Button::builder()
             .icon_name("format-justify-center-symbolic")
-            .tooltip_text(&gettext("Center"))
+            .tooltip_text(gettext("Center"))
             .build();
         let btn_align_right = gtk::Button::builder()
             .icon_name("format-justify-right-symbolic")
-            .tooltip_text(&gettext("Align Right"))
+            .tooltip_text(gettext("Align Right"))
             .build();
         let btn_align_wrap = gtk::Button::builder()
             .icon_name("format-text-direction-ltr-symbolic")
-            .tooltip_text(&gettext("Wrap Left"))
+            .tooltip_text(gettext("Wrap Left"))
             .build();
 
         match payload.align.as_str() {
@@ -654,8 +793,8 @@ impl HtmlEditor {
 
         // 2. Size section
         let size_label = gtk::Label::builder()
-            .label(&gettext("Size"))
-            .css_classes(vec!["dim-label", "caption"])
+            .label(gettext("Size"))
+            .css_classes(["dim-label", "caption"])
             .xalign(0.0)
             .build();
         content.append(&size_label);
@@ -665,19 +804,19 @@ impl HtmlEditor {
 
         let btn_size_25 = gtk::Button::builder()
             .label("25%")
-            .tooltip_text(&gettext("Small (25%)"))
+            .tooltip_text(gettext("Small (25%)"))
             .build();
         let btn_size_50 = gtk::Button::builder()
             .label("50%")
-            .tooltip_text(&gettext("Medium (50%)"))
+            .tooltip_text(gettext("Medium (50%)"))
             .build();
         let btn_size_100 = gtk::Button::builder()
             .label("100%")
-            .tooltip_text(&gettext("Original (100%)"))
+            .tooltip_text(gettext("Original (100%)"))
             .build();
         let btn_size_orig = gtk::Button::builder()
-            .label(&gettext("Original"))
-            .tooltip_text(&gettext("Original Size"))
+            .label(gettext("Original"))
+            .tooltip_text(gettext("Original Size"))
             .build();
 
         match payload.size.as_str() {
@@ -1040,7 +1179,7 @@ impl HtmlEditor {
                     };
                     if let Some((bytes, _, filename)) = parse_image_data_uri_or_path(&data.src, &data.alt) {
                         let file_dialog = gtk::FileDialog::builder()
-                            .title(&gettext("Save Image As…"))
+                            .title(gettext("Save Image As…"))
                             .initial_name(&filename)
                             .modal(true)
                             .build();
@@ -1062,7 +1201,7 @@ impl HtmlEditor {
             return;
         };
         let js = format!(
-            "(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ const p = el.parentNode; el.remove(); if (p && p !== document.body && p.childNodes.length === 0) {{ p.remove(); }} }} }})()",
+            "(function(){{ if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ const p = el.parentNode; el.remove(); if (p && p !== document.body && p.childNodes.length === 0) {{ p.remove(); }} if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); }} }})()",
             id = img_id
         );
         wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
@@ -1185,14 +1324,28 @@ impl HtmlEditor {
         };
         let force_plain_text = self.plain_text_mode();
         let expression = if force_plain_text {
-            "JSON.stringify({ body: document.body.innerText, plain_text: true })"
+            r#"JSON.stringify({ body: (typeof window.meridianExtractPlainText === 'function' ? window.meridianExtractPlainText(document.body) : document.body.innerText), plain_text: true })"#
         } else {
             r#"(() => {
                 const richSelector = 'b, strong, i, em, u, s, strike, del, font, a[href], img, ul, ol, li, blockquote, h1, h2, h3, h4, h5, h6, hr, pre, code, table, sup, sub, [style*="color"], [style*="font-"], [style*="text-align"], [style*="background"]';
-                const hasFormatting = document.body.querySelector(richSelector) !== null;
+                const hasFormatting = document.body.querySelector(richSelector) !== null
+                    || Boolean(document.body.style && document.body.style.fontFamily);
+                if (!hasFormatting) {
+                    const plain = typeof window.meridianExtractPlainText === 'function'
+                        ? window.meridianExtractPlainText(document.body)
+                        : document.body.innerText;
+                    return JSON.stringify({ body: plain, plain_text: true });
+                }
+                const clone = document.body.cloneNode(true);
+                clone.querySelectorAll('p').forEach(p => {
+                    const st = p.getAttribute('style') || '';
+                    if (!/margin/i.test(st)) {
+                        p.setAttribute('style', st ? ('margin: 0; ' + st) : 'margin: 0;');
+                    }
+                });
                 return JSON.stringify({
-                    body: hasFormatting ? document.body.innerHTML : document.body.innerText,
-                    plain_text: !hasFormatting
+                    body: clone.innerHTML,
+                    plain_text: false
                 });
             })()"#
         };
@@ -1236,10 +1389,10 @@ impl HtmlEditor {
         let caret_js = "try { const first = document.body.firstElementChild || document.body.firstChild; if (first) { const range = document.createRange(); range.setStart(first, 0); range.collapse(true); const sel = window.getSelection(); if (sel) { sel.removeAllRanges(); sel.addRange(range); } } } catch (e) {}";
         let script = if self.plain_text_mode() {
             format!(
-                "document.body.innerHTML = {encoded}; document.body.textContent = document.body.innerText; {caret_js} if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();"
+                "document.body.innerHTML = {encoded}; document.body.textContent = document.body.innerText; {caret_js} if (typeof window.meridianResetHistory === 'function') window.meridianResetHistory(); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();"
             )
         } else {
-            format!("document.body.innerHTML = {encoded}; {caret_js} if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();")
+            format!("document.body.innerHTML = {encoded}; {caret_js} if (typeof window.meridianResetHistory === 'function') window.meridianResetHistory(); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();")
         };
         self.evaluate_or_queue(script);
     }
@@ -1250,7 +1403,7 @@ impl HtmlEditor {
             return;
         };
         self.evaluate_or_queue(format!(
-            "document.body.textContent = {encoded}; if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();"
+            "document.body.textContent = {encoded}; if (typeof window.meridianResetHistory === 'function') window.meridianResetHistory(); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();"
         ));
     }
 
@@ -1264,10 +1417,12 @@ impl HtmlEditor {
         };
         let script = if self.plain_text_mode() {
             format!(
-                "const snippet = document.createElement('div'); snippet.innerHTML = {encoded}; document.execCommand('insertText', false, snippet.innerText);"
+                "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); const snippet = document.createElement('div'); snippet.innerHTML = {encoded}; document.execCommand('insertText', false, snippet.innerText); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);"
             )
         } else {
-            format!("document.execCommand('insertHTML', false, {encoded});")
+            format!(
+                "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('insertHTML', false, {encoded}); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);"
+            )
         };
         self.evaluate_or_queue(script);
     }
@@ -1293,19 +1448,50 @@ impl HtmlEditor {
         if (el) {{
             el.remove();
         }}
+        if (window.__meridianUserEdited) {{
+            if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
+        }} else if (typeof window.meridianResetHistory === 'function') {{
+            window.meridianResetHistory();
+        }}
         return;
     }}
     const temp = document.createElement('div');
     temp.innerHTML = {encoded};
     const newSig = temp.firstElementChild || temp;
+    const findQuoteTarget = () => {{
+        const attr = document.querySelector('.meridian-quote-attribution');
+        if (attr) return attr;
+        const quote = document.querySelector('blockquote');
+        if (quote) {{
+            let prev = quote.previousElementSibling;
+            while (prev && (prev === el || (prev.tagName === 'P' && prev.textContent.trim() === ''))) {{
+                prev = prev.previousElementSibling;
+            }}
+            if (prev && (prev.tagName === 'P' || prev.tagName === 'DIV') && prev.textContent.trim().length > 0) {{
+                return prev;
+            }}
+            return quote;
+        }}
+        return null;
+    }};
     if (el) {{
-        el.replaceWith(newSig);
+        const target = {top_signature} ? findQuoteTarget() : null;
+        if (target && (target.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) {{
+            el.remove();
+            target.parentNode.insertBefore(newSig, target);
+            const next = newSig.nextElementSibling;
+            if (!next || next === target) {{
+                const gap = document.createElement('p');
+                gap.innerHTML = '<br>';
+                target.parentNode.insertBefore(gap, target);
+            }}
+        }} else {{
+            el.replaceWith(newSig);
+        }}
     }} else {{
         if ({top_signature}) {{
-            const quote = document.querySelector('blockquote');
-            if (quote) {{
-                const prev = quote.previousElementSibling;
-                const target = (prev && prev.tagName === 'P' && !prev.previousElementSibling) ? prev : quote;
+            const target = findQuoteTarget();
+            if (target) {{
                 target.parentNode.insertBefore(newSig, target);
                 const gap = document.createElement('p');
                 gap.innerHTML = '<br>';
@@ -1348,9 +1534,145 @@ impl HtmlEditor {
             document.body.focus();
         }} catch (e) {{}}
     }}
+    if (window.__meridianUserEdited) {{
+        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
+    }} else if (typeof window.meridianResetHistory === 'function') {{
+        window.meridianResetHistory();
+    }}
 }})();"#
         );
         self.evaluate_or_queue(script);
+    }
+
+    pub fn undo(&self) {
+        self.evaluate_or_queue(
+            "if (typeof window.meridianUndo === 'function') { window.meridianUndo(); } else { document.execCommand('undo', false, null); }".to_string(),
+        );
+    }
+
+    pub fn redo(&self) {
+        self.evaluate_or_queue(
+            "if (typeof window.meridianRedo === 'function') { window.meridianRedo(); } else { document.execCommand('redo', false, null); }".to_string(),
+        );
+    }
+
+    pub fn select_all(&self) {
+        self.evaluate_or_queue(
+            "document.execCommand('selectAll', false, null); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string(),
+        );
+    }
+
+    pub fn toggle_bold(&self) {
+        if self.plain_text_mode() {
+            return;
+        }
+        self.evaluate_or_queue(
+            "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('bold', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string(),
+        );
+    }
+
+    pub fn toggle_italic(&self) {
+        if self.plain_text_mode() {
+            return;
+        }
+        self.evaluate_or_queue(
+            "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('italic', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string(),
+        );
+    }
+
+    pub fn toggle_underline(&self) {
+        if self.plain_text_mode() {
+            return;
+        }
+        self.evaluate_or_queue(
+            "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('underline', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string(),
+        );
+    }
+
+    pub fn forward_delete(&self) {
+        self.evaluate_or_queue(
+            "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('forwardDelete', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string(),
+        );
+    }
+
+    pub(crate) fn apply_selection_state_json(&self, raw: &str) {
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return;
+        };
+        let is_bold = parsed.get("bold").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_italic = parsed.get("italic").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_underline = parsed.get("underline").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_strike = parsed
+            .get("strikethrough")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let is_ul = parsed.get("ul").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_ol = parsed.get("ol").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_quote = parsed
+            .get("blockquote")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let set_active_btn = |btn_opt: &Option<gtk::Button>, active: bool| {
+            if let Some(btn) = btn_opt.as_ref() {
+                if active {
+                    btn.add_css_class("suggested-action");
+                } else {
+                    btn.remove_css_class("suggested-action");
+                }
+            }
+        };
+        set_active_btn(&self.imp().btn_bold.borrow(), is_bold);
+        set_active_btn(&self.imp().btn_italic.borrow(), is_italic);
+        set_active_btn(&self.imp().btn_underline.borrow(), is_underline);
+        set_active_btn(&self.imp().btn_strikethrough.borrow(), is_strike);
+        set_active_btn(&self.imp().btn_list.borrow(), is_ul);
+        set_active_btn(&self.imp().btn_ordered_list.borrow(), is_ol);
+        set_active_btn(&self.imp().btn_blockquote.borrow(), is_quote);
+
+        self.imp().suppress_toolbar_sync.set(true);
+        if let Some(tag) = parsed.get("block_tag").and_then(|v| v.as_str()) {
+            let fmt_idx = match tag {
+                "h1" => 1,
+                "h2" => 2,
+                "h3" => 3,
+                "pre" => 4,
+                _ => 0,
+            };
+            if let Some(dd) = self.imp().dropdown_format.borrow().as_ref() {
+                if dd.selected() != fmt_idx {
+                    dd.set_selected(fmt_idx);
+                }
+            }
+        }
+        if let Some(ff) = parsed.get("font_family").and_then(|v| v.as_str()) {
+            if !ff.is_empty() {
+                let ff_idx = font_family_index_for_css(ff);
+                if let Some(dd) = self.imp().dropdown_font_family.borrow().as_ref() {
+                    if dd.selected() != ff_idx {
+                        dd.set_selected(ff_idx);
+                    }
+                }
+            }
+        }
+        if let Some(fs) = parsed.get("font_size").and_then(|v| v.as_u64()) {
+            let fs_idx = match fs {
+                10 => 1,
+                12 => 2,
+                14 => 3,
+                16 => 4,
+                18 => 5,
+                24 => 6,
+                32 => 7,
+                _ => 0,
+            };
+            if let Some(dd) = self.imp().dropdown_font_size.borrow().as_ref() {
+                if dd.selected() != fs_idx {
+                    dd.set_selected(fs_idx);
+                }
+            }
+        }
+        self.imp().suppress_toolbar_sync.set(false);
     }
 
     pub fn spell_checking_enabled(&self) -> bool {
@@ -1705,41 +2027,41 @@ impl HtmlEditor {
             .margin_end(8)
             .margin_top(6)
             .margin_bottom(6)
-            .css_classes(vec!["composer-format-toolbar"])
+            .css_classes(["composer-format-toolbar"])
             .build();
 
         let btn_bold = gtk::Button::builder()
             .icon_name("format-text-bold-symbolic")
-            .tooltip_text(&gettext("Bold (Ctrl+B)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Bold (Ctrl+B)"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_bold, &gettext("Bold"));
 
         let btn_italic = gtk::Button::builder()
             .icon_name("format-text-italic-symbolic")
-            .tooltip_text(&gettext("Italic (Ctrl+I)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Italic (Ctrl+I)"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_italic, &gettext("Italic"));
 
         let btn_underline = gtk::Button::builder()
             .icon_name("format-text-underline-symbolic")
-            .tooltip_text(&gettext("Underline (Ctrl+U)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Underline (Ctrl+U)"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_underline, &gettext("Underline"));
 
         let btn_strikethrough = gtk::Button::builder()
             .icon_name("format-text-strikethrough-symbolic")
-            .tooltip_text(&gettext("Strikethrough"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Strikethrough"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_strikethrough, &gettext("Strikethrough"));
 
         let btn_clear = gtk::Button::builder()
             .icon_name("edit-clear-symbolic")
-            .tooltip_text(&gettext("Clear formatting"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Clear formatting"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_clear, &gettext("Clear formatting"));
 
@@ -1753,7 +2075,28 @@ impl HtmlEditor {
         let format_strs: Vec<&str> = format_labels.iter().map(|s| s.as_str()).collect();
         let dropdown_format = gtk::DropDown::from_strings(&format_strs);
         dropdown_format.set_valign(gtk::Align::Center);
+        configure_fixed_width_dropdown(&dropdown_format, DROPDOWN_FORMAT_WIDTH, 12);
         set_accessible_label(&dropdown_format, &gettext("Paragraph format"));
+
+        let font_family_labels: Vec<String> = COMPOSER_FONT_FAMILIES
+            .iter()
+            .map(|(label, _)| {
+                if *label == "System Default" {
+                    gettext("Default Font")
+                } else {
+                    (*label).to_string()
+                }
+            })
+            .collect();
+        let font_family_strs: Vec<&str> = font_family_labels.iter().map(|s| s.as_str()).collect();
+        let dropdown_font_family = gtk::DropDown::from_strings(&font_family_strs);
+        dropdown_font_family.set_valign(gtk::Align::Center);
+        dropdown_font_family.set_tooltip_text(Some(&gettext("Font Family")));
+        configure_fixed_width_dropdown(&dropdown_font_family, DROPDOWN_FONT_FAMILY_WIDTH, 15);
+        set_accessible_label(&dropdown_font_family, &gettext("Font family"));
+        if let Some(settings) = AppSettings::try_new() {
+            dropdown_font_family.set_selected(font_family_index_for_css(&settings.mail_font_family()));
+        }
 
         let font_size_labels = [
             "Size",
@@ -1768,26 +2111,40 @@ impl HtmlEditor {
         let dropdown_font_size = gtk::DropDown::from_strings(&font_size_labels);
         dropdown_font_size.set_valign(gtk::Align::Center);
         dropdown_font_size.set_tooltip_text(Some(&gettext("Font Size")));
+        configure_fixed_width_dropdown(&dropdown_font_size, DROPDOWN_FONT_SIZE_WIDTH, 6);
         set_accessible_label(&dropdown_font_size, &gettext("Font size"));
+        if let Some(settings) = AppSettings::try_new() {
+            let size_idx = match settings.mail_font_size() {
+                10 => 1,
+                12 => 2,
+                14 => 3,
+                16 => 4,
+                18 => 5,
+                24 => 6,
+                32 => 7,
+                _ => 0,
+            };
+            dropdown_font_size.set_selected(size_idx);
+        }
 
         let btn_list = gtk::Button::builder()
             .icon_name("view-list-bullet-symbolic")
-            .tooltip_text(&gettext("Bullet list"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Bullet list"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_list, &gettext("Bullet list"));
 
         let btn_ordered_list = gtk::Button::builder()
             .icon_name("view-list-ordered-symbolic")
-            .tooltip_text(&gettext("Numbered list"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Numbered list"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_ordered_list, &gettext("Numbered list"));
 
         let btn_blockquote = gtk::Button::builder()
             .icon_name("format-text-direction-ltr-symbolic")
-            .tooltip_text(&gettext("Block quote"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Block quote"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_blockquote, &gettext("Block quote"));
 
@@ -1802,20 +2159,20 @@ impl HtmlEditor {
             .build();
         link_popover_box.append(
             &gtk::Label::builder()
-                .label(&gettext("Insert hyperlink"))
+                .label(gettext("Insert hyperlink"))
                 .halign(gtk::Align::Start)
-                .css_classes(vec!["heading"])
+                .css_classes(["heading"])
                 .build(),
         );
         let entry_url = gtk::Entry::builder()
             .placeholder_text("https://example.com")
             .build();
         let entry_label = gtk::Entry::builder()
-            .placeholder_text(&gettext("Link text (optional)"))
+            .placeholder_text(gettext("Link text (optional)"))
             .build();
         let btn_insert_link_confirm = gtk::Button::builder()
-            .label(&gettext("Insert"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Insert"))
+            .css_classes(["suggested-action"])
             .build();
         link_popover_box.append(&entry_url);
         link_popover_box.append(&entry_label);
@@ -1833,41 +2190,42 @@ impl HtmlEditor {
         let link_popover = gtk::Popover::builder().child(&link_popover_box).build();
         let btn_link = gtk::MenuButton::builder()
             .icon_name("insert-link-symbolic")
-            .tooltip_text(&gettext("Insert hyperlink"))
+            .tooltip_text(gettext("Insert hyperlink"))
             .popover(&link_popover)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_link, &gettext("Insert hyperlink"));
 
         let btn_rule = gtk::Button::builder()
             .icon_name("insert-object-symbolic")
-            .tooltip_text(&gettext("Insert horizontal rule"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Insert horizontal rule"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_rule, &gettext("Insert horizontal rule"));
 
         let btn_image = gtk::Button::builder()
             .icon_name("insert-image-symbolic")
-            .tooltip_text(&gettext("Insert image"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Insert image"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_image, &gettext("Insert image"));
 
         let btn_undo = gtk::Button::builder()
             .icon_name("edit-undo-symbolic")
-            .tooltip_text(&gettext("Undo (Ctrl+Z)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Undo (Ctrl+Z)"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_undo, &gettext("Undo"));
 
         let btn_redo = gtk::Button::builder()
             .icon_name("edit-redo-symbolic")
-            .tooltip_text(&gettext("Redo (Ctrl+Shift+Z)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Redo (Ctrl+Shift+Z)"))
+            .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_redo, &gettext("Redo"));
 
         toolbar.append(&dropdown_format);
+        toolbar.append(&dropdown_font_family);
         toolbar.append(&dropdown_font_size);
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         toolbar.append(&btn_bold);
@@ -1887,6 +2245,30 @@ impl HtmlEditor {
         toolbar.append(&btn_undo);
         toolbar.append(&btn_redo);
 
+        self.imp().dropdown_format.replace(Some(dropdown_format.clone()));
+        self.imp()
+            .dropdown_font_family
+            .replace(Some(dropdown_font_family.clone()));
+        self.imp()
+            .dropdown_font_size
+            .replace(Some(dropdown_font_size.clone()));
+        self.imp().btn_bold.replace(Some(btn_bold.clone()));
+        self.imp().btn_italic.replace(Some(btn_italic.clone()));
+        self.imp()
+            .btn_underline
+            .replace(Some(btn_underline.clone()));
+        self.imp()
+            .btn_strikethrough
+            .replace(Some(btn_strikethrough.clone()));
+        self.imp().btn_list.replace(Some(btn_list.clone()));
+        self.imp()
+            .btn_ordered_list
+            .replace(Some(btn_ordered_list.clone()));
+        self.imp()
+            .btn_blockquote
+            .replace(Some(btn_blockquote.clone()));
+        self.imp().btn_undo.replace(Some(btn_undo.clone()));
+        self.imp().btn_redo.replace(Some(btn_redo.clone()));
         self.imp().format_toolbar.replace(Some(toolbar.clone()));
 
         let toolbar_scroll = gtk::ScrolledWindow::builder()
@@ -1896,7 +2278,7 @@ impl HtmlEditor {
             .propagate_natural_height(true)
             .min_content_width(0)
             .hexpand(true)
-            .css_classes(vec!["format-toolbar-scrolled"])
+            .css_classes(["format-toolbar-scrolled"])
             .child(&toolbar)
             .build();
 
@@ -1905,7 +2287,7 @@ impl HtmlEditor {
         let mode_switcher = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
-            .css_classes(vec!["linked", "composer-mode-switcher"])
+            .css_classes(["linked", "composer-mode-switcher"])
             .valign(gtk::Align::Center)
             .margin_start(8)
             .margin_end(16)
@@ -1916,18 +2298,18 @@ impl HtmlEditor {
 
         let btn_mode_html = gtk::ToggleButton::builder()
             .label("HTML")
-            .tooltip_text(&gettext("Rich Text (HTML)"))
+            .tooltip_text(gettext("Rich Text (HTML)"))
             .active(true)
-            .css_classes(vec!["caption-heading"])
+            .css_classes(["caption-heading"])
             .build();
         set_accessible_label(&btn_mode_html, "HTML");
 
         let btn_mode_txt = gtk::ToggleButton::builder()
             .label("TXT")
-            .tooltip_text(&gettext("Plain Text"))
+            .tooltip_text(gettext("Plain Text"))
             .group(&btn_mode_html)
             .active(false)
-            .css_classes(vec!["caption-heading"])
+            .css_classes(["caption-heading"])
             .build();
         set_accessible_label(&btn_mode_txt, "TXT");
 
@@ -2047,6 +2429,7 @@ impl HtmlEditor {
         user_content_manager.register_script_message_handler("meridianDrag", None);
         user_content_manager.register_script_message_handler("meridianImageMenu", None);
         user_content_manager.register_script_message_handler("meridianContentChanged", None);
+        user_content_manager.register_script_message_handler("meridianSelectionState", None);
 
         let editor_weak_for_content_changed = self.downgrade();
         user_content_manager.connect_local(
@@ -2194,6 +2577,7 @@ impl HtmlEditor {
                 "}});",
                 "document.addEventListener('paste', function(e) {{",
                 "    if (!e.clipboardData) return;",
+                "    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
                 "    const items = e.clipboardData.items;",
                 "    if (items) {{",
                 "        for (let i = 0; i < items.length; i++) {{",
@@ -2216,6 +2600,8 @@ impl HtmlEditor {
                 "                            }} else {{",
                 "                                document.execCommand('insertImage', false, evt.target.result);",
                 "                            }}",
+                "                            if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "                            if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
                 "                        }};",
                 "                        img.src = evt.target.result;",
                 "                    }};",
@@ -2257,6 +2643,8 @@ impl HtmlEditor {
                 "            }}",
                 "            if (cleanHtml && cleanHtml.trim().length > 0) {{",
                 "                document.execCommand('insertHTML', false, cleanHtml);",
+                "                if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "                if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
                 "                return;",
                 "            }}",
                 "        }}",
@@ -2283,6 +2671,8 @@ impl HtmlEditor {
                 "                return '<a href=\"' + href + '\">' + cleanMatch + '</a>' + trailing;",
                 "            }}).replace(/\\r?\\n/g, '<br>');",
                 "            document.execCommand('insertHTML', false, htmlWithLinks);",
+                "            if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "            if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
                 "        }}",
                 "    }}",
                 "}});",
@@ -2874,12 +3264,326 @@ impl HtmlEditor {
                 "window.addEventListener('mouseleave', function(e) {{ hideCaret(); }});",
                 "document.addEventListener('mouseleave', function(e) {{ hideCaret(); }});",
                 "window.addEventListener('scroll', function() {{ hideCaret(); }}, true);",
+                "function meridianExtractPlainText(root) {{",
+                "    const blocks = new Set(['P', 'DIV', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'BLOCKQUOTE', 'TR']);",
+                "    let out = '';",
+                "    const walk = function(node) {{",
+                "        if (!node) return;",
+                "        if (node.nodeType === 3) {{",
+                "            out += node.nodeValue;",
+                "            return;",
+                "        }}",
+                "        if (node.nodeType !== 1) return;",
+                "        const tag = node.tagName;",
+                "        if (tag === 'STYLE' || tag === 'SCRIPT') return;",
+                "        if (tag === 'BR') {{",
+                "            out += '\\n';",
+                "            return;",
+                "        }}",
+                "        const isBlock = blocks.has(tag);",
+                "        if (isBlock && out.length > 0 && !out.endsWith('\\n')) {{",
+                "            out += '\\n';",
+                "        }}",
+                "        for (let i = 0; i < node.childNodes.length; i++) {{",
+                "            walk(node.childNodes[i]);",
+                "        }}",
+                "        if (isBlock && !out.endsWith('\\n')) {{",
+                "            out += '\\n';",
+                "        }}",
+                "    }};",
+                "    walk(root);",
+                "    return out.replace(/\\u00a0/g, ' ').replace(/\\n+$/, '');",
+                "}};",
+                "window.meridianExtractPlainText = meridianExtractPlainText;",
+                "window.meridianUnwrapBlockquote = function() {{",
+                "    const sel = window.getSelection();",
+                "    if (!sel || sel.rangeCount === 0) return false;",
+                "    const range = sel.getRangeAt(0);",
+                "    let startNode = range.startContainer;",
+                "    if (startNode && startNode.nodeType === 3) startNode = startNode.parentElement;",
+                "    let endNode = range.endContainer;",
+                "    if (endNode && endNode.nodeType === 3) endNode = endNode.parentElement;",
+                "    const targetQuotes = Array.from(document.querySelectorAll('blockquote')).filter(function(q) {{",
+                "        return sel.containsNode(q, true) || (startNode && q.contains(startNode)) || (endNode && q.contains(endNode));",
+                "    }});",
+                "    if (targetQuotes.length === 0) return false;",
+                "    targetQuotes.sort(function(a, b) {{ return a.contains(b) ? 1 : -1; }});",
+                "    const targetBq = targetQuotes[0];",
+                "    const children = Array.from(targetBq.childNodes);",
+                "    const selectedChildren = sel.isCollapsed",
+                "        ? children.filter(function(c) {{ return (startNode && c.contains(startNode)) || c === startNode; }})",
+                "        : children.filter(function(c) {{ return sel.containsNode(c, true) || (startNode && c.contains(startNode)) || (endNode && c.contains(endNode)); }});",
+                "    const parent = targetBq.parentNode;",
+                "    if (!parent) return false;",
+                "    if (selectedChildren.length === 0 || selectedChildren.length === children.length) {{",
+                "        while (targetBq.firstChild) {{",
+                "            const child = targetBq.firstChild;",
+                "            if (child.nodeType === 3 && child.textContent.trim().length > 0) {{",
+                "                const p = document.createElement('p');",
+                "                p.appendChild(child);",
+                "                parent.insertBefore(p, targetBq);",
+                "            }} else {{",
+                "                parent.insertBefore(child, targetBq);",
+                "            }}",
+                "        }}",
+                "        parent.removeChild(targetBq);",
+                "    }} else {{",
+                "        const lastSel = selectedChildren[selectedChildren.length - 1];",
+                "        const lastIdx = children.indexOf(lastSel);",
+                "        const afterChildren = children.slice(lastIdx + 1);",
+                "        let insertRef = targetBq.nextSibling;",
+                "        if (afterChildren.length > 0) {{",
+                "            const afterBq = targetBq.cloneNode(false);",
+                "            afterChildren.forEach(function(c) {{ afterBq.appendChild(c); }});",
+                "            parent.insertBefore(afterBq, insertRef);",
+                "            insertRef = afterBq;",
+                "        }}",
+                "        selectedChildren.forEach(function(c) {{",
+                "            if (c.nodeType === 3 && c.textContent.trim().length > 0) {{",
+                "                const p = document.createElement('p');",
+                "                p.appendChild(c);",
+                "                parent.insertBefore(p, insertRef);",
+                "            }} else {{",
+                "                parent.insertBefore(c, insertRef);",
+                "            }}",
+                "        }});",
+                "        if (!targetBq.hasChildNodes() || targetBq.textContent.trim() === '') {{",
+                "            parent.removeChild(targetBq);",
+                "        }}",
+                "    }}",
+                "    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "    if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "    return true;",
+                "}};",
+                "window.__meridianUndoStack = [];",
+                "window.__meridianRedoStack = [];",
+                "window.__meridianUserEdited = false;",
+                "let __meridianLastSnapshotTime = 0;",
+                "let __meridianInputTimer = null;",
+                "function meridianSaveSelection() {{",
+                "    try {{",
+                "        const sel = window.getSelection();",
+                "        if (!sel || sel.rangeCount === 0) return null;",
+                "        const range = sel.getRangeAt(0);",
+                "        const preStart = range.cloneRange();",
+                "        preStart.selectNodeContents(document.body);",
+                "        preStart.setEnd(range.startContainer, range.startOffset);",
+                "        const start = preStart.toString().length;",
+                "        const end = start + range.toString().length;",
+                "        return {{ start: start, end: end }};",
+                "    }} catch (e) {{ return null; }}",
+                "}};",
+                "function meridianRestoreSelection(saved) {{",
+                "    if (!saved) return;",
+                "    try {{",
+                "        let charIndex = 0;",
+                "        const range = document.createRange();",
+                "        range.setStart(document.body, 0);",
+                "        range.collapse(true);",
+                "        const nodeStack = [document.body];",
+                "        let node, foundStart = false, stop = false;",
+                "        while (!stop && (node = nodeStack.pop())) {{",
+                "            if (node.nodeType === 3) {{",
+                "                const nextCharIndex = charIndex + node.length;",
+                "                if (!foundStart && saved.start >= charIndex && saved.start <= nextCharIndex) {{",
+                "                    range.setStart(node, saved.start - charIndex);",
+                "                    foundStart = true;",
+                "                }}",
+                "                if (foundStart && saved.end >= charIndex && saved.end <= nextCharIndex) {{",
+                "                    range.setEnd(node, saved.end - charIndex);",
+                "                    stop = true;",
+                "                }}",
+                "                charIndex = nextCharIndex;",
+                "            }} else {{",
+                "                let i = node.childNodes.length;",
+                "                while (i--) {{ nodeStack.push(node.childNodes[i]); }}",
+                "            }}",
+                "        }}",
+                "        const sel = window.getSelection();",
+                "        if (sel) {{",
+                "            sel.removeAllRanges();",
+                "            sel.addRange(range);",
+                "        }}",
+                "    }} catch (e) {{}}",
+                "}};",
+                "function meridianCaptureSnapshot() {{",
+                "    return {{",
+                "        html: document.body ? document.body.innerHTML : '',",
+                "        bodyFont: (document.body && document.body.style) ? (document.body.style.fontFamily || '') : '',",
+                "        bodySize: (document.body && document.body.style) ? (document.body.style.fontSize || '') : '',",
+                "        sel: meridianSaveSelection()",
+                "    }};",
+                "}};",
+                "function meridianSnapshotsEqual(a, b) {{",
+                "    if (!a || !b) return false;",
+                "    return a.html === b.html && a.bodyFont === b.bodyFont && a.bodySize === b.bodySize;",
+                "}};",
+                "function meridianApplySnapshot(snap) {{",
+                "    if (!snap || !document.body) return;",
+                "    document.body.innerHTML = snap.html;",
+                "    document.body.style.fontFamily = snap.bodyFont || '';",
+                "    document.body.style.fontSize = snap.bodySize || '';",
+                "    meridianRestoreSelection(snap.sel);",
+                "    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "    if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "}};",
+                "window.meridianResetHistory = function() {{",
+                "    if (__meridianInputTimer) {{ clearTimeout(__meridianInputTimer); __meridianInputTimer = null; }}",
+                "    window.__meridianUndoStack = [meridianCaptureSnapshot()];",
+                "    window.__meridianRedoStack = [];",
+                "    window.__meridianUserEdited = false;",
+                "    __meridianLastSnapshotTime = Date.now();",
+                "}};",
+                "window.meridianRecordUndoSnapshot = function(immediate) {{",
+                "    if (!document.body) return;",
+                "    const snap = meridianCaptureSnapshot();",
+                "    const stack = window.__meridianUndoStack;",
+                "    const top = stack.length > 0 ? stack[stack.length - 1] : null;",
+                "    if (!top || !meridianSnapshotsEqual(top, snap)) {{",
+                "        stack.push(snap);",
+                "        if (stack.length > 100) stack.shift();",
+                "        window.__meridianRedoStack = [];",
+                "        __meridianLastSnapshotTime = Date.now();",
+                "    }} else if (top && snap.sel) {{",
+                "        top.sel = snap.sel;",
+                "    }}",
+                "    if (immediate) {{",
+                "        window.__meridianUserEdited = true;",
+                "    }}",
+                "}};",
+                "window.meridianUndo = function() {{",
+                "    if (__meridianInputTimer) {{ clearTimeout(__meridianInputTimer); __meridianInputTimer = null; }}",
+                "    const stack = window.__meridianUndoStack;",
+                "    if (!stack || stack.length === 0) {{",
+                "        document.execCommand('undo', false, null);",
+                "        if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "        if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "        return;",
+                "    }}",
+                "    const current = meridianCaptureSnapshot();",
+                "    const top = stack[stack.length - 1];",
+                "    if (!meridianSnapshotsEqual(current, top)) {{",
+                "        window.__meridianRedoStack.push(current);",
+                "        meridianApplySnapshot(top);",
+                "        return;",
+                "    }}",
+                "    if (stack.length > 1) {{",
+                "        const popped = stack.pop();",
+                "        window.__meridianRedoStack.push(popped);",
+                "        meridianApplySnapshot(stack[stack.length - 1]);",
+                "    }}",
+                "}};",
+                "window.meridianRedo = function() {{",
+                "    if (__meridianInputTimer) {{ clearTimeout(__meridianInputTimer); __meridianInputTimer = null; }}",
+                "    const redoStack = window.__meridianRedoStack;",
+                "    if (!redoStack || redoStack.length === 0) {{",
+                "        document.execCommand('redo', false, null);",
+                "        if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "        if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "        return;",
+                "    }}",
+                "    const next = redoStack.pop();",
+                "    window.__meridianUndoStack.push(next);",
+                "    meridianApplySnapshot(next);",
+                "}};",
+                "document.addEventListener('beforeinput', function(e) {{",
+                "    window.__meridianUserEdited = true;",
+                "    const now = Date.now();",
+                "    const isWordBreak = e.data === ' ' || e.data === '\\n' || e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak';",
+                "    if (window.__meridianUndoStack.length === 0 || isWordBreak || e.inputType !== 'insertText' || (now - __meridianLastSnapshotTime > 400)) {{",
+                "        window.meridianRecordUndoSnapshot(false);",
+                "    }}",
+                "}});",
+                "document.addEventListener('input', function() {{",
+                "    window.__meridianUserEdited = true;",
+                "    if (__meridianInputTimer) clearTimeout(__meridianInputTimer);",
+                "    __meridianInputTimer = setTimeout(function() {{",
+                "        __meridianInputTimer = null;",
+                "        window.meridianRecordUndoSnapshot(false);",
+                "    }}, 250);",
+                "}});",
+                "document.addEventListener('keydown', function(e) {{",
+                "    if ((e.ctrlKey || e.metaKey) && !e.altKey) {{",
+                "        const k = (e.key || '').toLowerCase();",
+                "        if (k === 'z') {{",
+                "            e.preventDefault();",
+                "            e.stopPropagation();",
+                "            if (e.shiftKey) {{ window.meridianRedo(); }} else {{ window.meridianUndo(); }}",
+                "        }} else if (k === 'y' && !e.shiftKey) {{",
+                "            e.preventDefault();",
+                "            e.stopPropagation();",
+                "            window.meridianRedo();",
+                "        }}",
+                "    }}",
+                "}}, true);",
+                "window.addEventListener('load', function() {{",
+                "    if (window.__meridianUndoStack.length === 0) window.meridianResetHistory();",
+                "}});",
+                "function notifyMeridianSelectionState() {{",
+                "    try {{",
+                "        if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.meridianSelectionState) return;",
+                "        const sel = window.getSelection();",
+                "        const hasSelection = Boolean(sel && !sel.isCollapsed && sel.toString().trim().length > 0);",
+                "        let node = null;",
+                "        if (sel && sel.rangeCount > 0) {{",
+                "            const r = sel.getRangeAt(0);",
+                "            node = sel.focusNode || r.startContainer;",
+                "            if (node && node.nodeType === 1 && sel.focusOffset > 0 && sel.focusOffset <= node.childNodes.length) {{",
+                "                const candidate = node.childNodes[sel.focusOffset - 1];",
+                "                if (candidate) node = candidate;",
+                "            }}",
+                "            while (node && node.nodeType !== 1) {{",
+                "                node = node.parentElement || node.parentNode;",
+                "            }}",
+                "        }}",
+                "        const inBlockquote = Boolean(node && node.closest && node.closest('blockquote'));",
+                "        let blockTag = 'p';",
+                "        if (node && node.closest) {{",
+                "            if (node.closest('h1')) blockTag = 'h1';",
+                "            else if (node.closest('h2')) blockTag = 'h2';",
+                "            else if (node.closest('h3')) blockTag = 'h3';",
+                "            else if (node.closest('pre')) blockTag = 'pre';",
+                "        }}",
+                "        let fontFamily = '';",
+                "        let fontSize = 0;",
+                "        let cs = null;",
+                "        if (node && window.getComputedStyle) {{",
+                "            cs = window.getComputedStyle(node);",
+                "            fontFamily = cs.fontFamily || '';",
+                "            fontSize = Math.round(parseFloat(cs.fontSize) || 0);",
+                "        }}",
+                "        const isBold = Boolean(document.queryCommandState('bold')) || Boolean(node && node.closest && node.closest('b, strong, h1, h2, h3')) || Boolean(cs && (parseInt(cs.fontWeight, 10) >= 600 || cs.fontWeight === 'bold'));",
+                "        const isItalic = Boolean(document.queryCommandState('italic')) || Boolean(node && node.closest && node.closest('i, em')) || Boolean(cs && (cs.fontStyle === 'italic' || cs.fontStyle === 'oblique'));",
+                "        const isUnderline = Boolean(document.queryCommandState('underline')) || Boolean(node && node.closest && node.closest('u'));",
+                "        const isStrike = Boolean(document.queryCommandState('strikethrough')) || Boolean(node && node.closest && node.closest('s, strike, del'));",
+                "        const isUl = Boolean(document.queryCommandState('insertUnorderedList')) || Boolean(node && node.closest && node.closest('ul'));",
+                "        const isOl = Boolean(document.queryCommandState('insertOrderedList')) || Boolean(node && node.closest && node.closest('ol'));",
+                "        window.webkit.messageHandlers.meridianSelectionState.postMessage(JSON.stringify({{",
+                "            has_selection: hasSelection,",
+                "            bold: isBold,",
+                "            italic: isItalic,",
+                "            underline: isUnderline,",
+                "            strikethrough: isStrike,",
+                "            ul: isUl,",
+                "            ol: isOl,",
+                "            blockquote: inBlockquote,",
+                "            block_tag: blockTag,",
+                "            font_family: fontFamily,",
+                "            font_size: fontSize",
+                "        }}));",
+                "    }} catch(err) {{}}",
+                "}};",
+                "window.notifyMeridianSelectionState = notifyMeridianSelectionState;",
+                "document.addEventListener('selectionchange', notifyMeridianSelectionState);",
+                "document.addEventListener('keyup', notifyMeridianSelectionState);",
+                "document.addEventListener('mouseup', notifyMeridianSelectionState);",
                 "function notifyMeridianContentChanged() {{",
                 "    try {{",
                 "        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.meridianContentChanged) {{",
                 "            window.webkit.messageHandlers.meridianContentChanged.postMessage(JSON.stringify({{",
                 "                html: document.body.innerHTML,",
-                "                text: document.body.innerText",
+                "                text: meridianExtractPlainText(document.body)",
                 "            }}));",
                 "        }}",
                 "    }} catch(err) {{}}",
@@ -2991,6 +3695,50 @@ impl HtmlEditor {
         });
         web_view.add_controller(drop_target);
 
+        let wv_key_controller = gtk::EventControllerKey::new();
+        wv_key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let editor_weak_for_keys = self.downgrade();
+        wv_key_controller.connect_key_pressed(move |_, keyval, _, state| {
+            let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK)
+                || state.contains(gdk::ModifierType::META_MASK);
+            let alt = state.contains(gdk::ModifierType::ALT_MASK);
+            let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+            if ctrl && !alt {
+                let Some(editor) = editor_weak_for_keys.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                match keyval {
+                    gdk::Key::z | gdk::Key::Z => {
+                        if shift {
+                            editor.redo();
+                        } else {
+                            editor.undo();
+                        }
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::y | gdk::Key::Y if !shift => {
+                        editor.redo();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::b | gdk::Key::B if !shift => {
+                        editor.toggle_bold();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::i | gdk::Key::I if !shift => {
+                        editor.toggle_italic();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::u | gdk::Key::U if !shift => {
+                        editor.toggle_underline();
+                        return glib::Propagation::Stop;
+                    }
+                    _ => {}
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        web_view.add_controller(wv_key_controller);
+
         *self.imp().web_view.borrow_mut() = Some(web_view.clone());
         let editor_weak = self.downgrade();
         web_view.connect_load_changed(move |_, event| {
@@ -3024,65 +3772,187 @@ impl HtmlEditor {
             .child(&web_view)
             .hexpand(true)
             .vexpand(true)
-            .css_classes(vec!["composer-editor-scrolled"])
+            .css_classes(["composer-editor-scrolled"])
             .build();
 
         self.imp()
             .web_view_scroll
             .replace(Some(web_view_scroll.clone()));
 
-        vbox.append(&web_view_scroll);
+        let link_preview_label = gtk::Label::builder()
+            .xalign(0.0)
+            .single_line_mode(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .width_chars(1)
+            .max_width_chars(90)
+            .use_markup(true)
+            .can_target(false)
+            .focusable(false)
+            .build();
+        let link_preview_pill = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::End)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_bottom(6)
+            .can_target(false)
+            .focusable(false)
+            .visible(false)
+            .css_classes(["link-preview-pill"])
+            .build();
+        link_preview_pill.append(&link_preview_label);
+
+        let editor_overlay = gtk::Overlay::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .child(&web_view_scroll)
+            .build();
+        editor_overlay.add_overlay(&link_preview_pill);
+        editor_overlay.set_measure_overlay(&link_preview_pill, false);
+
+        let editor_weak_for_sel = self.downgrade();
+        user_content_manager.connect_local(
+            "script-message-received::meridianSelectionState",
+            false,
+            move |values| {
+                let Some(editor) = editor_weak_for_sel.upgrade() else {
+                    return None;
+                };
+                let Some(js_val) = values
+                    .get(1)
+                    .and_then(|v| v.get::<javascriptcore6::Value>().ok())
+                else {
+                    return None;
+                };
+                let raw = js_val.to_str();
+                editor.apply_selection_state_json(&raw);
+                None
+            },
+        );
+
+        if let Some(settings) = AppSettings::try_new() {
+            let wv_weak = web_view.downgrade();
+            let editor_weak_font = self.downgrade();
+            let id_font = settings.connect_changed(Some("mail-font-family"), move |s, _| {
+                let raw = s.string("mail-font-family").to_string();
+                let safe = crate::views::mail_viewer::safe_css_font_family(&raw);
+                if let Some(editor) = editor_weak_font.upgrade() {
+                    if let Some(dd) = editor.imp().dropdown_font_family.borrow().as_ref() {
+                        let idx = font_family_index_for_css(&raw);
+                        if dd.selected() != idx {
+                            editor.imp().suppress_toolbar_sync.set(true);
+                            dd.set_selected(idx);
+                            editor.imp().suppress_toolbar_sync.set(false);
+                        }
+                    }
+                }
+                if let Some(wv) = wv_weak.upgrade() {
+                    if let Ok(encoded) = serde_json::to_string(&safe) {
+                        let js = format!(
+                            "if (document.documentElement) document.documentElement.style.fontFamily = {encoded}; if (document.body) document.body.style.fontFamily = {encoded};"
+                        );
+                        wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+                    }
+                }
+            });
+            let wv_weak_size = web_view.downgrade();
+            let editor_weak_size = self.downgrade();
+            let id_size = settings.connect_changed(Some("mail-font-size"), move |s, _| {
+                let sz = s.int("mail-font-size").clamp(8, 48) as u32;
+                if let Some(editor) = editor_weak_size.upgrade() {
+                    if let Some(dd) = editor.imp().dropdown_font_size.borrow().as_ref() {
+                        let idx = match sz {
+                            10 => 1,
+                            12 => 2,
+                            14 => 3,
+                            16 => 4,
+                            18 => 5,
+                            24 => 6,
+                            32 => 7,
+                            _ => 0,
+                        };
+                        if dd.selected() != idx {
+                            editor.imp().suppress_toolbar_sync.set(true);
+                            dd.set_selected(idx);
+                            editor.imp().suppress_toolbar_sync.set(false);
+                        }
+                    }
+                }
+                if let Some(wv) = wv_weak_size.upgrade() {
+                    let js = format!(
+                        "if (document.documentElement) document.documentElement.style.fontSize = '{sz}px'; if (document.body) document.body.style.fontSize = '{sz}px';"
+                    );
+                    wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+                }
+            });
+            self.imp().spelling_handler_ids.borrow_mut().push(id_font);
+            self.imp().spelling_handler_ids.borrow_mut().push(id_size);
+        }
+
+        let pill_for_hover = link_preview_pill.clone();
+        let label_for_hover = link_preview_label.clone();
+        web_view.connect_mouse_target_changed(move |_, hit_test_result, _| {
+            let formatted = if hit_test_result.context_is_link() {
+                hit_test_result
+                    .link_uri()
+                    .and_then(|u| crate::views::mail_viewer::format_hovered_link_preview(&u))
+            } else {
+                None
+            };
+            if let Some((plain, markup)) = formatted {
+                label_for_hover.set_markup(&markup);
+                label_for_hover.set_tooltip_text(Some(&plain));
+                pill_for_hover.set_visible(true);
+            } else {
+                pill_for_hover.set_visible(false);
+                label_for_hover.set_text("");
+                label_for_hover.set_tooltip_text(None);
+            }
+        });
+
+        let motion_leave = gtk::EventControllerMotion::new();
+        let pill_for_leave = link_preview_pill;
+        let label_for_leave = link_preview_label;
+        motion_leave.connect_leave(move |_| {
+            pill_for_leave.set_visible(false);
+            label_for_leave.set_text("");
+            label_for_leave.set_tooltip_text(None);
+        });
+        web_view.add_controller(motion_leave);
+
+        vbox.append(&editor_overlay);
         vbox.set_parent(self);
 
         // Toolbar action wiring
-        btn_bold.connect_clicked(glib::clone!(
-            #[weak]
-            web_view,
-            move |_| {
-                web_view.evaluate_javascript(
-                    "document.execCommand('bold', false, null);",
-                    None,
-                    None,
-                    None::<&gio::Cancellable>,
-                    |_| {},
-                );
+        let editor_for_bold = self.downgrade();
+        btn_bold.connect_clicked(move |_| {
+            if let Some(editor) = editor_for_bold.upgrade() {
+                editor.toggle_bold();
             }
-        ));
+        });
 
-        btn_italic.connect_clicked(glib::clone!(
-            #[weak]
-            web_view,
-            move |_| {
-                web_view.evaluate_javascript(
-                    "document.execCommand('italic', false, null);",
-                    None,
-                    None,
-                    None::<&gio::Cancellable>,
-                    |_| {},
-                );
+        let editor_for_italic = self.downgrade();
+        btn_italic.connect_clicked(move |_| {
+            if let Some(editor) = editor_for_italic.upgrade() {
+                editor.toggle_italic();
             }
-        ));
+        });
 
-        btn_underline.connect_clicked(glib::clone!(
-            #[weak]
-            web_view,
-            move |_| {
-                web_view.evaluate_javascript(
-                    "document.execCommand('underline', false, null);",
-                    None,
-                    None,
-                    None::<&gio::Cancellable>,
-                    |_| {},
-                );
+        let editor_for_underline = self.downgrade();
+        btn_underline.connect_clicked(move |_| {
+            if let Some(editor) = editor_for_underline.upgrade() {
+                editor.toggle_underline();
             }
-        ));
+        });
 
         btn_strikethrough.connect_clicked(glib::clone!(
             #[weak]
             web_view,
             move |_| {
                 web_view.evaluate_javascript(
-                    "document.execCommand('strikethrough', false, null);",
+                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('strikethrough', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
                     None,
                     None,
                     None::<&gio::Cancellable>,
@@ -3096,7 +3966,7 @@ impl HtmlEditor {
             web_view,
             move |_| {
                 web_view.evaluate_javascript(
-                    "document.execCommand('removeFormat', false, null);",
+                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('removeFormat', false, null); if (typeof window.meridianUnwrapBlockquote === 'function') { while (window.meridianUnwrapBlockquote()) {} } document.execCommand('formatBlock', false, 'p'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
                     None,
                     None,
                     None::<&gio::Cancellable>,
@@ -3105,18 +3975,30 @@ impl HtmlEditor {
             }
         ));
 
+        let editor_for_format = self.downgrade();
         dropdown_format.connect_selected_notify(glib::clone!(
             #[weak]
             web_view,
             move |dropdown| {
-                let tag = match dropdown.selected() {
+                let Some(editor) = editor_for_format.upgrade() else {
+                    return;
+                };
+                if editor.imp().suppress_toolbar_sync.get() {
+                    return;
+                }
+                let selected = dropdown.selected();
+                let tag = match selected {
                     1 => "h1",
                     2 => "h2",
                     3 => "h3",
                     4 => "pre",
                     _ => "p",
                 };
-                let script = format!("document.execCommand('formatBlock', false, '{tag}');");
+                let script = if selected == 0 {
+                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.meridianUnwrapBlockquote === 'function') { while (window.meridianUnwrapBlockquote()) {} } document.execCommand('formatBlock', false, 'p'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string()
+                } else {
+                    format!("if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('formatBlock', false, '{tag}'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();")
+                };
                 web_view.evaluate_javascript(
                     &script,
                     None,
@@ -3127,10 +4009,56 @@ impl HtmlEditor {
             }
         ));
 
+        let editor_for_font = self.downgrade();
+        dropdown_font_family.connect_selected_notify(glib::clone!(
+            #[weak]
+            web_view,
+            move |dropdown| {
+                let Some(editor) = editor_for_font.upgrade() else {
+                    return;
+                };
+                if editor.imp().suppress_toolbar_sync.get() {
+                    return;
+                }
+                let idx = dropdown.selected() as usize;
+                let css_family = COMPOSER_FONT_FAMILIES
+                    .get(idx)
+                    .map(|(_, css)| *css)
+                    .unwrap_or("system-ui, sans-serif");
+                let css_family = if idx == 0 {
+                    AppSettings::try_new()
+                        .map(|s| s.mail_font_family())
+                        .unwrap_or_else(|| css_family.to_string())
+                } else {
+                    css_family.to_string()
+                };
+                let Ok(encoded) = serde_json::to_string(&css_family) else {
+                    return;
+                };
+                let script = format!(
+                    "(() => {{ if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); const sel = window.getSelection(); document.execCommand('styleWithCSS', false, true); if (sel && !sel.isCollapsed) {{ document.execCommand('fontName', false, {encoded}); }} else {{ document.body.style.fontFamily = {encoded}; document.execCommand('fontName', false, {encoded}); }} if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState(); }})()"
+                );
+                web_view.evaluate_javascript(
+                    &script,
+                    None,
+                    None,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+            }
+        ));
+
+        let editor_for_size = self.downgrade();
         dropdown_font_size.connect_selected_notify(glib::clone!(
             #[weak]
             web_view,
             move |dropdown| {
+                let Some(editor) = editor_for_size.upgrade() else {
+                    return;
+                };
+                if editor.imp().suppress_toolbar_sync.get() {
+                    return;
+                }
                 let size = match dropdown.selected() {
                     1 => 10,
                     2 => 12,
@@ -3142,10 +4070,11 @@ impl HtmlEditor {
                     _ => 0,
                 };
                 let script = if size == 0 {
-                    "document.execCommand('styleWithCSS', false, true); document.execCommand('fontSize', false, '3');".to_string()
+                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('styleWithCSS', false, true); document.execCommand('fontSize', false, '3'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string()
                 } else {
                     format!(
                         concat!(
+                            "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
                             "document.execCommand('styleWithCSS', false, true);",
                             "document.execCommand('fontSize', false, '7');",
                             "(function() {{",
@@ -3154,6 +4083,9 @@ impl HtmlEditor {
                             "        spans[i].removeAttribute('size');",
                             "        spans[i].style.fontSize = '{size}px';",
                             "    }}",
+                            "    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                            "    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                            "    if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
                             "}})();"
                         ),
                         size = size
@@ -3174,7 +4106,7 @@ impl HtmlEditor {
             web_view,
             move |_| {
                 web_view.evaluate_javascript(
-                    "document.execCommand('insertUnorderedList', false, null);",
+                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('insertUnorderedList', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
                     None,
                     None,
                     None::<&gio::Cancellable>,
@@ -3188,7 +4120,7 @@ impl HtmlEditor {
             web_view,
             move |_| {
                 web_view.evaluate_javascript(
-                    "document.execCommand('insertOrderedList', false, null);",
+                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('insertOrderedList', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
                     None,
                     None,
                     None::<&gio::Cancellable>,
@@ -3202,7 +4134,7 @@ impl HtmlEditor {
             web_view,
             move |_| {
                 web_view.evaluate_javascript(
-                    "document.execCommand('formatBlock', false, 'blockquote');",
+                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (!(typeof window.meridianUnwrapBlockquote === 'function' && window.meridianUnwrapBlockquote())) { document.execCommand('formatBlock', false, 'blockquote'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState(); }",
                     None,
                     None,
                     None::<&gio::Cancellable>,
@@ -3291,6 +4223,7 @@ impl HtmlEditor {
 
                 let js = format!(
                     r#"(() => {{
+    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
     const url = {url_json};
     const label = {label_json};
     const sel = window.getSelection();
@@ -3338,6 +4271,8 @@ impl HtmlEditor {
             }}
         }}
     }}
+    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
+    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();
 }})();"#
                 );
 
@@ -3361,7 +4296,7 @@ impl HtmlEditor {
             web_view,
             move |_| {
                 web_view.evaluate_javascript(
-                    "document.execCommand('insertHorizontalRule', false, null);",
+                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('insertHorizontalRule', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
                     None,
                     None,
                     None::<&gio::Cancellable>,
@@ -3377,7 +4312,7 @@ impl HtmlEditor {
             };
             let parent = editor.root().and_downcast::<gtk::Window>();
             let file_dialog = gtk::FileDialog::builder()
-                .title(&gettext("Select image to insert"))
+                .title(gettext("Select image to insert"))
                 .modal(true)
                 .build();
             let filter = gtk::FileFilter::new();
@@ -3403,33 +4338,19 @@ impl HtmlEditor {
             });
         });
 
-        btn_undo.connect_clicked(glib::clone!(
-            #[weak]
-            web_view,
-            move |_| {
-                web_view.evaluate_javascript(
-                    "document.execCommand('undo', false, null);",
-                    None,
-                    None,
-                    None::<&gio::Cancellable>,
-                    |_| {},
-                );
+        let editor_for_undo = self.downgrade();
+        btn_undo.connect_clicked(move |_| {
+            if let Some(editor) = editor_for_undo.upgrade() {
+                editor.undo();
             }
-        ));
+        });
 
-        btn_redo.connect_clicked(glib::clone!(
-            #[weak]
-            web_view,
-            move |_| {
-                web_view.evaluate_javascript(
-                    "document.execCommand('redo', false, null);",
-                    None,
-                    None,
-                    None::<&gio::Cancellable>,
-                    |_| {},
-                );
+        let editor_for_redo = self.downgrade();
+        btn_redo.connect_clicked(move |_| {
+            if let Some(editor) = editor_for_redo.upgrade() {
+                editor.redo();
             }
-        ));
+        });
     }
 }
 
@@ -3658,6 +4579,115 @@ mod tests {
         assert!(!HtmlEditor::is_supported_image(std::path::Path::new("doc.pdf")));
         assert!(!HtmlEditor::is_supported_image(std::path::Path::new("archive.zip")));
         assert!(!HtmlEditor::is_supported_image(std::path::Path::new("text.txt")));
+    }
+
+    #[test]
+    fn test_toolbar_dropdowns_have_fixed_width_and_do_not_expand() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let editor = HtmlEditor::new();
+        let dd_format = editor
+            .imp()
+            .dropdown_format
+            .borrow()
+            .clone()
+            .expect("dropdown_format initialized");
+        let dd_font = editor
+            .imp()
+            .dropdown_font_family
+            .borrow()
+            .clone()
+            .expect("dropdown_font_family initialized");
+        let dd_size = editor
+            .imp()
+            .dropdown_font_size
+            .borrow()
+            .clone()
+            .expect("dropdown_font_size initialized");
+
+        assert_eq!(dd_format.width_request(), DROPDOWN_FORMAT_WIDTH);
+        assert_eq!(dd_font.width_request(), DROPDOWN_FONT_FAMILY_WIDTH);
+        assert_eq!(dd_size.width_request(), DROPDOWN_FONT_SIZE_WIDTH);
+        assert!(!dd_format.hexpands());
+        assert!(!dd_font.hexpands());
+        assert!(!dd_size.hexpands());
+        assert!(dd_format.factory().is_some());
+        assert!(dd_font.factory().is_some());
+        assert!(dd_size.factory().is_some());
+    }
+
+    #[test]
+    fn test_apply_selection_state_updates_top_toolbar_and_dropdowns() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let editor = HtmlEditor::new();
+        editor.imp().pending_scripts.borrow_mut().clear();
+
+        let state_json = r#"{
+            "has_selection": true,
+            "bold": true,
+            "italic": false,
+            "underline": true,
+            "strikethrough": false,
+            "ul": true,
+            "ol": false,
+            "blockquote": true,
+            "block_tag": "h2",
+            "font_family": "Georgia, serif",
+            "font_size": 18
+        }"#;
+        editor.apply_selection_state_json(state_json);
+
+        let btn_bold = editor.imp().btn_bold.borrow().clone().unwrap();
+        let btn_italic = editor.imp().btn_italic.borrow().clone().unwrap();
+        let btn_underline = editor.imp().btn_underline.borrow().clone().unwrap();
+        let btn_list = editor.imp().btn_list.borrow().clone().unwrap();
+        let btn_blockquote = editor.imp().btn_blockquote.borrow().clone().unwrap();
+
+        assert!(btn_bold.has_css_class("suggested-action"));
+        assert!(!btn_italic.has_css_class("suggested-action"));
+        assert!(btn_underline.has_css_class("suggested-action"));
+        assert!(btn_list.has_css_class("suggested-action"));
+        assert!(btn_blockquote.has_css_class("suggested-action"));
+
+        let dd_format = editor.imp().dropdown_format.borrow().clone().unwrap();
+        let dd_font = editor.imp().dropdown_font_family.borrow().clone().unwrap();
+        let dd_size = editor.imp().dropdown_font_size.borrow().clone().unwrap();
+
+        assert_eq!(dd_format.selected(), 2); // Heading 2
+        assert_eq!(dd_font.selected(), font_family_index_for_css("Georgia, serif"));
+        assert_eq!(dd_size.selected(), 5); // 18 pt
+
+        // Updating selection state must not queue formatting commands back into the WebView
+        assert!(editor.imp().pending_scripts.borrow().is_empty());
+    }
+
+    #[test]
+    fn test_undo_and_redo_queue_meridian_history_commands() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let editor = HtmlEditor::new();
+        editor.imp().pending_scripts.borrow_mut().clear();
+
+        editor.undo();
+        editor.redo();
+
+        let scripts = editor.imp().pending_scripts.borrow().clone();
+        assert_eq!(scripts.len(), 2);
+        assert!(scripts[0].contains("window.meridianUndo"));
+        assert!(scripts[1].contains("window.meridianRedo"));
     }
 }
 

@@ -1411,7 +1411,7 @@ pub(crate) fn wrap_html_with_typography(html: &str, font_family: &str, font_size
     };
 
     format!(
-        "<!DOCTYPE html>\r\n<html>\r\n<head>\r\n<meta charset=\"utf-8\">\r\n<style type=\"text/css\">\r\nbody, p, div {{\r\n  font-family: {safe_font_family};\r\n  font-size: {safe_size}px;\r\n  line-height: 1.5;\r\n  color: #222222;\r\n}}\r\nimg {{\r\n  max-width: 100%;\r\n  height: auto;\r\n}}\r\n</style>\r\n</head>\r\n<body style=\"font-family: {safe_font_family}; font-size: {safe_size}px; line-height: 1.5; color: #222222;\">\r\n{trimmed}\r\n</body>\r\n</html>"
+        "<!DOCTYPE html>\r\n<html>\r\n<head>\r\n<meta charset=\"utf-8\">\r\n<style type=\"text/css\">\r\nbody, p, div {{\r\n  font-family: {safe_font_family};\r\n  font-size: {safe_size}px;\r\n  line-height: 1.35;\r\n  color: #222222;\r\n}}\r\np {{\r\n  margin: 0;\r\n}}\r\nimg {{\r\n  max-width: 100%;\r\n  height: auto;\r\n}}\r\n</style>\r\n</head>\r\n<body style=\"font-family: {safe_font_family}; font-size: {safe_size}px; line-height: 1.35; color: #222222;\">\r\n{trimmed}\r\n</body>\r\n</html>"
     )
 }
 

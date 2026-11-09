@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // ComposeDialog — Email composition window.
@@ -1101,13 +1102,13 @@ impl ComposeDialog {
         header_bar.set_show_start_title_buttons(false);
 
         let btn_close = gtk::Button::builder()
-            .label(&crate::i18n::gettext("Close"))
-            .tooltip_text(&crate::i18n::gettext("Close and save draft (Ctrl+W)"))
-            .css_classes(vec!["composer-close-btn"])
+            .label(gettext("Close"))
+            .tooltip_text(gettext("Close and save draft (Ctrl+W)"))
+            .css_classes(["composer-close-btn"])
             .valign(gtk::Align::Center)
             .margin_end(6)
             .build();
-        set_accessible_label(&btn_close, &crate::i18n::gettext("Close"));
+        set_accessible_label(&btn_close, &gettext("Close"));
         btn_close.connect_clicked(glib::clone!(
             #[weak(rename_to = dialog)]
             self,
@@ -1120,8 +1121,8 @@ impl ComposeDialog {
 
         let btn_open_in_new_window = gtk::Button::builder()
             .icon_name("window-new-symbolic")
-            .tooltip_text("Open in new window")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Open in new window"))
+            .css_classes(["flat"])
             .visible(self.imp().is_modal.get())
             .build();
         btn_open_in_new_window.connect_clicked(glib::clone!(
@@ -1136,11 +1137,11 @@ impl ComposeDialog {
 
         let btn_attach = gtk::Button::builder()
             .icon_name("mail-attachment-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Add attachment… (Ctrl+M)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Add attachment… (Ctrl+M)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&btn_attach, &crate::i18n::gettext("Add attachment"));
+        set_accessible_label(&btn_attach, &gettext("Add attachment"));
         self.imp().btn_attach.replace(Some(btn_attach.clone()));
 
         btn_attach.connect_clicked(glib::clone!(
@@ -1157,38 +1158,38 @@ impl ComposeDialog {
             .unwrap_or(false);
         let btn_format = gtk::ToggleButton::builder()
             .icon_name("format-text-underline-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Toggle formatting (Ctrl+Shift+F)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Toggle formatting (Ctrl+Shift+F)"))
+            .css_classes(["flat"])
             .active(show_format_toolbar)
             .build();
-        set_accessible_label(&btn_format, &crate::i18n::gettext("Formatting"));
+        set_accessible_label(&btn_format, &gettext("Formatting"));
         header_bar.pack_start(&btn_format);
         self.imp().format_button.replace(Some(btn_format.clone()));
 
         let btn_discard = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Discard draft"))
+            .tooltip_text(gettext("Discard draft"))
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&btn_discard, &crate::i18n::gettext("Discard draft"));
+        set_accessible_label(&btn_discard, &gettext("Discard draft"));
         self.imp().btn_discard.replace(Some(btn_discard.clone()));
 
         let btn_save_draft = gtk::Button::builder()
             .icon_name("document-save-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Save draft (Ctrl+S)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Save draft (Ctrl+S)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .margin_end(8)
             .build();
-        set_accessible_label(&btn_save_draft, &crate::i18n::gettext("Save draft"));
+        set_accessible_label(&btn_save_draft, &gettext("Save draft"));
 
         let btn_send = gtk::Button::builder()
-            .label(&crate::i18n::gettext("Send"))
-            .css_classes(vec!["suggested-action"])
-            .tooltip_text(&crate::i18n::gettext("Send email now (Ctrl+Enter)"))
+            .label(gettext("Send"))
+            .css_classes(["suggested-action"])
+            .tooltip_text(gettext("Send email now (Ctrl+Enter)"))
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&btn_send, &crate::i18n::gettext("Send email"));
+        set_accessible_label(&btn_send, &gettext("Send email"));
 
         // Header actions (packed right-to-left: Send)
         header_bar.pack_end(&btn_send);
@@ -1196,37 +1197,37 @@ impl ComposeDialog {
 
         let btn_priority = gtk::ToggleButton::builder()
             .icon_name("mail-mark-important-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Mark message as important"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Mark message as important"))
+            .css_classes(["flat"])
             .build();
-        set_accessible_label(&btn_priority, &crate::i18n::gettext("Mark message as important"));
+        set_accessible_label(&btn_priority, &gettext("Mark message as important"));
 
         let request_read_receipt = AppSettings::try_new()
             .map(|settings| settings.request_read_receipt())
             .unwrap_or(false);
         let btn_request_read_receipt = gtk::ToggleButton::builder()
             .icon_name("mail-send-receive-symbolic")
-            .tooltip_text("Request read receipt for this message")
+            .tooltip_text(gettext("Request read receipt for this message"))
             .active(request_read_receipt)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
 
         let btn_insert_template = gtk::Button::builder()
             .icon_name("document-open-symbolic")
-            .tooltip_text("Insert template or snippet")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Insert template or snippet"))
+            .css_classes(["flat"])
             .build();
 
         let btn_save_template = gtk::Button::builder()
             .icon_name("document-save-as-symbolic")
-            .tooltip_text("Save current content as template")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Save current content as template"))
+            .css_classes(["flat"])
             .build();
 
         let btn_save_snippet = gtk::Button::builder()
             .icon_name("insert-text-symbolic")
-            .tooltip_text("Save current content as snippet")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Save current content as snippet"))
+            .css_classes(["flat"])
             .build();
 
         let sign_by_default = AppSettings::try_new()
@@ -1234,45 +1235,45 @@ impl ComposeDialog {
             .unwrap_or(false);
         let btn_sign = gtk::ToggleButton::builder()
             .icon_name("security-high-symbolic")
-            .tooltip_text("Sign message (OpenPGP or S/MIME)")
+            .tooltip_text(gettext("Sign message (OpenPGP or S/MIME)"))
             .active(sign_by_default)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .build();
 
         let btn_encrypt = gtk::ToggleButton::builder()
             .icon_name("changes-prevent-symbolic")
-            .tooltip_text("Encrypt message (OpenPGP or S/MIME)")
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Encrypt message (OpenPGP or S/MIME)"))
+            .css_classes(["flat"])
             .build();
 
         let btn_plain_text = gtk::ToggleButton::builder()
             .icon_name("text-x-generic-symbolic")
-            .tooltip_text("Plain text mode when composing")
+            .tooltip_text(gettext("Plain text mode when composing"))
             .active(false)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .visible(false)
             .build();
 
         let header_mode_switcher = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
-            .css_classes(vec!["linked", "composer-mode-switcher"])
+            .css_classes(["linked", "composer-mode-switcher"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
         let header_btn_html = gtk::ToggleButton::builder()
             .label("HTML")
-            .tooltip_text("HTML format (rich text)")
+            .tooltip_text(gettext("HTML format (rich text)"))
             .active(true)
-            .css_classes(vec!["caption-heading"])
+            .css_classes(["caption-heading"])
             .build();
         set_accessible_label(&header_btn_html, "HTML");
         let header_btn_txt = gtk::ToggleButton::builder()
             .label("TXT")
-            .tooltip_text("Plain text format")
+            .tooltip_text(gettext("Plain text format"))
             .group(&header_btn_html)
             .active(false)
-            .css_classes(vec!["caption-heading"])
+            .css_classes(["caption-heading"])
             .build();
         set_accessible_label(&header_btn_txt, "TXT");
         header_mode_switcher.append(&header_btn_html);
@@ -1309,7 +1310,7 @@ impl ComposeDialog {
             .margin_end(16)
             .margin_top(6)
             .margin_bottom(6)
-            .css_classes(vec!["compact-status"])
+            .css_classes(["compact-status"])
             .visible(false)
             .build();
         let operation_spinner = gtk::Spinner::new();
@@ -1318,12 +1319,12 @@ impl ComposeDialog {
             .xalign(0.0)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         let cancel_operation_button = gtk::Button::builder()
-            .label(crate::i18n::gettext("Cancel"))
-            .tooltip_text(crate::i18n::gettext("Cancel operation before transport"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Cancel"))
+            .tooltip_text(gettext("Cancel operation before transport"))
+            .css_classes(["flat"])
             .visible(false)
             .build();
         operation_row.append(&operation_spinner);
@@ -1345,7 +1346,7 @@ impl ComposeDialog {
             .margin_end(16)
             .margin_top(4)
             .margin_bottom(12)
-            .css_classes(vec!["card", "composer-header-card"])
+            .css_classes(["card", "composer-header-card"])
             .build();
 
         let show_from = AppSettings::try_new()
@@ -1363,8 +1364,8 @@ impl ComposeDialog {
 
         // From & Signature
         let lbl_from = gtk::Label::builder()
-            .label(crate::i18n::gettext("From"))
-            .css_classes(vec!["dim-label", "composer-header-label"])
+            .label(gettext("From"))
+            .css_classes(["dim-label", "composer-header-label"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .visible(show_from)
@@ -1411,9 +1412,9 @@ impl ComposeDialog {
         combo_signature.set_list_factory(Some(&make_clean_dropdown_factory()));
 
         let lbl_signature = gtk::Label::builder()
-            .label(crate::i18n::gettext("Signature"))
-            .tooltip_text(crate::i18n::gettext("Manage Signatures…"))
-            .css_classes(vec![
+            .label(gettext("Signature"))
+            .tooltip_text(gettext("Manage Signatures…"))
+            .css_classes([
                 "dim-label",
                 "composer-header-label",
                 "composer-header-label-interactive",
@@ -1495,7 +1496,7 @@ impl ComposeDialog {
         let row_from = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
-            .css_classes(vec!["composer-header-row", "composer-row-from"])
+            .css_classes(["composer-header-row", "composer-row-from"])
             .visible(show_from)
             .build();
         row_from.append(&lbl_from);
@@ -1504,25 +1505,25 @@ impl ComposeDialog {
 
         // Reply-To
         let lbl_reply_to = gtk::Label::builder()
-            .label(crate::i18n::gettext("Reply-To"))
-            .css_classes(vec!["dim-label", "composer-header-label"])
+            .label(gettext("Reply-To"))
+            .css_classes(["dim-label", "composer-header-label"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .visible(show_reply_to)
             .build();
-        set_accessible_label(&lbl_reply_to, &crate::i18n::gettext("Reply-To"));
+        set_accessible_label(&lbl_reply_to, &gettext("Reply-To"));
         let entry_reply_to = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
             .hexpand(true)
-            .css_classes(vec!["composer-field-entry"])
+            .css_classes(["composer-field-entry"])
             .build();
-        set_accessible_label(&entry_reply_to, &crate::i18n::gettext("Reply-To"));
+        set_accessible_label(&entry_reply_to, &gettext("Reply-To"));
         entry_reply_to.set_visible(show_reply_to);
 
         let row_reply_to = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
-            .css_classes(vec!["composer-header-row", "composer-row-reply-to"])
+            .css_classes(["composer-header-row", "composer-row-reply-to"])
             .visible(show_reply_to)
             .build();
         row_reply_to.append(&lbl_reply_to);
@@ -1531,9 +1532,9 @@ impl ComposeDialog {
 
         // To
         let lbl_to = gtk::Label::builder()
-            .label(crate::i18n::gettext("To"))
-            .tooltip_text(crate::i18n::gettext("Select contacts…"))
-            .css_classes(vec![
+            .label(gettext("To"))
+            .tooltip_text(gettext("Select contacts…"))
+            .css_classes([
                 "dim-label",
                 "composer-header-label",
                 "composer-header-label-interactive",
@@ -1542,13 +1543,13 @@ impl ComposeDialog {
             .valign(gtk::Align::Center)
             .build();
         lbl_to.set_cursor_from_name(Some("pointer"));
-        set_accessible_label(&lbl_to, &crate::i18n::gettext("Recipients"));
+        set_accessible_label(&lbl_to, &gettext("Recipients"));
         let entry_to = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
             .hexpand(true)
-            .css_classes(vec!["composer-field-entry"])
+            .css_classes(["composer-field-entry"])
             .build();
-        set_accessible_label(&entry_to, &crate::i18n::gettext("Recipients"));
+        set_accessible_label(&entry_to, &gettext("Recipients"));
 
         let to_row_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -1559,11 +1560,11 @@ impl ComposeDialog {
 
         let btn_toggle_cc_bcc = gtk::Button::builder()
             .label("Cc/Bcc")
-            .tooltip_text(crate::i18n::gettext("Toggle Cc and Bcc recipient fields"))
-            .css_classes(vec!["flat", "composer-cc-toggle-btn"])
+            .tooltip_text(gettext("Toggle Cc and Bcc recipient fields"))
+            .css_classes(["flat", "composer-cc-toggle-btn"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&btn_toggle_cc_bcc, &crate::i18n::gettext("Toggle Cc and Bcc fields"));
+        set_accessible_label(&btn_toggle_cc_bcc, &gettext("Toggle Cc and Bcc fields"));
         to_row_box.append(&btn_toggle_cc_bcc);
 
         let dialog_weak_for_toggle_cc_bcc = self.downgrade();
@@ -1592,16 +1593,16 @@ impl ComposeDialog {
         let row_to = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
-            .css_classes(vec!["composer-header-row", "composer-row-to"])
+            .css_classes(["composer-header-row", "composer-row-to"])
             .build();
         row_to.append(&lbl_to);
         row_to.append(&to_row_box);
 
         // Cc/Bcc visibility defaults from AppSettings
         let lbl_cc = gtk::Label::builder()
-            .label(crate::i18n::gettext("Cc"))
-            .tooltip_text(crate::i18n::gettext("Select contacts…"))
-            .css_classes(vec![
+            .label(gettext("Cc"))
+            .tooltip_text(gettext("Select contacts…"))
+            .css_classes([
                 "dim-label",
                 "composer-header-label",
                 "composer-header-label-interactive",
@@ -1611,19 +1612,19 @@ impl ComposeDialog {
             .visible(show_cc)
             .build();
         lbl_cc.set_cursor_from_name(Some("pointer"));
-        set_accessible_label(&lbl_cc, &crate::i18n::gettext("Copy (Cc)"));
+        set_accessible_label(&lbl_cc, &gettext("Copy (Cc)"));
         let entry_cc = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
             .hexpand(true)
             .visible(show_cc)
-            .css_classes(vec!["composer-field-entry"])
+            .css_classes(["composer-field-entry"])
             .build();
-        set_accessible_label(&entry_cc, &crate::i18n::gettext("Copy (Cc)"));
+        set_accessible_label(&entry_cc, &gettext("Copy (Cc)"));
 
         let row_cc = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
-            .css_classes(vec!["composer-header-row", "composer-row-cc"])
+            .css_classes(["composer-header-row", "composer-row-cc"])
             .visible(show_cc)
             .build();
         row_cc.append(&lbl_cc);
@@ -1631,9 +1632,9 @@ impl ComposeDialog {
         lbl_cc.bind_property("visible", &row_cc, "visible").sync_create().build();
 
         let lbl_bcc = gtk::Label::builder()
-            .label(crate::i18n::gettext("Bcc"))
-            .tooltip_text(crate::i18n::gettext("Select contacts…"))
-            .css_classes(vec![
+            .label(gettext("Bcc"))
+            .tooltip_text(gettext("Select contacts…"))
+            .css_classes([
                 "dim-label",
                 "composer-header-label",
                 "composer-header-label-interactive",
@@ -1643,19 +1644,19 @@ impl ComposeDialog {
             .visible(show_bcc)
             .build();
         lbl_bcc.set_cursor_from_name(Some("pointer"));
-        set_accessible_label(&lbl_bcc, &crate::i18n::gettext("Blind Copy (Bcc)"));
+        set_accessible_label(&lbl_bcc, &gettext("Blind Copy (Bcc)"));
         let entry_bcc = gtk::Entry::builder()
             .input_purpose(gtk::InputPurpose::Email)
             .hexpand(true)
             .visible(show_bcc)
-            .css_classes(vec!["composer-field-entry"])
+            .css_classes(["composer-field-entry"])
             .build();
-        set_accessible_label(&entry_bcc, &crate::i18n::gettext("Blind Copy (Bcc)"));
+        set_accessible_label(&entry_bcc, &gettext("Blind Copy (Bcc)"));
 
         let row_bcc = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
-            .css_classes(vec!["composer-header-row", "composer-row-bcc"])
+            .css_classes(["composer-header-row", "composer-row-bcc"])
             .visible(show_bcc)
             .build();
         row_bcc.append(&lbl_bcc);
@@ -1664,21 +1665,21 @@ impl ComposeDialog {
 
         // Subject
         let lbl_subject = gtk::Label::builder()
-            .label(crate::i18n::gettext("Subject"))
-            .css_classes(vec!["dim-label", "composer-header-label"])
+            .label(gettext("Subject"))
+            .css_classes(["dim-label", "composer-header-label"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
         let entry_subject = gtk::Entry::builder()
             .hexpand(true)
-            .css_classes(vec!["composer-field-entry", "composer-subject-entry"])
+            .css_classes(["composer-field-entry", "composer-subject-entry"])
             .build();
-        set_accessible_label(&entry_subject, &crate::i18n::gettext("Subject"));
+        set_accessible_label(&entry_subject, &gettext("Subject"));
 
         let row_subject = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
-            .css_classes(vec!["composer-header-row", "composer-row-subject", "last-visible-row"])
+            .css_classes(["composer-header-row", "composer-row-subject", "last-visible-row"])
             .build();
         row_subject.append(&lbl_subject);
         row_subject.append(&entry_subject);
@@ -1759,7 +1760,7 @@ impl ComposeDialog {
                                  tooltip: &str,
                                  target_btn: &gtk::ToggleButton| {
                     let pill_btn = gtk::Button::builder()
-                        .css_classes(vec!["flat", "pill", "caption"])
+                        .css_classes(["flat", "pill", "caption"])
                         .tooltip_text(tooltip)
                         .build();
                     let content = gtk::Box::builder()
@@ -2037,7 +2038,7 @@ impl ComposeDialog {
         let attachment_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .css_classes(vec!["attachment-horizontal-bar"])
+            .css_classes(["attachment-horizontal-bar"])
             .hexpand(true)
             .valign(gtk::Align::Center)
             .visible(false)
@@ -2056,8 +2057,8 @@ impl ComposeDialog {
             .spacing(0)
             .valign(gtk::Align::Center)
             .hexpand(false)
-            .css_classes(vec!["attachment-title-box"])
-            .tooltip_text(&crate::i18n::gettext("Attachments"))
+            .css_classes(["attachment-title-box"])
+            .tooltip_text(gettext("Attachments"))
             .build();
 
         let clip_icon = gtk::Image::from_icon_name("mail-attachment-symbolic");
@@ -2084,12 +2085,12 @@ impl ComposeDialog {
             .spacing(4)
             .valign(gtk::Align::Center)
             .hexpand(false)
-            .css_classes(vec!["attachment-summary-clickable"])
+            .css_classes(["attachment-summary-clickable"])
             .visible(false)
             .build();
 
         let summary_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Drop files here"))
+            .label(gettext("Drop files here"))
             .valign(gtk::Align::Center)
             .use_markup(true)
             .build();
@@ -2111,7 +2112,7 @@ impl ComposeDialog {
             .spacing(6)
             .valign(gtk::Align::Center)
             .hexpand(false)
-            .css_classes(vec!["attachment-bar-chip-container"])
+            .css_classes(["attachment-bar-chip-container"])
             .visible(true)
             .build();
         left_container.append(&chip_box);
@@ -2124,7 +2125,7 @@ impl ComposeDialog {
         let separator = gtk::Separator::builder()
             .orientation(gtk::Orientation::Vertical)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["attachment-bar-separator"])
+            .css_classes(["attachment-bar-separator"])
             .visible(false)
             .build();
 
@@ -2132,12 +2133,12 @@ impl ComposeDialog {
         add_icon.set_pixel_size(14);
         let btn_add_attachment = gtk::Button::builder()
             .child(&add_icon)
-            .tooltip_text(&crate::i18n::gettext("Add attachment…"))
-            .css_classes(vec!["flat", "circular", "attachment-bar-add-btn"])
+            .tooltip_text(gettext("Add attachment…"))
+            .css_classes(["flat", "circular", "attachment-bar-add-btn"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
-        set_accessible_label(&btn_add_attachment, &crate::i18n::gettext("Add attachment"));
+        set_accessible_label(&btn_add_attachment, &gettext("Add attachment"));
         let dialog_weak_for_add = self.downgrade();
         btn_add_attachment.connect_clicked(move |_| {
             if let Some(dialog) = dialog_weak_for_add.upgrade() {
@@ -2148,7 +2149,7 @@ impl ComposeDialog {
         // View toggle: Only the two drawer views (Icons and List), visible only when expanded
         let view_toggle_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked", "attachment-view-toggle"])
+            .css_classes(["linked", "attachment-view-toggle"])
             .valign(gtk::Align::Center)
             .margin_start(12)
             .margin_end(10)
@@ -2157,11 +2158,11 @@ impl ComposeDialog {
 
         let btn_icons = gtk::Button::builder()
             .icon_name("view-grid-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Icon view"))
-            .css_classes(vec!["flat", "active"])
+            .tooltip_text(gettext("Icon view"))
+            .css_classes(["flat", "active"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&btn_icons, &crate::i18n::gettext("Icon view"));
+        set_accessible_label(&btn_icons, &gettext("Icon view"));
         let dialog_weak_for_icons = self.downgrade();
         btn_icons.connect_clicked(move |_| {
             if let Some(dialog) = dialog_weak_for_icons.upgrade() {
@@ -2171,11 +2172,11 @@ impl ComposeDialog {
 
         let btn_list = gtk::Button::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text(&crate::i18n::gettext("List view"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("List view"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&btn_list, &crate::i18n::gettext("List view"));
+        set_accessible_label(&btn_list, &gettext("List view"));
         let dialog_weak_for_list = self.downgrade();
         btn_list.connect_clicked(move |_| {
             if let Some(dialog) = dialog_weak_for_list.upgrade() {
@@ -2190,12 +2191,12 @@ impl ComposeDialog {
         collapse_icon.set_pixel_size(16);
         let btn_collapse = gtk::Button::builder()
             .child(&collapse_icon)
-            .tooltip_text(&crate::i18n::gettext("Expand attachments"))
-            .css_classes(vec!["flat", "attachment-collapse-btn"])
+            .tooltip_text(gettext("Expand attachments"))
+            .css_classes(["flat", "attachment-collapse-btn"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
-        set_accessible_label(&btn_collapse, &crate::i18n::gettext("Collapse attachments"));
+        set_accessible_label(&btn_collapse, &gettext("Collapse attachments"));
         let dialog_weak_for_collapse = self.downgrade();
         btn_collapse.connect_clicked(move |_| {
             if let Some(dialog) = dialog_weak_for_collapse.upgrade() {
@@ -2233,7 +2234,7 @@ impl ComposeDialog {
         let sheet_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
-            .css_classes(vec!["attachment-sheet-box"])
+            .css_classes(["attachment-sheet-box"])
             .build();
 
         // FlowBox (Preview Cards in Drawer)
@@ -2252,7 +2253,7 @@ impl ComposeDialog {
             .valign(gtk::Align::Start)
             .halign(gtk::Align::Fill)
             .hexpand(true)
-            .css_classes(vec!["attachment-flowbox"])
+            .css_classes(["attachment-flowbox"])
             .build();
 
         let dialog_weak_for_fb_key = self.downgrade();
@@ -2281,7 +2282,7 @@ impl ComposeDialog {
         // ListBox (List View in Sheet)
         let listbox = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["attachment-listbox"])
+            .css_classes(["attachment-listbox"])
             .margin_start(8)
             .margin_end(8)
             .margin_top(2)
@@ -2320,7 +2321,7 @@ impl ComposeDialog {
             .margin_end(8)
             .margin_top(0)
             .margin_bottom(0)
-            .css_classes(vec!["attachment-list-header"])
+            .css_classes(["attachment-list-header"])
             .height_request(24)
             .visible(false)
             .build();
@@ -2329,34 +2330,34 @@ impl ComposeDialog {
         list_header_box.append(&icon_spacer);
 
         let col_name = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Name"))
+            .label(gettext("Name"))
             .hexpand(true)
             .xalign(0.0)
-            .css_classes(vec!["attachment-col-header-label"])
+            .css_classes(["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_name);
 
         let col_type = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Type"))
+            .label(gettext("Type"))
             .width_request(140)
             .xalign(0.0)
-            .css_classes(vec!["attachment-col-header-label"])
+            .css_classes(["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_type);
 
         let col_mod = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Modified"))
+            .label(gettext("Modified"))
             .width_request(120)
             .xalign(0.0)
-            .css_classes(vec!["attachment-col-header-label"])
+            .css_classes(["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_mod);
 
         let col_size = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Size"))
+            .label(gettext("Size"))
             .width_request(70)
             .xalign(1.0)
-            .css_classes(vec!["attachment-col-header-label"])
+            .css_classes(["attachment-col-header-label"])
             .build();
         list_header_box.append(&col_size);
 
@@ -2379,9 +2380,9 @@ impl ComposeDialog {
 
         let empty_page = adw::StatusPage::builder()
             .icon_name("mail-attachment-symbolic")
-            .title(&crate::i18n::gettext("Drop files here"))
-            .description(&crate::i18n::gettext("Files will be attached"))
-            .css_classes(vec!["compact"])
+            .title(gettext("Drop files here"))
+            .description(gettext("Files will be attached"))
+            .css_classes(["compact"])
             .height_request(80)
             .valign(gtk::Align::Center)
             .visible(true)
@@ -2397,7 +2398,7 @@ impl ComposeDialog {
             .max_content_height(220)
             .vexpand(false)
             .hexpand(true)
-            .css_classes(vec!["attachment-sheet-scrolled"])
+            .css_classes(["attachment-sheet-scrolled"])
             .visible(false)
             .child(&stack)
             .build();
@@ -2408,13 +2409,13 @@ impl ComposeDialog {
             .height_request(4)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["attachment-sheet-handle-pill"])
+            .css_classes(["attachment-sheet-handle-pill"])
             .build();
 
         let handle_btn = gtk::Button::builder()
             .child(&handle_pill)
-            .tooltip_text(&crate::i18n::gettext("Collapse attachments"))
-            .css_classes(vec!["flat", "attachment-sheet-handle-btn"])
+            .tooltip_text(gettext("Collapse attachments"))
+            .css_classes(["flat", "attachment-sheet-handle-btn"])
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .margin_top(1)
@@ -2422,7 +2423,7 @@ impl ComposeDialog {
             .focusable(false)
             .visible(false)
             .build();
-        set_accessible_label(&handle_btn, &crate::i18n::gettext("Collapse attachments"));
+        set_accessible_label(&handle_btn, &gettext("Collapse attachments"));
         handle_btn.set_cursor_from_name(Some("grab"));
 
         let dialog_weak_for_handle = self.downgrade();
@@ -2479,7 +2480,7 @@ impl ComposeDialog {
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
             .hexpand(true)
-            .css_classes(vec!["attachment-section-box"])
+            .css_classes(["attachment-section-box"])
             .build();
         attachment_section_box.append(&attachment_bar);
         attachment_section_box.append(&detail_revealer);
@@ -2887,27 +2888,29 @@ impl ComposeDialog {
 
             let list = gtk::ListBox::builder()
                 .selection_mode(gtk::SelectionMode::None)
-                .css_classes(vec!["boxed-list"])
+                .css_classes(["boxed-list"])
                 .build();
             let templates = TemplateStore::default().load();
             let snippets = SnippetStore::default().load();
             if templates.is_empty() && snippets.is_empty() {
+                let empty_templates_label = gettext("No templates or snippets saved yet");
                 list.append(
                     &gtk::Label::builder()
-                        .label("No templates or snippets saved yet")
+                        .label(&empty_templates_label)
                         .margin_top(12)
                         .margin_bottom(12)
                         .margin_start(12)
                         .margin_end(12)
-                        .css_classes(vec!["dim-label"])
+                        .css_classes(["dim-label"])
                         .build(),
                 );
             } else {
+                let no_subject_text = gettext("No subject");
                 for template in &templates {
                     let row = adw::ActionRow::builder()
                         .title(&template.name)
                         .subtitle(if template.subject.trim().is_empty() {
-                            "No subject"
+                            no_subject_text.as_str()
                         } else {
                             template.subject.as_str()
                         })
@@ -2915,14 +2918,14 @@ impl ComposeDialog {
                         .build();
                     let apply_button = gtk::Button::builder()
                         .icon_name("insert-text-symbolic")
-                        .tooltip_text("Insert template")
-                        .css_classes(vec!["flat"])
+                        .tooltip_text(gettext("Insert template"))
+                        .css_classes(["flat"])
                         .valign(gtk::Align::Center)
                         .build();
                     let delete_button = gtk::Button::builder()
                         .icon_name("user-trash-symbolic")
-                        .tooltip_text("Delete template")
-                        .css_classes(vec!["flat", "error"])
+                        .tooltip_text(gettext("Delete template"))
+                        .css_classes(["flat", "error"])
                         .valign(gtk::Align::Center)
                         .build();
                     row.add_suffix(&apply_button);
@@ -2995,14 +2998,14 @@ impl ComposeDialog {
                     .build();
                 let apply_button = gtk::Button::builder()
                     .icon_name("insert-text-symbolic")
-                    .tooltip_text("Insert snippet at cursor position")
-                    .css_classes(vec!["flat"])
+                    .tooltip_text(gettext("Insert snippet at cursor position"))
+                    .css_classes(["flat"])
                     .valign(gtk::Align::Center)
                     .build();
                 let delete_button = gtk::Button::builder()
                     .icon_name("user-trash-symbolic")
-                    .tooltip_text("Delete snippet")
-                    .css_classes(vec!["flat", "error"])
+                    .tooltip_text(gettext("Delete snippet"))
+                    .css_classes(["flat", "error"])
                     .valign(gtk::Align::Center)
                     .build();
                 row.add_suffix(&apply_button);
@@ -3030,9 +3033,9 @@ impl ComposeDialog {
                     let popover_for_action = popover_for_delete.clone();
                     crate::dialogs::run_destructive_action(
                         button,
-                        "Delete snippet?",
-                        "The snippet will be permanently removed from application storage.",
-                        "Delete",
+                        &gettext("Delete snippet?"),
+                        &gettext("The snippet will be permanently removed from application storage."),
+                        &gettext("Delete"),
                         move || match SnippetStore::default().delete(&snippet_id_for_action) {
                             Ok(true) => {
                                 row_for_action.set_visible(false);
@@ -3056,7 +3059,7 @@ impl ComposeDialog {
             popover.set_child(Some(&list));
             popover.popup();
             if let Some(dialog) = dialog_weak_for_templates.upgrade() {
-                dialog.show_toast("Loading templates from application storage");
+                dialog.show_toast(&gettext("Loading templates from application storage"));
             }
         });
 
@@ -3077,12 +3080,12 @@ impl ComposeDialog {
                 .width_request(280)
                 .build();
             let name_entry = gtk::Entry::builder()
-                .placeholder_text("Template name")
+                .placeholder_text(gettext("Template name"))
                 .activates_default(true)
                 .build();
             let save_button = gtk::Button::builder()
-                .label("Save Template")
-                .css_classes(vec!["suggested-action"])
+                .label(gettext("Save Template"))
+                .css_classes(["suggested-action"])
                 .build();
             container.append(&name_entry);
             container.append(&save_button);
@@ -3096,7 +3099,7 @@ impl ComposeDialog {
                 let name = name_entry.text().trim().to_string();
                 if name.is_empty() {
                     if let Some(dialog) = dialog_weak.upgrade() {
-                        dialog.show_toast("Please enter a name for the template");
+                        dialog.show_toast(&gettext("Please enter a name for the template"));
                     }
                     return;
                 }
@@ -3115,13 +3118,14 @@ impl ComposeDialog {
                             Ok(()) => {
                                 popover_for_result.popdown();
                                 if let Some(dialog) = dialog_weak_for_result.upgrade() {
-                                    dialog.show_toast("Template saved");
+                                    dialog.show_toast(&gettext("Template saved"));
                                 }
                             }
                             Err(error) => {
                                 if let Some(dialog) = dialog_weak_for_result.upgrade() {
                                     dialog.show_toast(&format!(
-                                        "Could not save template: {error}"
+                                        "{}: {error}",
+                                        gettext("Could not save template")
                                     ));
                                 }
                             }
@@ -3130,7 +3134,8 @@ impl ComposeDialog {
                     Err(error) => {
                         if let Some(dialog) = dialog_weak_for_result.upgrade() {
                             dialog.show_toast(&format!(
-                                "Could not read template content: {error}"
+                                "{}: {error}",
+                                gettext("Could not read template content")
                             ));
                         }
                     }
@@ -3155,15 +3160,15 @@ impl ComposeDialog {
                 .width_request(300)
                 .build();
             let name_entry = gtk::Entry::builder()
-                .placeholder_text("Snippet name")
+                .placeholder_text(gettext("Snippet name"))
                 .activates_default(true)
                 .build();
             let trigger_entry = gtk::Entry::builder()
-                .placeholder_text("Shortcut (optional, e.g. /regards)")
+                .placeholder_text(gettext("Shortcut (optional, e.g. /regards)"))
                 .build();
             let save_button = gtk::Button::builder()
-                .label("Save Snippet")
-                .css_classes(vec!["suggested-action"])
+                .label(gettext("Save Snippet"))
+                .css_classes(["suggested-action"])
                 .build();
             container.append(&name_entry);
             container.append(&trigger_entry);
@@ -3177,7 +3182,7 @@ impl ComposeDialog {
                 let name = name_entry.text().trim().to_string();
                 if name.is_empty() {
                     if let Some(dialog) = dialog_weak.upgrade() {
-                        dialog.show_toast("Please enter a name for the snippet");
+                        dialog.show_toast(&gettext("Please enter a name for the snippet"));
                     }
                     return;
                 }
@@ -3189,7 +3194,7 @@ impl ComposeDialog {
                         let body_html = sanitize_html(&body_html);
                         if body_html.trim().is_empty() {
                             if let Some(dialog) = dialog_weak_for_result.upgrade() {
-                                dialog.show_toast("The snippet must not be empty");
+                                dialog.show_toast(&gettext("The snippet must not be empty"));
                             }
                             return;
                         }
@@ -3203,13 +3208,14 @@ impl ComposeDialog {
                             Ok(()) => {
                                 popover_for_result.popdown();
                                 if let Some(dialog) = dialog_weak_for_result.upgrade() {
-                                    dialog.show_toast("Snippet saved");
+                                    dialog.show_toast(&gettext("Snippet saved"));
                                 }
                             }
                             Err(error) => {
                                 if let Some(dialog) = dialog_weak_for_result.upgrade() {
                                     dialog.show_toast(&format!(
-                                        "Could not save snippet: {error}"
+                                        "{}: {error}",
+                                        gettext("Could not save snippet")
                                     ));
                                 }
                             }
@@ -3218,7 +3224,8 @@ impl ComposeDialog {
                     Err(error) => {
                         if let Some(dialog) = dialog_weak_for_result.upgrade() {
                             dialog.show_toast(&format!(
-                                "Could not read snippet content: {error}"
+                                "{}: {error}",
+                                gettext("Could not read snippet content")
                             ));
                         }
                     }
@@ -3239,7 +3246,7 @@ impl ComposeDialog {
                 return;
             };
             if dialog.imp().autosave_in_progress.get() {
-                dialog.show_toast("Autosave is still in progress; sending will start afterwards");
+                dialog.show_toast(&gettext("Autosave is still in progress; sending will start afterwards"));
                 return;
             }
             let html_editor_for_send = html_editor_for_send.clone();
@@ -3258,7 +3265,7 @@ impl ComposeDialog {
                 else {
                     return;
                 };
-                dialog.set_operation_status(operation_id, "Reading message…", true);
+                dialog.set_operation_status(operation_id, &gettext("Reading message…"), true);
 
                 let identity = dialog.selected_identity(combo_from_for_send.selected());
                 let reply_to = dialog.effective_reply_to(&identity.reply_to);
@@ -3296,14 +3303,15 @@ impl ComposeDialog {
                         Err(error) => {
                             dialog.finish_operation(operation_id);
                             dialog.show_toast(&format!(
-                                "Could not read message; draft remains open: {error}"
+                                "{}: {error}",
+                                gettext("Could not read message; draft remains open")
                             ));
                             return;
                         }
                     };
                     if cancel.is_cancel_requested() {
                         dialog.finish_operation(operation_id);
-                        dialog.show_toast("Sending cancelled; draft preserved");
+                        dialog.show_toast(&gettext("Sending cancelled; draft preserved"));
                         return;
                     }
 
@@ -3622,10 +3630,17 @@ impl ComposeDialog {
                 if let Some(selected_uid) = selected_uid.as_deref() {
                     let selected_uid_without_prefix = selected_uid
                         .strip_prefix("evolution-source:")
+                        .or_else(|| selected_uid.strip_prefix("eds:"))
                         .unwrap_or(selected_uid);
                     let source_uid_matches = |identity: &ComposeIdentity| {
+                        let id_without_prefix = identity
+                            .source_uid
+                            .strip_prefix("evolution-source:")
+                            .or_else(|| identity.source_uid.strip_prefix("eds:"))
+                            .unwrap_or(&identity.source_uid);
                         identity.source_uid == selected_uid
                             || identity.source_uid == selected_uid_without_prefix
+                            || id_without_prefix == selected_uid_without_prefix
                     };
                     let index = requested_from
                         .as_deref()
@@ -3635,8 +3650,22 @@ impl ComposeDialog {
                                     && compose_identity_matches_from(identity, from)
                             })
                         })
+                        .or_else(|| {
+                            requested_from.as_deref().and_then(|from| {
+                                identities.iter().position(|identity| {
+                                    compose_identity_matches_from(identity, from)
+                                })
+                            })
+                        })
                         .or_else(|| identities.iter().position(source_uid_matches));
                     if let Some(index) = index {
+                        combo_from_for_load.set_selected(index as u32);
+                    }
+                } else if let Some(from) = requested_from.as_deref() {
+                    if let Some(index) = identities
+                        .iter()
+                        .position(|identity| compose_identity_matches_from(identity, from))
+                    {
                         combo_from_for_load.set_selected(index as u32);
                     }
                 }
@@ -3741,7 +3770,7 @@ impl ComposeDialog {
                     if cancel.is_cancel_requested() {
                         dialog.imp().close_after_save.set(false);
                         dialog.finish_operation(operation_id);
-                        dialog.show_toast("Draft save cancelled; content remains open");
+                        dialog.show_toast(&gettext("Draft save cancelled; content remains open"));
                         return;
                     }
 
@@ -3783,7 +3812,7 @@ impl ComposeDialog {
                             dialog.set_can_close(true);
                             dialog.close();
                         } else {
-                            dialog.show_toast("Empty message is not saved as a draft");
+                            dialog.show_toast(&gettext("Empty message is not saved as a draft"));
                         }
                         return;
                     }
@@ -3910,7 +3939,7 @@ impl ComposeDialog {
                                     dialog.imp().close_after_save.set(false);
                                     dialog.finish_operation(operation_id);
                                     dialog.show_toast(
-                                        "Draft save cancelled; content remains open",
+                                        &gettext("Draft save cancelled; content remains open"),
                                     );
                                     return;
                                 }
@@ -3921,36 +3950,37 @@ impl ComposeDialog {
                                     match result {
                                         Ok(true) => {
                                             if dialog.imp().close_after_save.replace(false) {
-                                                dialog.show_toast("Draft saved");
+                                                dialog.show_toast(&gettext("Draft saved"));
                                                 dialog.imp().close_confirmed.set(true);
                                                 dialog.set_can_close(true);
                                                 dialog.close();
                                             } else {
                                                 dialog.show_toast(
-                                                    "Draft saved locally and in synchronized folder",
+                                                    &gettext("Draft saved locally and in synchronized folder"),
                                                 );
                                             }
                                         }
                                         Ok(false) => {
                                             if dialog.imp().close_after_save.replace(false) {
-                                                dialog.show_toast("Draft saved");
+                                                dialog.show_toast(&gettext("Draft saved"));
                                                 dialog.imp().close_confirmed.set(true);
                                                 dialog.set_can_close(true);
                                                 dialog.close();
                                             } else {
-                                                dialog.show_toast("Draft saved locally");
+                                                dialog.show_toast(&gettext("Draft saved locally"));
                                             }
                                         }
                                         Err(error) => {
                                             if dialog.imp().close_after_save.replace(false) {
                                                 tracing::warn!(%error, "Backend draft sync failed on close; local draft saved");
-                                                dialog.show_toast("Draft saved");
+                                                dialog.show_toast(&gettext("Draft saved"));
                                                 dialog.imp().close_confirmed.set(true);
                                                 dialog.set_can_close(true);
                                                 dialog.close();
                                             } else {
                                                 dialog.show_toast(&format!(
-                                                    "{error}; content remains open"
+                                                    "{error}; {}",
+                                                    gettext("content remains open")
                                                 ));
                                             }
                                         }
@@ -4555,7 +4585,7 @@ impl ComposeDialog {
         self.imp().close_confirmed.set(true);
         self.set_can_close(true);
         self.close();
-        self.show_toast("Draft discarded");
+        self.show_toast(&gettext("Draft discarded"));
     }
 
     fn handle_close_request(&self) -> bool {
@@ -4564,7 +4594,7 @@ impl ComposeDialog {
         }
         if self.imp().print_state.get().is_running() {
             self.show_toast(
-                "The composer is still processing a print job; please wait or cancel",
+                &gettext("The composer is still processing a print job; please wait or cancel"),
             );
             return true;
         }
@@ -4587,13 +4617,13 @@ impl ComposeDialog {
                 if !draft_id.is_empty() && !self.imp().local_draft_persisted.get() {
                     let _ = DraftStoreService::default().delete(&draft_id);
                 } else if self.imp().local_draft_persisted.get() {
-                    self.show_toast("Draft saved");
+                    self.show_toast(&gettext("Draft saved"));
                 }
                 false
             }
             CloseRequestDecision::BlockOperation => {
                 self.show_toast(
-                    "The composer is still processing an operation; please wait or cancel",
+                    &gettext("The composer is still processing an operation; please wait or cancel"),
                 );
                 true
             }
@@ -4661,12 +4691,12 @@ impl ComposeDialog {
         if self.imp().operation.get() != ComposeOperation::Idle
             || self.imp().print_state.get().is_running()
         {
-            self.show_toast("Another composer operation is already running");
+            self.show_toast(&gettext("Another composer operation is already running"));
             return false;
         }
 
         let Some(editor) = self.imp().html_editor.borrow().as_ref().cloned() else {
-            self.show_toast("Cannot print: message body is unavailable");
+            self.show_toast(&gettext("Cannot print: message body is unavailable"));
             return false;
         };
 
@@ -4848,9 +4878,9 @@ impl ComposeDialog {
             .set(next_generation(self.imp().print_generation.get()));
         self.set_print_state(
             MailPrintJobState::Cancelled,
-            "Print preparation cancelled",
+            &gettext("Print preparation cancelled"),
         );
-        self.show_toast("Print preparation cancelled");
+        self.show_toast(&gettext("Print preparation cancelled"));
         true
     }
 
@@ -4878,7 +4908,7 @@ impl ComposeDialog {
         let viewer = MailViewer::new();
         viewer.load_print_document(&document)?;
         let mut window_builder = gtk::Window::builder()
-            .title("Print Preview")
+            .title(gettext("Print Preview"))
             .default_width(900)
             .default_height(700);
         if let Some(parent) = self.root().and_downcast::<gtk::Window>() {
@@ -5130,8 +5160,8 @@ impl ComposeDialog {
                     ),
                 );
                 alert.add_responses(&[
-                    ("cancel", &crate::i18n::gettext("Cancel")),
-                    ("send", &crate::i18n::gettext("Send")),
+                    ("cancel", &gettext("Cancel")),
+                    ("send", &gettext("Send")),
                 ]);
                 alert.set_response_appearance("send", adw::ResponseAppearance::Suggested);
                 let on_confirmed_action = Rc::clone(&on_confirmed_bcc);
@@ -5149,12 +5179,12 @@ impl ComposeDialog {
 
         if prompt_empty_subject && subject_empty {
             let alert = adw::AlertDialog::new(
-                Some(&crate::i18n::gettext("No Subject")),
-                Some(&crate::i18n::gettext("This message has no subject. Send anyway?")),
+                Some(&gettext("No Subject")),
+                Some(&gettext("This message has no subject. Send anyway?")),
             );
             alert.add_responses(&[
-                ("cancel", &crate::i18n::gettext("Cancel")),
-                ("send", &crate::i18n::gettext("Send Anyway")),
+                ("cancel", &gettext("Cancel")),
+                ("send", &gettext("Send Anyway")),
             ]);
             alert.set_response_appearance("send", adw::ResponseAppearance::Suggested);
             alert.choose(self, None::<&gio::Cancellable>, move |response| {
@@ -5180,8 +5210,8 @@ impl ComposeDialog {
             return;
         }
         let file_dialog = gtk::FileDialog::builder()
-            .title("Save as EML")
-            .accept_label("Save")
+            .title(gettext("Save as EML"))
+            .accept_label(&gettext("Save"))
             .initial_name("Message.eml")
             .modal(true)
             .build();
@@ -5199,7 +5229,7 @@ impl ComposeDialog {
             };
             if dialog.imp().autosave_in_progress.get() {
                 dialog.show_toast(
-                    "Autosave is still in progress; EML export will restart afterwards",
+                    &gettext("Autosave is still in progress; EML export will restart afterwards"),
                 );
                 return;
             }
@@ -5208,10 +5238,10 @@ impl ComposeDialog {
             else {
                 return;
             };
-            dialog.set_operation_status(operation_id, "Preparing message for EML…", true);
+            dialog.set_operation_status(operation_id, &gettext("Preparing message for EML…"), true);
             let Some(editor) = dialog.imp().html_editor.borrow().as_ref().cloned() else {
                 dialog.finish_operation(operation_id);
-                dialog.show_toast("EML export could not read the editor");
+                dialog.show_toast(&gettext("EML export could not read the editor"));
                 return;
             };
             let dialog_weak = dialog.downgrade();
@@ -5227,7 +5257,8 @@ impl ComposeDialog {
                     Err(error) => {
                         dialog.finish_operation(operation_id);
                         dialog.show_toast(&format!(
-                            "EML export could not read message body: {error}"
+                            "{}: {error}",
+                            gettext("EML export could not read message body")
                         ));
                         return;
                     }
@@ -5237,7 +5268,7 @@ impl ComposeDialog {
                     Ok(outgoing) => outgoing,
                     Err(error) => {
                         dialog.finish_operation(operation_id);
-                        dialog.show_toast(&format!("EML export not possible: {error}"));
+                        dialog.show_toast(&format!("{}: {error}", gettext("EML export not possible")));
                         return;
                     }
                 };
@@ -5285,7 +5316,7 @@ impl ComposeDialog {
                                 && dialog.is_current_operation(operation_id)
                             {
                                 dialog.finish_operation(operation_id);
-                                dialog.show_toast("EML export cancelled");
+                                dialog.show_toast(&gettext("EML export cancelled"));
                             }
                         }
                         Ok(EmlWorkerEvent::Finished(result)) => {
@@ -5295,7 +5326,7 @@ impl ComposeDialog {
                                 dialog.finish_operation(operation_id);
                                 match result {
                                     Ok(()) => {
-                                        dialog.show_toast("Message saved as EML");
+                                        dialog.show_toast(&gettext("Message saved as EML"));
                                     }
                                     Err(error) => {
                                         dialog.show_toast(&format!(
@@ -5619,7 +5650,7 @@ impl ComposeDialog {
                             if let Some(button) = dialog.imp().save_draft_button.borrow().as_ref() {
                                 button.emit_clicked();
                             } else if dialog.imp().close_after_save.replace(false) {
-                                dialog.show_toast("Draft saved");
+                                dialog.show_toast(&gettext("Draft saved"));
                                 dialog.imp().close_confirmed.set(true);
                                 dialog.set_can_close(true);
                                 dialog.close();
@@ -6088,7 +6119,7 @@ impl ComposeDialog {
 
     pub fn open_attachment_chooser(&self) {
         let file_dialog = gtk::FileDialog::builder()
-            .title(&crate::i18n::gettext("Select attachment"))
+            .title(gettext("Select attachment"))
             .modal(true)
             .build();
 
@@ -6167,8 +6198,8 @@ impl ComposeDialog {
             if let Some(btn) = self.imp().attachment_btn_collapse.borrow().as_ref() {
                 btn.set_visible(count > 0);
                 btn.set_icon_name("pan-down-symbolic");
-                btn.set_tooltip_text(Some(&crate::i18n::gettext("Expand attachments")));
-                set_accessible_label(btn, &crate::i18n::gettext("Expand attachments"));
+                btn.set_tooltip_text(Some(&gettext("Expand attachments")));
+                set_accessible_label(btn, &gettext("Expand attachments"));
             }
             if let Some(handle) = self.imp().attachment_sheet_handle_btn.borrow().as_ref() {
                 handle.set_visible(false);
@@ -6196,8 +6227,8 @@ impl ComposeDialog {
             if let Some(btn) = self.imp().attachment_btn_collapse.borrow().as_ref() {
                 btn.set_visible(count > 0);
                 btn.set_icon_name("pan-up-symbolic");
-                btn.set_tooltip_text(Some(&crate::i18n::gettext("Collapse attachments")));
-                set_accessible_label(btn, &crate::i18n::gettext("Collapse attachments"));
+                btn.set_tooltip_text(Some(&gettext("Collapse attachments")));
+                set_accessible_label(btn, &gettext("Collapse attachments"));
             }
             if let Some(handle) = self.imp().attachment_sheet_handle_btn.borrow().as_ref() {
                 handle.set_visible(count > 0);
@@ -6222,9 +6253,9 @@ impl ComposeDialog {
             }
             if let Some(lbl) = self.imp().attachment_summary_label.borrow().as_ref() {
                 let text = if visible {
-                    crate::i18n::gettext("Drop files here to attach")
+                    gettext("Drop files here to attach")
                 } else {
-                    crate::i18n::gettext("Drop files here")
+                    gettext("Drop files here")
                 };
                 lbl.set_label(&text);
             }
@@ -6351,14 +6382,14 @@ impl ComposeDialog {
         if total_count > max_chips {
             let remaining = total_count - max_chips;
             let tip = if remaining == 1 {
-                crate::i18n::gettext("1 more attachment (Click to expand)")
+                gettext("1 more attachment (Click to expand)")
             } else {
-                format!("{} {}", remaining, crate::i18n::gettext("more attachments (Click to expand)"))
+                format!("{} {}", remaining, gettext("more attachments (Click to expand)"))
             };
             let btn_overflow = gtk::Button::builder()
                 .label(&format!("+{remaining} …"))
                 .tooltip_text(&tip)
-                .css_classes(vec!["flat", "circular", "attachment-overflow-btn"])
+                .css_classes(["flat", "circular", "attachment-overflow-btn"])
                 .valign(gtk::Align::Center)
                 .build();
             set_accessible_label(&btn_overflow, &tip);
@@ -6497,7 +6528,7 @@ impl ComposeDialog {
                     bar.set_visible(true);
                 }
             }
-            let empty_text = crate::i18n::gettext("Drop files here");
+            let empty_text = gettext("Drop files here");
             if let Some(lbl) = self.imp().attachment_summary_label.borrow().as_ref() {
                 lbl.set_label(&empty_text);
             }
@@ -6517,9 +6548,9 @@ impl ComposeDialog {
                 .sum();
             let size_str = format_size(total_size);
             let count_str = if count == 1 {
-                crate::i18n::gettext("1 attachment")
+                gettext("1 attachment")
             } else {
-                format!("{} {}", count, crate::i18n::gettext("attachments"))
+                format!("{} {}", count, gettext("attachments"))
             };
             if let Some(lbl) = self.imp().attachment_summary_label.borrow().as_ref() {
                 lbl.set_markup(&format!(
@@ -6627,9 +6658,9 @@ fn attachment_modified_str(path: &str) -> String {
             let date = dt.date_naive();
             let today = now.date_naive();
             if date == today {
-                format!("{}, {}", crate::i18n::gettext("Today"), dt.format("%H:%M"))
+                format!("{}, {}", gettext("Today"), dt.format("%H:%M"))
             } else if date == today.pred_opt().unwrap_or(today) {
-                format!("{}, {}", crate::i18n::gettext("Yesterday"), dt.format("%H:%M"))
+                format!("{}, {}", gettext("Yesterday"), dt.format("%H:%M"))
             } else if date.year() == today.year() {
                 dt.format("%b %d, %H:%M").to_string()
             } else {
@@ -6651,7 +6682,7 @@ fn create_attachment_chip(
         .orientation(gtk::Orientation::Horizontal)
         .spacing(6)
         .valign(gtk::Align::Center)
-        .css_classes(vec!["attachment-chip"])
+        .css_classes(["attachment-chip"])
         .tooltip_text(&format!("{} ({})", attachment.filename, format_size(attachment.size)))
         .focusable(true)
         .build();
@@ -6667,7 +6698,7 @@ fn create_attachment_chip(
         .label(&attachment.filename)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .max_width_chars(26)
-        .css_classes(vec!["attachment-chip-label"])
+        .css_classes(["attachment-chip-label"])
         .valign(gtk::Align::Center)
         .build();
     chip_box.append(&lbl);
@@ -6676,12 +6707,12 @@ fn create_attachment_chip(
     remove_icon.set_pixel_size(12);
     let btn_remove = gtk::Button::builder()
         .child(&remove_icon)
-        .tooltip_text(&crate::i18n::gettext("Remove attachment"))
-        .css_classes(vec!["flat", "circular", "attachment-chip-btn"])
+        .tooltip_text(gettext("Remove attachment"))
+        .css_classes(["flat", "circular", "attachment-chip-btn"])
         .valign(gtk::Align::Center)
         .focusable(false)
         .build();
-    set_accessible_label(&btn_remove, &crate::i18n::gettext("Remove attachment"));
+    set_accessible_label(&btn_remove, &gettext("Remove attachment"));
     btn_remove.set_cursor_from_name(Some("pointer"));
 
     let path_for_remove = attachment.path.clone();
@@ -6789,7 +6820,7 @@ fn create_attachment_card(
     let card = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(4)
-        .css_classes(vec!["attachment-card"])
+        .css_classes(["attachment-card"])
         .valign(gtk::Align::Start)
         .halign(gtk::Align::Center)
         .width_request(96)
@@ -6804,7 +6835,7 @@ fn create_attachment_card(
         .height_request(64)
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
-        .css_classes(vec!["attachment-card-visual-box"])
+        .css_classes(["attachment-card-visual-box"])
         .margin_top(4)
         .margin_bottom(2)
         .build();
@@ -6821,7 +6852,7 @@ fn create_attachment_card(
         .max_width_chars(14)
         .width_chars(11)
         .height_request(34)
-        .css_classes(vec!["attachment-card-label"])
+        .css_classes(["attachment-card-label"])
         .halign(gtk::Align::Center)
         .justify(gtk::Justification::Center)
         .build();
@@ -6832,7 +6863,7 @@ fn create_attachment_card(
         .label(&size_str)
         .single_line_mode(true)
         .height_request(16)
-        .css_classes(vec!["dim-label", "caption", "attachment-card-size"])
+        .css_classes(["dim-label", "caption", "attachment-card-size"])
         .halign(gtk::Align::Center)
         .build();
     card.append(&lbl_size);
@@ -6841,15 +6872,15 @@ fn create_attachment_card(
 
     let btn_remove = gtk::Button::builder()
         .icon_name("window-close-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Remove attachment"))
-        .css_classes(vec!["flat", "circular", "attachment-card-remove-btn"])
+        .tooltip_text(gettext("Remove attachment"))
+        .css_classes(["flat", "circular", "attachment-card-remove-btn"])
         .valign(gtk::Align::Start)
         .halign(gtk::Align::End)
         .margin_top(2)
         .margin_end(2)
         .focusable(false)
         .build();
-    set_accessible_label(&btn_remove, &crate::i18n::gettext("Remove attachment"));
+    set_accessible_label(&btn_remove, &gettext("Remove attachment"));
     btn_remove.set_cursor_from_name(Some("pointer"));
 
     let path = attachment.path.clone();
@@ -6979,7 +7010,7 @@ fn create_attachment_list_row(
         .label(&attachment.filename)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .single_line_mode(true)
-        .css_classes(vec!["attachment-list-label"])
+        .css_classes(["attachment-list-label"])
         .hexpand(true)
         .xalign(0.0)
         .valign(gtk::Align::Center)
@@ -6996,7 +7027,7 @@ fn create_attachment_list_row(
         .label(&type_desc)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .single_line_mode(true)
-        .css_classes(vec!["dim-label", "caption", "attachment-col-type"])
+        .css_classes(["dim-label", "caption", "attachment-col-type"])
         .width_request(140)
         .xalign(0.0)
         .valign(gtk::Align::Center)
@@ -7009,7 +7040,7 @@ fn create_attachment_list_row(
         .label(&mod_str)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .single_line_mode(true)
-        .css_classes(vec!["dim-label", "caption", "attachment-col-modified"])
+        .css_classes(["dim-label", "caption", "attachment-col-modified"])
         .width_request(120)
         .xalign(0.0)
         .valign(gtk::Align::Center)
@@ -7021,7 +7052,7 @@ fn create_attachment_list_row(
     let lbl_size = gtk::Label::builder()
         .label(&size_str)
         .single_line_mode(true)
-        .css_classes(vec!["dim-label", "caption", "attachment-chip-size", "attachment-col-size"])
+        .css_classes(["dim-label", "caption", "attachment-chip-size", "attachment-col-size"])
         .width_request(70)
         .xalign(1.0)
         .valign(gtk::Align::Center)
@@ -7030,13 +7061,13 @@ fn create_attachment_list_row(
 
     let btn_remove = gtk::Button::builder()
         .icon_name("window-close-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Remove attachment"))
-        .css_classes(vec!["flat", "circular", "attachment-chip-btn"])
+        .tooltip_text(gettext("Remove attachment"))
+        .css_classes(["flat", "circular", "attachment-chip-btn"])
         .valign(gtk::Align::Center)
         .halign(gtk::Align::End)
         .focusable(false)
         .build();
-    set_accessible_label(&btn_remove, &crate::i18n::gettext("Remove attachment"));
+    set_accessible_label(&btn_remove, &gettext("Remove attachment"));
     btn_remove.set_cursor_from_name(Some("pointer"));
     row_box.append(&btn_remove);
 
@@ -7260,17 +7291,33 @@ fn compose_identity_matches_from(identity: &ComposeIdentity, requested: &str) ->
     {
         return true;
     }
-    let Some(address) = identity
-        .from
-        .split_once('<')
-        .and_then(|(_, address)| address.strip_suffix('>'))
-    else {
-        return false;
+    let identity_addr = {
+        let extracted = crate::views::extract_email_address(&identity.from);
+        if !extracted.is_empty() {
+            extracted
+        } else {
+            let from_trimmed = identity.from.trim();
+            if from_trimmed.contains('@') {
+                from_trimmed.to_ascii_lowercase()
+            } else {
+                crate::views::extract_email_address(&identity.label)
+            }
+        }
     };
-    requested.eq_ignore_ascii_case(address.trim())
+    if identity_addr.is_empty() {
+        return false;
+    }
+    let requested_addr = crate::views::extract_email_address(requested);
+    if !requested_addr.is_empty() && requested_addr.eq_ignore_ascii_case(&identity_addr) {
+        return true;
+    }
+    requested.eq_ignore_ascii_case(&identity_addr)
         || requested
             .to_ascii_lowercase()
-            .contains(&format!("<{}>", address.trim()).to_ascii_lowercase())
+            .contains(&format!("<{}>", identity_addr.to_ascii_lowercase()))
+        || requested
+            .to_ascii_lowercase()
+            .contains(&identity_addr.to_ascii_lowercase())
 }
 
 fn reply_subject(subject: &str) -> String {
@@ -7324,119 +7371,60 @@ pub(crate) fn format_sender_display_name(sender: &str) -> String {
     unquoted.to_string()
 }
 
-fn is_german_locale() -> bool {
-    let locale = std::env::var("LC_TIME")
-        .or_else(|_| std::env::var("LC_ALL"))
-        .or_else(|_| std::env::var("LANG"))
-        .unwrap_or_default();
-    let lower = locale.to_lowercase();
-    if lower.starts_with("de") {
-        return true;
-    }
-    let tz = std::env::var("TZ").unwrap_or_default();
-    if tz.contains("Berlin") || tz.contains("Germany") {
-        return true;
-    }
-    if lower.starts_with("en") {
-        return false;
-    }
-    crate::i18n::gettext("Close") == "Schließen"
-}
-
-fn german_weekday_name(weekday: chrono::Weekday) -> &'static str {
+fn localized_weekday_name(weekday: chrono::Weekday) -> String {
     match weekday {
-        chrono::Weekday::Mon => "Montag",
-        chrono::Weekday::Tue => "Dienstag",
-        chrono::Weekday::Wed => "Mittwoch",
-        chrono::Weekday::Thu => "Donnerstag",
-        chrono::Weekday::Fri => "Freitag",
-        chrono::Weekday::Sat => "Samstag",
-        chrono::Weekday::Sun => "Sonntag",
-    }
-}
-
-fn english_weekday_name(weekday: chrono::Weekday) -> &'static str {
-    match weekday {
-        chrono::Weekday::Mon => "Monday",
-        chrono::Weekday::Tue => "Tuesday",
-        chrono::Weekday::Wed => "Wednesday",
-        chrono::Weekday::Thu => "Thursday",
-        chrono::Weekday::Fri => "Friday",
-        chrono::Weekday::Sat => "Saturday",
-        chrono::Weekday::Sun => "Sunday",
+        chrono::Weekday::Mon => gettext("Monday"),
+        chrono::Weekday::Tue => gettext("Tuesday"),
+        chrono::Weekday::Wed => gettext("Wednesday"),
+        chrono::Weekday::Thu => gettext("Thursday"),
+        chrono::Weekday::Fri => gettext("Friday"),
+        chrono::Weekday::Sat => gettext("Saturday"),
+        chrono::Weekday::Sun => gettext("Sunday"),
     }
 }
 
 pub(crate) fn format_reply_attribution(sender: &str, date: &str) -> String {
     let display_name = format_sender_display_name(sender);
     let parsed_dt = crate::views::parse_flexible_datetime(date);
-    let is_de = is_german_locale();
 
-    match (parsed_dt, is_de) {
-        (Some(dt), true) => {
-            let weekday = german_weekday_name(dt.weekday());
-            let date_str = dt.format("%d.%m.%Y");
-            let time_str = dt.format("%H:%M");
-            let tz_str = dt.format("%z");
+    match parsed_dt {
+        Some(dt) => {
+            let weekday = localized_weekday_name(dt.weekday());
+            let date_fmt = gettext("%Y-%m-%d");
+            let date_str = dt.format(&date_fmt).to_string();
+            let time_str = dt.format("%H:%M").to_string();
+            let tz_str = dt.format("%z").to_string();
             if !display_name.is_empty() {
-                format!(
-                    "Am {weekday}, dem {date_str} um {time_str} {tz_str} schrieb {}:",
-                    html_escape(&display_name)
-                )
+                gettext("On {weekday}, {date} at {time} {tz}, {sender} wrote:")
+                    .replace("{weekday}", &weekday)
+                    .replace("{date}", &date_str)
+                    .replace("{time}", &time_str)
+                    .replace("{tz}", &tz_str)
+                    .replace("{sender}", &html_escape(&display_name))
             } else {
-                format!(
-                    "Am {weekday}, dem {date_str} um {time_str} {tz_str} schrieb der ursprüngliche Absender:"
-                )
+                gettext("On {weekday}, {date} at {time} {tz}, the original sender wrote:")
+                    .replace("{weekday}", &weekday)
+                    .replace("{date}", &date_str)
+                    .replace("{time}", &time_str)
+                    .replace("{tz}", &tz_str)
             }
         }
-        (Some(dt), false) => {
-            let weekday = english_weekday_name(dt.weekday());
-            let date_str = dt.format("%Y-%m-%d");
-            let time_str = dt.format("%H:%M");
-            let tz_str = dt.format("%z");
-            if !display_name.is_empty() {
-                format!(
-                    "On {weekday}, {date_str} at {time_str} {tz_str}, {} wrote:",
-                    html_escape(&display_name)
-                )
-            } else {
-                format!(
-                    "On {weekday}, {date_str} at {time_str} {tz_str}, the original sender wrote:"
-                )
-            }
-        }
-        (None, true) => {
+        None => {
             if !date.trim().is_empty() {
+                let escaped_date = html_escape(date.trim());
                 if !display_name.is_empty() {
-                    format!(
-                        "Am {} schrieb {}:",
-                        html_escape(date.trim()),
-                        html_escape(&display_name)
-                    )
+                    gettext("On {date}, {sender} wrote:")
+                        .replace("{date}", &escaped_date)
+                        .replace("{sender}", &html_escape(&display_name))
                 } else {
-                    format!("Am {}:", html_escape(date.trim()))
+                    gettext("On {date}:")
+                        .replace("{date}", &escaped_date)
                 }
             } else if !display_name.is_empty() {
-                format!("{} schrieb:", html_escape(&display_name))
+                gettext("{sender} wrote:")
+                    .replace("{sender}", &html_escape(&display_name))
             } else {
-                "Ursprüngliche Nachricht:".to_string()
-            }
-        }
-        (None, false) => {
-            if !date.trim().is_empty() {
-                if !display_name.is_empty() {
-                    format!(
-                        "On {}, {} wrote:",
-                        html_escape(date.trim()),
-                        html_escape(&display_name)
-                    )
-                } else {
-                    format!("On {}:", html_escape(date.trim()))
-                }
-            } else if !display_name.is_empty() {
-                format!("{} wrote:", html_escape(&display_name))
-            } else {
-                "Original Message:".to_string()
+                gettext("Original Message:")
             }
         }
     }
@@ -7628,7 +7616,7 @@ fn reply_body_html_with_style(
                 format!("{prefix}{suffix}")
             }
         } else {
-            format!("{prefix}<p>{header_block}</p><div>{quoted}</div>{suffix}")
+            format!("{prefix}<p class=\"meridian-quote-attribution\">{header_block}</p><div>{quoted}</div>{suffix}")
         };
     }
 
@@ -7642,7 +7630,7 @@ fn reply_body_html_with_style(
             };
         }
         let quoted = format_quoted_body(&quoted_text, "prefix");
-        return format!("{prefix}<p>{attribution}</p>{quoted}{suffix}");
+        return format!("{prefix}<p class=\"meridian-quote-attribution\">{attribution}</p>{quoted}{suffix}");
     }
 
     let quoted_html = prepare_quote_html(original_html);
@@ -7654,7 +7642,7 @@ fn reply_body_html_with_style(
         }
     } else {
         let quoted = format_quoted_body(&quoted_html, "blockquote");
-        format!("{prefix}<p>{attribution}</p>{quoted}{suffix}")
+        format!("{prefix}<p class=\"meridian-quote-attribution\">{attribution}</p>{quoted}{suffix}")
     }
 }
 
@@ -7718,7 +7706,7 @@ fn forward_body_html_with_style(
             };
         }
         let quoted = format_quoted_body(&quoted_text, "prefix");
-        return format!("{prefix}<p>{header_block}</p>{quoted}{suffix}");
+        return format!("{prefix}<p class=\"meridian-quote-attribution\">{header_block}</p>{quoted}{suffix}");
     }
 
     let quoted_html = prepare_quote_html(original_html);
@@ -7729,10 +7717,10 @@ fn forward_body_html_with_style(
             format!("{prefix}{suffix}")
         }
     } else if quote_style == "inline" {
-        format!("{prefix}<p>{header_block}</p><div>{quoted_html}</div>{suffix}")
+        format!("{prefix}<p class=\"meridian-quote-attribution\">{header_block}</p><div>{quoted_html}</div>{suffix}")
     } else {
         let quoted = format_quoted_body(&quoted_html, "blockquote");
-        format!("{prefix}<p>{header_block}</p>{quoted}{suffix}")
+        format!("{prefix}<p class=\"meridian-quote-attribution\">{header_block}</p>{quoted}{suffix}")
     }
 }
 
@@ -8489,7 +8477,7 @@ fn setup_recipient_label_contact_picker(
         .position(gtk::PositionType::Bottom)
         .has_arrow(false)
         .halign(gtk::Align::Start)
-        .css_classes(vec![
+        .css_classes([
             "recipient-completion-popover",
             "composer-contact-picker-popover",
         ])
@@ -8503,9 +8491,9 @@ fn setup_recipient_label_contact_picker(
         .build();
 
     let search_entry = gtk::SearchEntry::builder()
-        .placeholder_text(crate::i18n::gettext("Search contacts…"))
+        .placeholder_text(gettext("Search contacts…"))
         .hexpand(true)
-        .css_classes(vec!["composer-contact-picker-search"])
+        .css_classes(["composer-contact-picker-search"])
         .build();
 
     let list = gtk::ListBox::builder()
@@ -8847,7 +8835,7 @@ fn render_recipient_suggestions_to_list(
             .hexpand(!has_separate_email)
             .max_width_chars(30)
             .ellipsize(gtk::pango::EllipsizeMode::End)
-            .css_classes(vec!["recipient-suggestion-name"])
+            .css_classes(["recipient-suggestion-name"])
             .build();
         row_box.append(&lbl_name);
 
@@ -8859,7 +8847,7 @@ fn render_recipient_suggestions_to_list(
                 .yalign(0.5)
                 .valign(gtk::Align::Fill)
                 .hexpand(true)
-                .css_classes(vec!["dim-label", "recipient-suggestion-email"])
+                .css_classes(["dim-label", "recipient-suggestion-email"])
                 .ellipsize(gtk::pango::EllipsizeMode::End)
                 .build();
             row_box.append(&lbl_email);
@@ -9900,16 +9888,20 @@ mod tests {
             "Oliver Bennett <OBennett@acme-corp.example>",
             "Mon, 12 Oct 2026 07:04:00 +0200",
         );
-        assert_eq!(
-            attr,
-            "Am Montag, dem 12.10.2026 um 07:04 +0200 schrieb Oliver Bennett:"
+        assert!(
+            attr == "On Monday, 2026-10-12 at 07:04 +0200, Oliver Bennett wrote:"
+                || attr == "Am Montag, dem 12.10.2026 um 07:04 +0200 schrieb Oliver Bennett:",
+            "attribution mismatch: {attr}"
         );
     }
 
     #[test]
     fn test_format_reply_attribution_without_date() {
         let attr = format_reply_attribution("Oliver Bennett <OBennett@acme-corp.example>", "");
-        assert_eq!(attr, "Oliver Bennett schrieb:");
+        assert!(
+            attr == "Oliver Bennett wrote:" || attr == "Oliver Bennett schrieb:",
+            "attribution mismatch: {attr}"
+        );
     }
 
     #[test]
@@ -9935,7 +9927,10 @@ mod tests {
             original,
             "blockquote",
         );
-        assert!(body.contains("Am Montag, dem 12.10.2026 um 07:04 +0200 schrieb Oliver Bennett:"));
+        assert!(
+            body.contains("Am Montag, dem 12.10.2026 um 07:04 +0200 schrieb Oliver Bennett:")
+                || body.contains("On Monday, 2026-10-12 at 07:04 +0200, Oliver Bennett wrote:")
+        );
         assert!(body.contains("<blockquote type=\"cite\" style=\"margin: 0 0 0 0.8ex; border-left: 2px solid #729fcf; padding-left: 1ex;\">"));
         assert!(body.contains("<b>DB Connect PKW Teil 2</b>"));
         assert!(!body.contains("<pre>"));
