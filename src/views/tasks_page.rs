@@ -881,10 +881,10 @@ fn build_task_print_document(
 
     let mut html_fields = Vec::new();
     let mut text_fields = Vec::new();
-    let status_label = crate::i18n::gettext("Status");
-    let due_label = crate::i18n::gettext("Due");
-    let priority_label = crate::i18n::gettext("Priority");
-    let categories_label = crate::i18n::gettext("Categories");
+    let status_label = gettext("Status");
+    let due_label = gettext("Due");
+    let priority_label = gettext("Priority");
+    let categories_label = gettext("Categories");
     for (label, value) in [
         (status_label.as_str(), status),
         (due_label.as_str(), due),
@@ -1802,10 +1802,10 @@ fn present_task_bulk_edit_dialog(
         .margin_top(6)
         .build();
     let hint = gtk::Label::builder()
-        .label(&gettext("Only enabled fields will be modified. Empty date, priority, classification, or duration values remove the corresponding property."))
+        .label(gettext("Only enabled fields will be modified. Empty date, priority, classification, or duration values remove the corresponding property."))
         .wrap(true)
         .halign(gtk::Align::Start)
-        .css_classes(vec!["dim-label"])
+        .css_classes(["dim-label"])
         .build();
     content.append(&hint);
     let (dtstart_check, dtstart) = task_bulk_edit_field(&content, &gettext("Start"), "YYYY-MM-DD");
@@ -1834,8 +1834,8 @@ fn present_task_bulk_edit_dialog(
     timezone.set_sensitive(false);
     content.append(&timezone);
     let dialog = adw::AlertDialog::builder()
-        .heading(&gettext("Batch Edit Tasks"))
-        .body(&gettext("The changes will be applied sequentially to the selected tasks."))
+        .heading(gettext("Batch Edit Tasks"))
+        .body(gettext("The changes will be applied sequentially to the selected tasks."))
         .extra_child(&content)
         .default_response("apply")
         .build();
@@ -3745,8 +3745,8 @@ impl TasksPage {
 
     pub(crate) fn apply_toolbar_button_modes(&self, is_compact: bool) {
         let imp = self.imp();
-        let complete_label = crate::i18n::gettext("Completed");
-        let delete_label = crate::i18n::gettext("Delete");
+        let complete_label = gettext("Completed");
+        let delete_label = gettext("Delete");
         let buttons: [(&RefCell<Option<gtk::Button>>, &str, &str); 2] = [
             (&imp.task_complete_button, &complete_label, "object-select-symbolic"),
             (&imp.task_delete_selection_button, &delete_label, "user-trash-symbolic"),
@@ -3786,7 +3786,7 @@ impl TasksPage {
                 if task.id() == first_sel.task_uid && task.source_uid() == first_sel.source_uid {
                     let title = task.title().trim().to_string();
                     return if title.is_empty() {
-                        Some(crate::i18n::gettext("Task"))
+                        Some(gettext("Task"))
                     } else {
                         Some(title)
                     };
@@ -4093,7 +4093,7 @@ impl TasksPage {
                 .margin_start(0)
                 .margin_end(6)
                 .valign(gtk::Align::Center)
-                .css_classes(vec![
+                .css_classes([
                     "calendar-sidebar-row",
                     "calendar-sidebar-group-row",
                     "sidebar-account-row",
@@ -4117,7 +4117,7 @@ impl TasksPage {
                 .halign(gtk::Align::Start)
                 .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
-                .css_classes(vec!["account-heading"])
+                .css_classes(["account-heading"])
                 .build();
             group_box.append(&group_label);
 
@@ -4125,7 +4125,7 @@ impl TasksPage {
                 .child(&group_box)
                 .activatable(true)
                 .selectable(false)
-                .css_classes(vec![
+                .css_classes([
                     "calendar-sidebar-group-row",
                     "account-root-row",
                     "sidebar-account-row",
@@ -4170,7 +4170,7 @@ impl TasksPage {
                     .spacing(6)
                     .margin_start(14)
                     .margin_end(6)
-                    .css_classes(vec!["calendar-sidebar-row", "calendar-sidebar-child-row"])
+                    .css_classes(["calendar-sidebar-row", "calendar-sidebar-child-row"])
                     .build();
 
                 // Colored Checkbox matching calendar
@@ -4185,8 +4185,8 @@ impl TasksPage {
                     .active(item.enabled && selector.is_selected(&source_uid))
                     .sensitive(item.enabled)
                     .valign(gtk::Align::Center)
-                    .tooltip_text(&gettext("Show/hide task list in views"))
-                    .css_classes(vec![color_class.as_str()])
+                    .tooltip_text(gettext("Show/hide task list in views"))
+                    .css_classes([color_class.as_str()])
                     .build();
 
                 let page_weak_for_toggle = self.downgrade();
@@ -4238,7 +4238,7 @@ impl TasksPage {
                     .child(&child_box)
                     .activatable(true)
                     .selectable(true)
-                    .css_classes(vec!["calendar-sidebar-child-row"])
+                    .css_classes(["calendar-sidebar-child-row"])
                     .build();
 
                 if let Some(index) = uids.iter().position(|u| u == &source_uid) {
@@ -4612,12 +4612,12 @@ impl TasksPage {
             .margin_end(0)
             .margin_top(0)
             .margin_bottom(0)
-            .css_classes(vec!["calendar-sidebar", "tasks-sidebar"])
+            .css_classes(["calendar-sidebar", "tasks-sidebar"])
             .build();
 
         let task_source_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["navigation-sidebar"])
+            .css_classes(["navigation-sidebar"])
             .build();
         self.imp()
             .task_source_list
@@ -4626,35 +4626,35 @@ impl TasksPage {
         // Retain button instances in imp() for background source action handling
         let new_task_source_button = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("New local task list"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("New local task list"))
+            .css_classes(["flat", "circular"])
             .build();
         set_accessible_label(&new_task_source_button, &gettext("New local task list"));
         let copy_task_source_button = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
-            .tooltip_text(&gettext("Copy selected task list"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Copy selected task list"))
+            .css_classes(["flat", "circular"])
             .sensitive(false)
             .build();
         set_accessible_label(&copy_task_source_button, &gettext("Copy selected task list"));
         let rename_task_source_button = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
-            .tooltip_text(&gettext("Rename selected task list"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Rename selected task list"))
+            .css_classes(["flat", "circular"])
             .sensitive(false)
             .build();
         set_accessible_label(&rename_task_source_button, &gettext("Rename selected task list"));
         let properties_task_source_button = gtk::Button::builder()
             .icon_name("document-properties-symbolic")
-            .tooltip_text(&gettext("Selected task list properties"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Selected task list properties"))
+            .css_classes(["flat", "circular"])
             .sensitive(false)
             .build();
         set_accessible_label(&properties_task_source_button, &gettext("Selected task list properties"));
         let delete_task_source_button = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text(&gettext("Delete selected task list"))
-            .css_classes(vec!["flat", "circular", "destructive-action"])
+            .tooltip_text(gettext("Delete selected task list"))
+            .css_classes(["flat", "circular", "destructive-action"])
             .sensitive(false)
             .build();
         set_accessible_label(&delete_task_source_button, &gettext("Delete selected task list"));
@@ -4673,17 +4673,17 @@ impl TasksPage {
             .margin_bottom(4)
             .build();
         let smart_header_lbl = gtk::Label::builder()
-            .label(&gettext("FOCUS"))
+            .label(gettext("FOCUS"))
             .halign(gtk::Align::Start)
             .hexpand(true)
-            .css_classes(vec!["account-heading"])
+            .css_classes(["account-heading"])
             .build();
         smart_header_box.append(&smart_header_lbl);
         sidebar_box.append(&smart_header_box);
 
         let task_smart_filter_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["navigation-sidebar", "tasks-smart-filter-list"])
+            .css_classes(["navigation-sidebar", "tasks-smart-filter-list"])
             .build();
         let smart_views: [(TaskFilter, &str, String); 8] = [
             (TaskFilter::Today, "alarm-symbolic", gettext("Due Today")),
@@ -4710,7 +4710,7 @@ impl TasksPage {
             let icon = gtk::Image::builder()
                 .icon_name(*icon_name)
                 .pixel_size(15)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build();
             let lbl = gtk::Label::builder()
                 .label(title)
@@ -4733,7 +4733,7 @@ impl TasksPage {
             row_box.append(&badge);
             let row = gtk::ListBoxRow::builder()
                 .child(&row_box)
-                .css_classes(vec!["calendar-sidebar-row", "task-smart-filter-row"])
+                .css_classes(["calendar-sidebar-row", "task-smart-filter-row"])
                 .build();
             unsafe {
                 row.set_data("smart-task-filter", *sf);
@@ -4764,10 +4764,10 @@ impl TasksPage {
             .margin_bottom(2)
             .build();
         let lists_header_lbl = gtk::Label::builder()
-            .label(&gettext("TASK LISTS"))
+            .label(gettext("TASK LISTS"))
             .halign(gtk::Align::Start)
             .hexpand(true)
-            .css_classes(vec!["account-heading"])
+            .css_classes(["account-heading"])
             .build();
         lists_header_box.append(&lists_header_lbl);
         lists_header_box.append(&new_task_source_button);
@@ -4787,11 +4787,11 @@ impl TasksPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .visible(false)
-            .css_classes(vec!["sidebar-drawer-header"])
+            .css_classes(["sidebar-drawer-header"])
             .build();
         let drawer_icon = gtk::Image::from_icon_name("view-list-bullet-symbolic");
         let drawer_title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Tasks"))
+            .label(gettext("Tasks"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -4801,7 +4801,7 @@ impl TasksPage {
 
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["meridian-sidebar-drawer"])
+            .css_classes(["meridian-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
         sidebar_outer_box.append(&sidebar_scroll);
@@ -4829,38 +4829,38 @@ impl TasksPage {
             .margin_top(4)
             .margin_bottom(4)
             .hexpand(true)
-            .css_classes(vec!["unified-view-toolbar", "toolbar"])
+            .css_classes(["unified-view-toolbar", "toolbar"])
             .build();
 
         let search_mode_model = gtk::StringList::new(&[
-            &crate::i18n::gettext("All Fields"),
-            &crate::i18n::gettext("Summary"),
-            &crate::i18n::gettext("Description"),
-            &crate::i18n::gettext("Advanced"),
+            &gettext("All Fields"),
+            &gettext("Summary"),
+            &gettext("Description"),
+            &gettext("Advanced"),
         ]);
         let search_mode_selector =
             gtk::DropDown::new(Some(search_mode_model), None::<&gtk::Expression>);
         search_mode_selector.set_selected(self.imp().task_search_mode.get().index());
-        search_mode_selector.set_tooltip_text(Some(&crate::i18n::gettext(
+        search_mode_selector.set_tooltip_text(Some(&gettext(
             "Select search field; Advanced supports summary:, description:, category:, due:, start:, status:, and has:attachment",
         )));
 
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text(&crate::i18n::gettext("Search tasks…"))
+            .placeholder_text(gettext("Search tasks…"))
             .width_chars(36)
             .build();
-        search_entry.set_tooltip_text(Some(&crate::i18n::gettext(
+        search_entry.set_tooltip_text(Some(&gettext(
             "Multiple terms are combined. In Advanced mode: category:Work due:next7 has:attachment",
         )));
         self.imp().search_entry.replace(Some(search_entry.clone()));
 
         let sort_model = gtk::StringList::new(&[
-            &crate::i18n::gettext("Due Date"),
-            &crate::i18n::gettext("Title"),
-            &crate::i18n::gettext("Priority"),
+            &gettext("Due Date"),
+            &gettext("Title"),
+            &gettext("Priority"),
         ]);
         let sort_selector = gtk::DropDown::new(Some(sort_model), None::<&gtk::Expression>);
-        sort_selector.set_tooltip_text(Some(&crate::i18n::gettext("Sort tasks")));
+        sort_selector.set_tooltip_text(Some(&gettext("Sort tasks")));
         sort_selector.set_selected(match self.imp().task_sort.get() {
             TaskSort::Title => 1,
             TaskSort::Priority => 2,
@@ -4868,7 +4868,7 @@ impl TasksPage {
         });
 
         let direction_button = gtk::Button::builder()
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         let set_direction_button = |button: &gtk::Button, descending: bool| {
@@ -4878,25 +4878,25 @@ impl TasksPage {
                 "view-sort-ascending-symbolic"
             });
             button.set_tooltip_text(Some(&if descending {
-                crate::i18n::gettext("Sorted descending")
+                gettext("Sorted descending")
             } else {
-                crate::i18n::gettext("Sorted ascending")
+                gettext("Sorted ascending")
             }));
             set_accessible_label(
                 button,
                 &if descending {
-                    crate::i18n::gettext("Change sort to ascending")
+                    gettext("Change sort to ascending")
                 } else {
-                    crate::i18n::gettext("Change sort to descending")
+                    gettext("Change sort to descending")
                 },
             );
         };
         set_direction_button(&direction_button, self.imp().task_sort_descending.get());
 
-        let source_model = gtk::StringList::new(&[&crate::i18n::gettext("All Task Lists")]);
+        let source_model = gtk::StringList::new(&[&gettext("All Task Lists")]);
         let source_selector =
             gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
-        source_selector.set_tooltip_text(Some(&crate::i18n::gettext("Select task list")));
+        source_selector.set_tooltip_text(Some(&gettext("Select task list")));
         self.imp()
             .task_source_model
             .replace(Some(source_model.clone()));
@@ -4921,10 +4921,10 @@ impl TasksPage {
             }
         });
 
-        let category_model = gtk::StringList::new(&[&crate::i18n::gettext("All Categories")]);
+        let category_model = gtk::StringList::new(&[&gettext("All Categories")]);
         let category_selector =
             gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
-        category_selector.set_tooltip_text(Some(&crate::i18n::gettext("Select task category")));
+        category_selector.set_tooltip_text(Some(&gettext("Select task category")));
         self.imp()
             .task_category_model
             .replace(Some(category_model.clone()));
@@ -4934,19 +4934,19 @@ impl TasksPage {
 
         let btn_add_task = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Create new task (Ctrl+N)"))
-            .css_classes(vec!["suggested-action"])
+            .tooltip_text(gettext("Create new task (Ctrl+N)"))
+            .css_classes(["suggested-action"])
             .valign(gtk::Align::Center)
             .build();
         set_button_icon_with_fallback(&btn_add_task, "list-add-symbolic", "document-new-symbolic");
-        set_accessible_label(&btn_add_task, &crate::i18n::gettext("New Task"));
+        set_accessible_label(&btn_add_task, &gettext("New Task"));
         self.imp()
             .new_task_button
             .replace(Some(btn_add_task.clone()));
 
         let selection_status = gtk::Label::builder()
-            .label(&crate::i18n::gettext("No selection"))
-            .css_classes(vec!["dim-label"])
+            .label(gettext("No selection"))
+            .css_classes(["dim-label"])
             .valign(gtk::Align::Center)
             .build();
         self.imp()
@@ -4955,181 +4955,181 @@ impl TasksPage {
 
         let forward_selection_button = gtk::Button::builder()
             .icon_name("mail-forward-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Forward selected task as iCalendar"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Forward selected task as iCalendar"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &forward_selection_button,
-            &crate::i18n::gettext("Forward selected task as iCalendar"),
+            &gettext("Forward selected task as iCalendar"),
         );
         let assign_selection_button = gtk::Button::builder()
             .icon_name("avatar-default-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Assign selected task"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Assign selected task"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        set_accessible_label(&assign_selection_button, &crate::i18n::gettext("Assign selected task"));
+        set_accessible_label(&assign_selection_button, &gettext("Assign selected task"));
         let open_url_selection_button = gtk::Button::builder()
             .icon_name("external-link-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Open URL of selected task"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Open URL of selected task"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &open_url_selection_button,
-            &crate::i18n::gettext("Open URL of selected task"),
+            &gettext("Open URL of selected task"),
         );
         let print_selection_button = gtk::Button::builder()
             .icon_name("document-print-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Print selected task"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Print selected task"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        set_accessible_label(&print_selection_button, &crate::i18n::gettext("Print selected task"));
+        set_accessible_label(&print_selection_button, &gettext("Print selected task"));
         let print_list_button = gtk::Button::builder()
             .icon_name("document-print-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Print visible task list (Ctrl+P)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Print visible task list (Ctrl+P)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&print_list_button, &crate::i18n::gettext("Print visible task list"));
+        set_accessible_label(&print_list_button, &gettext("Print visible task list"));
         let print_list_preview_button = gtk::Button::builder()
             .icon_name("document-print-preview-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Prepare print preview of visible task list"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Prepare print preview of visible task list"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(
             &print_list_preview_button,
-            &crate::i18n::gettext("Prepare print preview of visible task list"),
+            &gettext("Prepare print preview of visible task list"),
         );
         let refresh_source_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Refresh selected task list from provider (F5)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Refresh selected task list from provider (F5)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &refresh_source_button,
-            &crate::i18n::gettext("Refresh selected task list"),
+            &gettext("Refresh selected task list"),
         );
         let copy_selection_button = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Copy selected tasks to clipboard (Ctrl+C)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Copy selected tasks to clipboard (Ctrl+C)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &copy_selection_button,
-            &crate::i18n::gettext("Copy selected tasks to clipboard"),
+            &gettext("Copy selected tasks to clipboard"),
         );
         let cut_selection_button = gtk::Button::builder()
             .icon_name("edit-cut-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Cut selected tasks (Ctrl+X)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Cut selected tasks (Ctrl+X)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        set_accessible_label(&cut_selection_button, &crate::i18n::gettext("Cut selected tasks"));
+        set_accessible_label(&cut_selection_button, &gettext("Cut selected tasks"));
         let paste_selection_button = gtk::Button::builder()
             .icon_name("edit-paste-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Paste tasks from clipboard (Ctrl+V)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Paste tasks from clipboard (Ctrl+V)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &paste_selection_button,
-            &crate::i18n::gettext("Paste tasks from clipboard"),
+            &gettext("Paste tasks from clipboard"),
         );
         let select_all_tasks_button = gtk::Button::builder()
             .icon_name("edit-select-all-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Select all visible tasks (Ctrl+A)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Select all visible tasks (Ctrl+A)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(
             &select_all_tasks_button,
-            &crate::i18n::gettext("Select all visible tasks"),
+            &gettext("Select all visible tasks"),
         );
         let bulk_edit_button = gtk::Button::builder()
             .icon_name("document-edit-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Edit selected tasks together"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Edit selected tasks together"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &bulk_edit_button,
-            &crate::i18n::gettext("Edit selected tasks together"),
+            &gettext("Edit selected tasks together"),
         );
         let complete_selection_button = gtk::Button::builder()
             .icon_name("object-select-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Mark selected tasks as completed"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Mark selected tasks as completed"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &complete_selection_button,
-            &crate::i18n::gettext("Mark selected tasks as completed"),
+            &gettext("Mark selected tasks as completed"),
         );
         let incomplete_selection_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Mark selected tasks as incomplete"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Mark selected tasks as incomplete"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &incomplete_selection_button,
-            &crate::i18n::gettext("Mark selected tasks as incomplete"),
+            &gettext("Mark selected tasks as incomplete"),
         );
         let delete_selection_button = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Delete selected tasks (Delete)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Delete selected tasks (Delete)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        set_accessible_label(&delete_selection_button, &crate::i18n::gettext("Delete selected tasks"));
+        set_accessible_label(&delete_selection_button, &gettext("Delete selected tasks"));
         let purge_button = gtk::Button::builder()
             .icon_name("edit-clear-all-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Permanently purge all completed tasks (Ctrl+E)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Permanently purge all completed tasks (Ctrl+E)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        set_accessible_label(&purge_button, &crate::i18n::gettext("Permanently purge all completed tasks"));
+        set_accessible_label(&purge_button, &gettext("Permanently purge all completed tasks"));
         let export_selection_button = gtk::Button::builder()
             .icon_name("document-save-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Export selected tasks as iCalendar"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Export selected tasks as iCalendar"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
         set_accessible_label(
             &export_selection_button,
-            &crate::i18n::gettext("Export selected tasks as iCalendar"),
+            &gettext("Export selected tasks as iCalendar"),
         );
         let preview_visible = AppSettings::try_new()
             .map(|settings| settings.task_preview_visible())
             .unwrap_or(true);
         let preview_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Toggle task preview (Ctrl+M)"))
+            .tooltip_text(gettext("Toggle task preview (Ctrl+M)"))
             .active(preview_visible)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&preview_toggle, &crate::i18n::gettext("Toggle task preview"));
+        set_accessible_label(&preview_toggle, &gettext("Toggle task preview"));
 
         let sidebar_visible = AppSettings::try_new()
             .map(|s| s.mail_show_sidebar())
@@ -5137,9 +5137,9 @@ impl TasksPage {
         sidebar_outer_box.set_visible(sidebar_visible);
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
-            .tooltip_text("Seitenleiste ein-/ausblenden (F9)")
+            .tooltip_text(gettext("Toggle sidebar (F9)"))
             .active(sidebar_visible)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&sidebar_toggle, &gettext("Toggle sidebar"));
@@ -5167,7 +5167,7 @@ impl TasksPage {
             }
         });
         let preview_orientation_model =
-            gtk::StringList::new(&[&crate::i18n::gettext("Preview Below"), &crate::i18n::gettext("Preview Beside")]);
+            gtk::StringList::new(&[&gettext("Preview Below"), &gettext("Preview Beside")]);
         let preview_orientation_selector =
             gtk::DropDown::new(Some(preview_orientation_model), None::<&gtk::Expression>);
         let preview_orientation = AppSettings::try_new()
@@ -5176,7 +5176,7 @@ impl TasksPage {
             })
             .unwrap_or(TaskPreviewOrientation::Vertical);
         preview_orientation_selector.set_selected(preview_orientation.index());
-        preview_orientation_selector.set_tooltip_text(Some(&crate::i18n::gettext("Task preview layout")));
+        preview_orientation_selector.set_tooltip_text(Some(&gettext("Task preview layout")));
 
         self.imp().task_forward_button.replace(Some(forward_selection_button.clone()));
         self.imp().task_assign_button.replace(Some(assign_selection_button.clone()));
@@ -5202,7 +5202,7 @@ impl TasksPage {
         // 1. Triage group (.linked): Complete, Delete
         let triage_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .build();
         triage_group.append(&complete_selection_button);
@@ -5211,7 +5211,7 @@ impl TasksPage {
         // 2. Filter DropDown (all 16 task filters consolidated in one place)
         let initial_filter = self.imp().task_filter.get();
         let filter_options_names: Vec<String> =
-            TASK_FILTER_OPTIONS.iter().map(|(_, _, label)| crate::i18n::gettext(*label)).collect();
+            TASK_FILTER_OPTIONS.iter().map(|(_, _, label)| gettext(*label)).collect();
         let filter_options_refs: Vec<&str> =
             filter_options_names.iter().map(|s| s.as_str()).collect();
         let filter_options_model = gtk::StringList::new(&filter_options_refs);
@@ -5220,14 +5220,14 @@ impl TasksPage {
             None::<&gtk::Expression>,
         );
         filter_dropdown.set_valign(gtk::Align::Center);
-        filter_dropdown.set_tooltip_text(Some(&crate::i18n::gettext("Select task filter")));
-        set_accessible_label(&filter_dropdown, &crate::i18n::gettext("Task filter"));
+        filter_dropdown.set_tooltip_text(Some(&gettext("Select task filter")));
+        set_accessible_label(&filter_dropdown, &gettext("Task filter"));
         filter_dropdown.set_selected(task_filter_index(initial_filter) as u32);
 
         // 3. Sort group (.linked)
         let sort_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .build();
         sort_selector.set_valign(gtk::Align::Center);
@@ -5256,7 +5256,7 @@ impl TasksPage {
             item_box.append(&gtk::Label::builder().label(label).halign(gtk::Align::Start).hexpand(true).build());
             let item_btn = gtk::Button::builder()
                 .child(&item_box)
-                .css_classes(vec!["flat"])
+                .css_classes(["flat"])
                 .halign(gtk::Align::Fill)
                 .sensitive(target_btn.is_sensitive())
                 .build();
@@ -5274,22 +5274,22 @@ impl TasksPage {
             item_btn
         };
 
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Select All Tasks (Ctrl+A)"), "edit-select-all-symbolic", &select_all_tasks_button, &more_popover));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Mark as Incomplete"), "view-refresh-symbolic", &incomplete_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Cut (Ctrl+X)"), "edit-cut-symbolic", &cut_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Copy (Ctrl+C)"), "edit-copy-symbolic", &copy_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Paste (Ctrl+V)"), "edit-paste-symbolic", &paste_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Edit Multiple Tasks…"), "document-edit-symbolic", &bulk_edit_button, &more_popover));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Purge Completed Tasks… (Ctrl+E)"), "edit-clear-all-symbolic", &purge_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Select All Tasks (Ctrl+A)"), "edit-select-all-symbolic", &select_all_tasks_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Mark as Incomplete"), "view-refresh-symbolic", &incomplete_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Cut (Ctrl+X)"), "edit-cut-symbolic", &cut_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Copy (Ctrl+C)"), "edit-copy-symbolic", &copy_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Paste (Ctrl+V)"), "edit-paste-symbolic", &paste_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Edit Multiple Tasks…"), "document-edit-symbolic", &bulk_edit_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Purge Completed Tasks… (Ctrl+E)"), "edit-clear-all-symbolic", &purge_button, &more_popover));
         more_popover_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Assign Task…"), "avatar-default-symbolic", &assign_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Forward as iCalendar…"), "mail-forward-symbolic", &forward_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Open Task URL"), "external-link-symbolic", &open_url_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Export as iCalendar…"), "document-save-symbolic", &export_selection_button, &more_popover));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Print Task List… (Ctrl+P)"), "document-print-symbolic", &print_list_button, &more_popover));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Print Preview…"), "document-print-preview-symbolic", &print_list_preview_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Assign Task…"), "avatar-default-symbolic", &assign_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Forward as iCalendar…"), "mail-forward-symbolic", &forward_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Open Task URL"), "external-link-symbolic", &open_url_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Export as iCalendar…"), "document-save-symbolic", &export_selection_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Print Task List… (Ctrl+P)"), "document-print-symbolic", &print_list_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Print Preview…"), "document-print-preview-symbolic", &print_list_preview_button, &more_popover));
         more_popover_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        more_popover_content.append(&make_popover_item(&crate::i18n::gettext("Refresh Task List (F5)"), "view-refresh-symbolic", &refresh_source_button, &more_popover));
+        more_popover_content.append(&make_popover_item(&gettext("Refresh Task List (F5)"), "view-refresh-symbolic", &refresh_source_button, &more_popover));
         more_popover_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         let preview_orientation_box = gtk::Box::builder()
@@ -5298,7 +5298,7 @@ impl TasksPage {
             .margin_start(4)
             .margin_end(4)
             .build();
-        preview_orientation_box.append(&gtk::Label::builder().label(&crate::i18n::gettext("Preview:")).halign(gtk::Align::Start).css_classes(vec!["dim-label"]).build());
+        preview_orientation_box.append(&gtk::Label::builder().label(gettext("Preview:")).halign(gtk::Align::Start).css_classes(["dim-label"]).build());
         preview_orientation_selector.set_valign(gtk::Align::Center);
         preview_orientation_box.append(&preview_orientation_selector);
         more_popover_content.append(&preview_orientation_box);
@@ -5306,11 +5306,11 @@ impl TasksPage {
         let more_button = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
             .popover(&more_popover)
-            .tooltip_text(&crate::i18n::gettext("More Actions"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("More Actions"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&more_button, &crate::i18n::gettext("More Actions"));
+        set_accessible_label(&more_button, &gettext("More Actions"));
 
         // 5. Left Toolbar Section: Triage (Complete, Delete) + More menu
         let left_box = gtk::Box::builder()
@@ -5408,12 +5408,12 @@ impl TasksPage {
             .margin_end(16)
             .margin_top(12)
             .margin_bottom(12)
-            .css_classes(vec!["boxed-list", "task-boxed-list"])
+            .css_classes(["boxed-list", "task-boxed-list"])
             .build();
 
         let empty_tasks = gtk::Label::builder()
-            .label(&gettext("Loading tasks…"))
-            .css_classes(vec!["dim-label", "task-empty-state-title"])
+            .label(gettext("Loading tasks…"))
+            .css_classes(["dim-label", "task-empty-state-title"])
             .margin_top(36)
             .build();
         self.imp().task_list.replace(Some(task_list.clone()));
@@ -5432,22 +5432,22 @@ impl TasksPage {
             .visible(false)
             .build();
         let preview_find_entry = gtk::SearchEntry::builder()
-            .placeholder_text(&gettext("Search in preview"))
+            .placeholder_text(gettext("Search in preview"))
             .hexpand(true)
             .sensitive(false)
             .build();
         let preview_find_previous = gtk::Button::builder()
             .icon_name("go-up-symbolic")
-            .tooltip_text(&gettext("Previous match"))
+            .tooltip_text(gettext("Previous match"))
             .build();
         let preview_find_next = gtk::Button::builder()
             .icon_name("go-down-symbolic")
-            .tooltip_text(&gettext("Next match"))
+            .tooltip_text(gettext("Next match"))
             .build();
         let preview_find_status = gtk::Label::new(None);
         let preview_find_close = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text(&gettext("Close preview search"))
+            .tooltip_text(gettext("Close preview search"))
             .build();
         preview_find_bar.append(&preview_find_entry);
         preview_find_bar.append(&preview_find_previous);
@@ -5491,8 +5491,8 @@ impl TasksPage {
             .replace(Some(inspector_box.clone()));
         let preview_empty_state = adw::StatusPage::builder()
             .icon_name("document-properties-symbolic")
-            .title(&gettext("No task selected"))
-            .description(&gettext("Select a task from the list to view and edit its details, checklist, and notes."))
+            .title(gettext("No task selected"))
+            .description(gettext("Select a task from the list to view and edit its details, checklist, and notes."))
             .vexpand(true)
             .hexpand(true)
             .build();
@@ -5508,7 +5508,7 @@ impl TasksPage {
 
         let preview_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["background"])
+            .css_classes(["background"])
             .overflow(gtk::Overflow::Hidden)
             .visible(preview_visible)
             .build();
@@ -5864,7 +5864,7 @@ impl TasksPage {
                 return;
             };
             let file_dialog = gtk::FileDialog::builder()
-                .title(&gettext("Save Task Selection as iCalendar"))
+                .title(gettext("Save Task Selection as iCalendar"))
                 .initial_name("tasks.ics")
                 .modal(true)
                 .build();
@@ -6567,16 +6567,16 @@ impl TasksPage {
                     "view-sort-ascending-symbolic"
                 });
                 direction_button_for_settings.set_tooltip_text(Some(&if descending {
-                    crate::i18n::gettext("Sorted descending")
+                    gettext("Sorted descending")
                 } else {
-                    crate::i18n::gettext("Sorted ascending")
+                    gettext("Sorted ascending")
                 }));
                 set_accessible_label(
                     &direction_button_for_settings,
                     &if descending {
-                        crate::i18n::gettext("Change sort to ascending")
+                        gettext("Change sort to ascending")
                     } else {
-                        crate::i18n::gettext("Change sort to descending")
+                        gettext("Change sort to descending")
                     },
                 );
                 if let Some(page) = page_weak.upgrade() {
@@ -6798,7 +6798,7 @@ impl TasksPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
             .margin_bottom(2)
-            .css_classes(vec!["task-workspace-header"])
+            .css_classes(["task-workspace-header"])
             .build();
         let workspace_title_col = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -6807,14 +6807,14 @@ impl TasksPage {
             .valign(gtk::Align::Center)
             .build();
         let workspace_title_label = gtk::Label::builder()
-            .label(&gettext("All Tasks"))
+            .label(gettext("All Tasks"))
             .halign(gtk::Align::Start)
-            .css_classes(vec!["title-3", "task-workspace-title"])
+            .css_classes(["title-3", "task-workspace-title"])
             .build();
         let workspace_subtitle_label = gtk::Label::builder()
-            .label(&gettext("0 open tasks"))
+            .label(gettext("0 open tasks"))
             .halign(gtk::Align::Start)
-            .css_classes(vec!["dim-label", "caption", "task-workspace-subtitle"])
+            .css_classes(["dim-label", "caption", "task-workspace-subtitle"])
             .build();
         workspace_title_col.append(&workspace_title_label);
         workspace_title_col.append(&workspace_subtitle_label);
@@ -6831,8 +6831,8 @@ impl TasksPage {
             .valign(gtk::Align::Center)
             .build();
         let new_task_header_btn = gtk::Button::builder()
-            .css_classes(vec!["suggested-action", "task-workspace-new-btn"])
-            .tooltip_text(&gettext("Create new task with full options (Ctrl+N)"))
+            .css_classes(["suggested-action", "task-workspace-new-btn"])
+            .tooltip_text(gettext("Create new task with full options (Ctrl+N)"))
             .valign(gtk::Align::Center)
             .build();
         let new_task_btn_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -6851,25 +6851,25 @@ impl TasksPage {
         let quick_add_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .css_classes(vec!["task-quick-add-box"])
+            .css_classes(["task-quick-add-box"])
             .build();
         let quick_add_icon = gtk::Image::builder()
             .icon_name("list-add-symbolic")
             .pixel_size(16)
-            .css_classes(vec!["dim-label", "task-row-icon"])
+            .css_classes(["dim-label", "task-row-icon"])
             .valign(gtk::Align::Center)
             .build();
         let quick_add_entry = gtk::Entry::builder()
-            .placeholder_text(&crate::i18n::gettext("Add a task… (type @today, @tomorrow, !high, #Category or press Enter)"))
+            .placeholder_text(gettext("Add a task… (type @today, @tomorrow, !high, #Category or press Enter)"))
             .hexpand(true)
-            .css_classes(vec!["task-quick-add-entry"])
+            .css_classes(["task-quick-add-entry"])
             .build();
-        set_accessible_label(&quick_add_entry, &crate::i18n::gettext("Quickly add new task"));
+        set_accessible_label(&quick_add_entry, &gettext("Quickly add new task"));
 
         let quick_due_btn = gtk::Button::builder()
-            .label(&gettext("No Date"))
-            .tooltip_text(&gettext("Click to cycle due date preset (No Date → Today → Tomorrow → +7 Days)"))
-            .css_classes(vec!["flat", "task-quick-preset-pill"])
+            .label(gettext("No Date"))
+            .tooltip_text(gettext("Click to cycle due date preset (No Date → Today → Tomorrow → +7 Days)"))
+            .css_classes(["flat", "task-quick-preset-pill"])
             .valign(gtk::Align::Center)
             .build();
         {
@@ -6900,9 +6900,9 @@ impl TasksPage {
         }
 
         let quick_prio_btn = gtk::Button::builder()
-            .label(&gettext("Normal"))
-            .tooltip_text(&gettext("Click to cycle priority preset (Normal → High → Medium)"))
-            .css_classes(vec!["flat", "task-quick-preset-pill"])
+            .label(gettext("Normal"))
+            .tooltip_text(gettext("Click to cycle priority preset (Normal → High → Medium)"))
+            .css_classes(["flat", "task-quick-preset-pill"])
             .valign(gtk::Align::Center)
             .build();
         {
@@ -6936,9 +6936,9 @@ impl TasksPage {
         }
 
         let quick_submit_btn = gtk::Button::builder()
-            .label(&gettext("Add"))
-            .tooltip_text(&gettext("Add task (Enter)"))
-            .css_classes(vec!["flat", "task-quick-submit-btn"])
+            .label(gettext("Add"))
+            .tooltip_text(gettext("Add task (Enter)"))
+            .css_classes(["flat", "task-quick-submit-btn"])
             .valign(gtk::Align::Center)
             .build();
         {
@@ -7093,7 +7093,7 @@ impl TasksPage {
         let task_table_header = gtk::DrawingArea::builder()
             .content_height(28)
             .hexpand(true)
-            .css_classes(vec!["tasks-table-header"])
+            .css_classes(["tasks-table-header"])
             .build();
         set_accessible_label(&task_table_header, &gettext("Task table header"));
 
@@ -7103,7 +7103,7 @@ impl TasksPage {
             .focusable(true)
             .can_focus(true)
             .focus_on_click(true)
-            .css_classes(vec!["tasks-table-canvas"])
+            .css_classes(["tasks-table-canvas"])
             .build();
         set_accessible_role(&task_table_canvas, gtk::AccessibleRole::List);
         set_accessible_label(&task_table_canvas, &gettext("Tasks List"));
@@ -7355,9 +7355,9 @@ impl TasksPage {
                             let completed = task_is_completed(&row.task);
                             toggle_task_item_completion(&page, &row.task, !completed);
                             let feedback = if !completed {
-                                crate::i18n::gettext("Task marked as completed")
+                                gettext("Task marked as completed")
                             } else {
-                                crate::i18n::gettext("Task marked as incomplete")
+                                gettext("Task marked as incomplete")
                             };
                             crate::views::accessibility::announce_to_screen_reader(
                                 &canvas_for_task_swipe,
@@ -7372,7 +7372,7 @@ impl TasksPage {
                                     btn.emit_clicked();
                                     crate::views::accessibility::announce_to_screen_reader(
                                         &canvas_for_task_swipe,
-                                        &crate::i18n::gettext("Task deleted"),
+                                        &gettext("Task deleted"),
                                         gtk::AccessibleAnnouncementPriority::Medium,
                                     );
                                     gesture.set_state(gtk::EventSequenceState::Claimed);
@@ -7428,13 +7428,13 @@ impl TasksPage {
 
                 let announce_task = |task: &TaskItemObject| {
                     let status = if task.is_completed() {
-                        crate::i18n::gettext("Completed")
+                        gettext("Completed")
                     } else {
-                        crate::i18n::gettext("Not completed")
+                        gettext("Not completed")
                     };
                     let due = task.due_date();
                     let speech = if !due.is_empty() {
-                        format!("{}, {}, {}: {}", task.title(), status, crate::i18n::gettext("Due"), due)
+                        format!("{}, {}, {}: {}", task.title(), status, gettext("Due"), due)
                     } else {
                         format!("{}, {}", task.title(), status)
                     };
@@ -7577,8 +7577,8 @@ impl TasksPage {
 
         let empty_status_page = adw::StatusPage::builder()
             .icon_name("view-list-bullet-symbolic")
-            .title(&gettext("No Tasks"))
-            .description(&gettext("Select a task list or create a new task."))
+            .title(gettext("No Tasks"))
+            .description(gettext("Select a task list or create a new task."))
             .vexpand(true)
             .hexpand(true)
             .build();
@@ -7791,8 +7791,8 @@ impl TasksPage {
         let cancel_button = gtk::Button::with_label(&gettext("Cancel"));
         header_bar.pack_start(&cancel_button);
         let save_button = gtk::Button::builder()
-            .label(&gettext("Save"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         header_bar.pack_end(&save_button);
         toolbar_view.add_top_bar(&header_bar);
@@ -7809,7 +7809,7 @@ impl TasksPage {
         let source_model = gtk::StringList::new(&[&gettext("Loading task lists…")]);
         let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_row = adw::ComboRow::builder()
-            .title(&gettext("Task List"))
+            .title(gettext("Task List"))
             .model(&source_model)
             .build();
         source_row.set_sensitive(!editing);
@@ -7859,7 +7859,7 @@ impl TasksPage {
                 ] {
                     let q_btn = gtk::Button::builder()
                         .label(&label)
-                        .css_classes(vec!["flat"])
+                        .css_classes(["flat"])
                         .build();
                     let entry_weak = entry_row.downgrade();
                     let pop_weak = popover.downgrade();
@@ -7880,8 +7880,8 @@ impl TasksPage {
             }
             let cal = gtk::Calendar::new();
             let clear_btn = gtk::Button::builder()
-                .label(&gettext("Clear"))
-                .css_classes(vec!["flat"])
+                .label(gettext("Clear"))
+                .css_classes(["flat"])
                 .build();
             pop_box.append(&cal);
             pop_box.append(&clear_btn);
@@ -7889,8 +7889,8 @@ impl TasksPage {
 
             let btn = gtk::MenuButton::builder()
                 .icon_name("x-office-calendar-symbolic")
-                .tooltip_text(&gettext("Choose Date"))
-                .css_classes(vec!["flat", "circular"])
+                .tooltip_text(gettext("Choose Date"))
+                .css_classes(["flat", "circular"])
                 .valign(gtk::Align::Center)
                 .popover(&popover)
                 .build();
@@ -7984,12 +7984,12 @@ impl TasksPage {
 
         // Group 1: Primary Task Fields (Simple & Focused like GNOME Endeavour / Errands)
         let details = adw::PreferencesGroup::new();
-        let title_entry = adw::EntryRow::builder().title(&gettext("Title")).build();
+        let title_entry = adw::EntryRow::builder().title(gettext("Title")).build();
         details.add(&title_entry);
         details.add(&source_row);
 
         let due_entry = adw::EntryRow::builder()
-            .title(&gettext("Due Date"))
+            .title(gettext("Due Date"))
             .build();
         due_entry.set_tooltip_text(Some(&gettext(
             "New values are date-only. Imported date-time values remain unchanged unless edited.",
@@ -8001,7 +8001,7 @@ impl TasksPage {
         priority_spin.set_numeric(true);
         priority_spin.set_value(0.0);
         let priority_combo = adw::ComboRow::builder()
-            .title(&gettext("Priority"))
+            .title(gettext("Priority"))
             .model(&gtk::StringList::new(&[
                 &gettext("None"),
                 &gettext("High"),
@@ -8050,7 +8050,7 @@ impl TasksPage {
 
         // Group 2: Notes / Description
         let description_group = adw::PreferencesGroup::builder()
-            .title(&gettext("Description"))
+            .title(gettext("Description"))
             .build();
         let description_view = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
@@ -8059,7 +8059,7 @@ impl TasksPage {
             .right_margin(12)
             .top_margin(10)
             .bottom_margin(10)
-            .css_classes(vec!["task-description-view"])
+            .css_classes(["task-description-view"])
             .build();
         let description_row = gtk::ListBoxRow::builder()
             .activatable(false)
@@ -8073,18 +8073,18 @@ impl TasksPage {
         let advanced_group = adw::PreferencesGroup::new();
 
         let schedule_expander = adw::ExpanderRow::builder()
-            .title(&gettext("Status & Schedule"))
-            .subtitle(&gettext("Progress, start date, and completion date"))
+            .title(gettext("Status & Schedule"))
+            .subtitle(gettext("Progress, start date, and completion date"))
             .show_enable_switch(false)
             .build();
 
         let status_row = adw::ComboRow::builder()
-            .title(&crate::i18n::gettext("Status"))
+            .title(gettext("Status"))
             .model(&gtk::StringList::new(&[
-                &crate::i18n::gettext("Not Started"),
-                &crate::i18n::gettext("In Progress"),
-                &crate::i18n::gettext("Completed"),
-                &crate::i18n::gettext("Cancelled"),
+                &gettext("Not Started"),
+                &gettext("In Progress"),
+                &gettext("Completed"),
+                &gettext("Cancelled"),
             ]))
             .build();
         schedule_expander.add_row(&status_row);
@@ -8096,7 +8096,7 @@ impl TasksPage {
         schedule_expander.add_row(&percent_row);
 
         let dtstart_entry = adw::EntryRow::builder()
-            .title(&gettext("Start Date"))
+            .title(gettext("Start Date"))
             .build();
         dtstart_entry.set_tooltip_text(Some(&gettext(
             "New values are date-only. Imported date-time values remain unchanged unless edited.",
@@ -8105,7 +8105,7 @@ impl TasksPage {
         schedule_expander.add_row(&dtstart_entry);
 
         let completed_entry = adw::EntryRow::builder()
-            .title(&gettext("Completed Date"))
+            .title(gettext("Completed Date"))
             .build();
         completed_entry.set_tooltip_text(Some(&gettext(
             "A completion date is only permitted for Completed status and must not be in the future.",
@@ -8116,18 +8116,18 @@ impl TasksPage {
         advanced_group.add(&schedule_expander);
 
         let recurrence_expander = adw::ExpanderRow::builder()
-            .title(&gettext("Recurrence & Reminders"))
-            .subtitle(&gettext("Repeat rules and notifications"))
+            .title(gettext("Recurrence & Reminders"))
+            .subtitle(gettext("Repeat rules and notifications"))
             .show_enable_switch(false)
             .build();
 
         let recurrence_entry = adw::EntryRow::builder()
-            .title(&gettext("Recurrence Rule (RRULE)"))
+            .title(gettext("Recurrence Rule (RRULE)"))
             .build();
         recurrence_entry.set_tooltip_text(Some(&gettext("e.g. FREQ=WEEKLY;BYDAY=MO;COUNT=10")));
 
         let recurrence_preset_row = adw::ComboRow::builder()
-            .title(&gettext("Repeat"))
+            .title(gettext("Repeat"))
             .model(&gtk::StringList::new(&[
                 &gettext("Does not repeat"),
                 &gettext("Daily"),
@@ -8142,14 +8142,14 @@ impl TasksPage {
         recurrence_expander.add_row(&recurrence_entry);
 
         let rdate_entry = adw::EntryRow::builder()
-            .title(&gettext("Additional Due Dates (RDATE)"))
+            .title(gettext("Additional Due Dates (RDATE)"))
             .build();
         rdate_entry.set_tooltip_text(Some(&gettext("e.g. 20260812,20260819")));
         rdate_entry.set_visible(false);
         recurrence_expander.add_row(&rdate_entry);
 
         let exdate_entry = adw::EntryRow::builder()
-            .title(&gettext("Exception Dates (EXDATE)"))
+            .title(gettext("Exception Dates (EXDATE)"))
             .build();
         exdate_entry.set_tooltip_text(Some(&gettext("e.g. 20260815,20260822")));
         exdate_entry.set_visible(false);
@@ -8243,13 +8243,13 @@ impl TasksPage {
         advanced_group.add(&recurrence_expander);
 
         let extras_expander = adw::ExpanderRow::builder()
-            .title(&gettext("Categories & Attachments"))
-            .subtitle(&gettext("Tags and linked files"))
+            .title(gettext("Categories & Attachments"))
+            .subtitle(gettext("Tags and linked files"))
             .show_enable_switch(false)
             .build();
 
         let categories_entry = adw::EntryRow::builder()
-            .title(&gettext("Categories (Comma-separated)"))
+            .title(gettext("Categories (Comma-separated)"))
             .build();
         extras_expander.add_row(&categories_entry);
 
@@ -8271,8 +8271,8 @@ impl TasksPage {
         attachment_scroll.set_child(Some(&attachment_view));
         let attachment_picker = gtk::Button::builder()
             .icon_name("mail-attachment-symbolic")
-            .tooltip_text(&gettext("Select files as task attachments"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Select files as task attachments"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&attachment_picker, &gettext("Select files as task attachments"));
@@ -8284,7 +8284,7 @@ impl TasksPage {
             .margin_top(6)
             .build();
         let attachment_title = gtk::Label::builder()
-            .label(&gettext("Attachments"))
+            .label(gettext("Attachments"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
@@ -8310,7 +8310,7 @@ impl TasksPage {
                 return;
             };
             let file_dialog = gtk::FileDialog::builder()
-                .title(&gettext("Select Task Attachments"))
+                .title(gettext("Select Task Attachments"))
                 .modal(true)
                 .build();
             let attachment_buffer_for_result = attachment_buffer_for_picker.clone();
@@ -8417,7 +8417,7 @@ impl TasksPage {
                 .label(&msg)
                 .wrap(true)
                 .halign(gtk::Align::Start)
-                .css_classes(vec!["warning", "dim-label"])
+                .css_classes(["warning", "dim-label"])
                 .build();
             details.add(&imported_label);
             status_row.set_tooltip_text(Some(&gettext(
@@ -9305,7 +9305,7 @@ pub(crate) fn prepare_task_table_layout(
         let completed = task_is_completed(task);
         let raw_title = task.title();
         let title = if raw_title.trim().is_empty() {
-            crate::i18n::gettext("(No Subject)")
+            gettext("(No Subject)")
         } else {
             raw_title
         };
@@ -9314,11 +9314,11 @@ pub(crate) fn prepare_task_table_layout(
         let parsed_due = task_due_date(&due_raw);
         let (due_display, is_overdue) = if let Some(due) = parsed_due {
             let text = if due == today {
-                crate::i18n::gettext("Today")
+                gettext("Today")
             } else if due == today + chrono::Duration::days(1) {
-                crate::i18n::gettext("Tomorrow")
+                gettext("Tomorrow")
             } else if due == today - chrono::Duration::days(1) {
-                crate::i18n::gettext("Yesterday")
+                gettext("Yesterday")
             } else {
                 due.format("%d.%m.%Y").to_string()
             };
@@ -9495,10 +9495,10 @@ fn draw_task_table_header(
     cr.line_to(width, height - 0.5);
     cr.stroke().ok();
 
-    let col_title_label = crate::i18n::gettext("Summary");
-    let col_status_label = crate::i18n::gettext("Status");
-    let col_due_label = crate::i18n::gettext("Due Date");
-    let col_cat_label = crate::i18n::gettext("Categories");
+    let col_title_label = gettext("Summary");
+    let col_status_label = gettext("Status");
+    let col_due_label = gettext("Due Date");
+    let col_cat_label = gettext("Categories");
     let columns = [
         (TaskTableColumn::Completed, 0.0, layout.col_check_w, "✓"),
         (TaskTableColumn::Priority, layout.col_check_w, layout.col_prio_w, "!"),
@@ -10169,7 +10169,16 @@ fn render_task_rows(
         let Some(task) = task_store.item(index).and_downcast::<TaskItemObject>() else {
             continue;
         };
-        if hidden_sources.contains(&task.source_uid()) {
+        let task_source_uid = task.source_uid();
+        if !task_source_uid.is_empty()
+            && !crate::services::eds_service::is_source_enabled_for_service(
+                &task_source_uid,
+                crate::services::eds_service::EdsSourceKind::Calendar,
+            )
+        {
+            continue;
+        }
+        if hidden_sources.contains(&task_source_uid) {
             continue;
         }
         if source_filter
@@ -11161,7 +11170,7 @@ fn append_task_workspace_section(
             .spacing(8)
             .margin_start(4)
             .margin_end(4)
-            .css_classes(vec!["task-group-header"])
+            .css_classes(["task-group-header"])
             .build();
         let mut title_classes = vec!["task-group-title"];
         if kind == "overdue" {
@@ -11190,7 +11199,7 @@ fn append_task_workspace_section(
 
     let card_list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
-        .css_classes(vec!["boxed-list", "task-workspace-card-list"])
+        .css_classes(["boxed-list", "task-workspace-card-list"])
         .build();
 
     for task in sec_tasks {
@@ -11289,7 +11298,7 @@ fn build_task_workspace_card_row(
             let done_steps = steps.iter().filter(|(d, _)| *d).count();
             let step_badge = gtk::Label::builder()
                 .label(&format!("{}/{}", done_steps, steps.len()))
-                .css_classes(vec!["task-step-progress-pill"])
+                .css_classes(["task-step-progress-pill"])
                 .build();
             sub_row.append(&step_badge);
         }
@@ -11299,7 +11308,7 @@ fn build_task_workspace_card_row(
                 .halign(gtk::Align::Start)
                 .hexpand(true)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
-                .css_classes(vec!["dim-label", "caption", "task-card-note-preview"])
+                .css_classes(["dim-label", "caption", "task-card-note-preview"])
                 .build();
             sub_row.append(&note_lbl);
         }
@@ -11323,7 +11332,7 @@ fn build_task_workspace_card_row(
         };
         let status_pill = gtk::Label::builder()
             .label(&status_text)
-            .css_classes(vec!["task-meta-pill", "task-meta-pill-progress"])
+            .css_classes(["task-meta-pill", "task-meta-pill-progress"])
             .build();
         right_pills.append(&status_pill);
     }
@@ -11333,7 +11342,7 @@ fn build_task_workspace_card_row(
     for cat in cats.iter().take(2) {
         let cat_pill = gtk::Label::builder()
             .label(cat)
-            .css_classes(vec!["task-meta-pill", "task-meta-pill-category"])
+            .css_classes(["task-meta-pill", "task-meta-pill-category"])
             .build();
         right_pills.append(&cat_pill);
     }
@@ -11707,8 +11716,8 @@ fn populate_task_live_inspector(
 
     let more_dialog_btn = gtk::Button::builder()
         .icon_name("document-properties-symbolic")
-        .tooltip_text(&gettext("Open full task dialog (Recurrence, Alarms, Attachments)"))
-        .css_classes(vec!["flat"])
+        .tooltip_text(gettext("Open full task dialog (Recurrence, Alarms, Attachments)"))
+        .css_classes(["flat"])
         .build();
     {
         let pw = page.downgrade();
@@ -11731,9 +11740,9 @@ fn populate_task_live_inspector(
 
     let delete_btn = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
-        .tooltip_text(&gettext("Delete task"))
+        .tooltip_text(gettext("Delete task"))
         .sensitive(writable)
-        .css_classes(vec!["flat", "destructive-action"])
+        .css_classes(["flat", "destructive-action"])
         .build();
     {
         let pw = page.downgrade();
@@ -11828,8 +11837,8 @@ fn populate_task_live_inspector(
     let task_overflow_btn = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
         .popover(&task_overflow_popover)
-        .tooltip_text(&gettext("More actions"))
-        .css_classes(vec!["flat", "circular"])
+        .tooltip_text(gettext("More actions"))
+        .css_classes(["flat", "circular"])
         .visible(false)
         .build();
     top_bar.append(&task_overflow_btn);
@@ -11887,14 +11896,14 @@ fn populate_task_live_inspector(
         .text(&task.title())
         .hexpand(true)
         .sensitive(writable)
-        .placeholder_text(&gettext("Task summary…"))
-        .css_classes(vec!["task-inspector-title-entry"])
+        .placeholder_text(gettext("Task summary…"))
+        .css_classes(["task-inspector-title-entry"])
         .build();
     let save_title_btn = gtk::Button::builder()
         .icon_name("object-select-symbolic")
-        .tooltip_text(&gettext("Save title (Enter)"))
+        .tooltip_text(gettext("Save title (Enter)"))
         .visible(false)
-        .css_classes(vec!["flat", "suggested-action"])
+        .css_classes(["flat", "suggested-action"])
         .build();
     {
         let save_btn = save_title_btn.clone();
@@ -11930,16 +11939,16 @@ fn populate_task_live_inspector(
 
     // 3. One-Click Workflow Properties Card
     let props_group = adw::PreferencesGroup::builder()
-        .title(&gettext("Workflow & Schedule"))
+        .title(gettext("Workflow & Schedule"))
         .build();
 
     // 3a. Status Segmented Row (Open | In Progress | Done)
     let status_row = adw::ActionRow::builder()
-        .title(&gettext("Status"))
+        .title(gettext("Status"))
         .build();
     let status_seg = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .css_classes(vec!["linked"])
+        .css_classes(["linked"])
         .valign(gtk::Align::Center)
         .build();
     let current_status_idx = if completed {
@@ -11987,11 +11996,11 @@ fn populate_task_live_inspector(
 
     // 3b. Priority Segmented Row (None | Low | Medium | High)
     let prio_row = adw::ActionRow::builder()
-        .title(&gettext("Priority"))
+        .title(gettext("Priority"))
         .build();
     let prio_seg = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .css_classes(vec!["linked"])
+        .css_classes(["linked"])
         .valign(gtk::Align::Center)
         .build();
     let current_prio_bucket = match draft.priority {
@@ -12030,7 +12039,7 @@ fn populate_task_live_inspector(
 
     // 3c. Quick Due Date Row
     let due_row = adw::ActionRow::builder()
-        .title(&gettext("Due Date"))
+        .title(gettext("Due Date"))
         .subtitle(&if draft.due.input.is_empty() {
             gettext("No due date")
         } else {
@@ -12052,7 +12061,7 @@ fn populate_task_live_inspector(
         let b = gtk::Button::builder()
             .label(&label)
             .sensitive(writable)
-            .css_classes(vec!["flat", "task-inspector-due-pill"])
+            .css_classes(["flat", "task-inspector-due-pill"])
             .build();
         let pw = page.downgrade();
         let t = task.clone();
@@ -12072,7 +12081,7 @@ fn populate_task_live_inspector(
 
     // 3d. Categories EntryRow
     let cat_row = adw::EntryRow::builder()
-        .title(&gettext("Categories (comma-separated)"))
+        .title(gettext("Categories (comma-separated)"))
         .text(&draft.categories)
         .sensitive(writable)
         .show_apply_button(true)
@@ -12093,7 +12102,7 @@ fn populate_task_live_inspector(
 
     // 4. Interactive Checklist / Subtasks Section
     let checklist_group = adw::PreferencesGroup::builder()
-        .title(&gettext("Checklist & Steps"))
+        .title(gettext("Checklist & Steps"))
         .description(&if steps.is_empty() {
             gettext("Break this task down into actionable steps")
         } else {
@@ -12129,10 +12138,10 @@ fn populate_task_live_inspector(
             .build();
         let del_step_btn = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text(&gettext("Remove step"))
+            .tooltip_text(gettext("Remove step"))
             .sensitive(writable)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["flat", "circular"])
+            .css_classes(["flat", "circular"])
             .build();
 
         {
@@ -12185,7 +12194,7 @@ fn populate_task_live_inspector(
     }
 
     let add_step_entry = adw::EntryRow::builder()
-        .title(&gettext("Add step… (Press Enter)"))
+        .title(gettext("Add step… (Press Enter)"))
         .sensitive(writable)
         .show_apply_button(true)
         .build();
@@ -12214,13 +12223,13 @@ fn populate_task_live_inspector(
 
     // 5. Notes Section
     let save_notes_btn = gtk::Button::builder()
-        .label(&gettext("Save Notes"))
+        .label(gettext("Save Notes"))
         .sensitive(false)
         .valign(gtk::Align::Center)
-        .css_classes(vec!["flat", "suggested-action"])
+        .css_classes(["flat", "suggested-action"])
         .build();
     let notes_group = adw::PreferencesGroup::builder()
-        .title(&gettext("Notes"))
+        .title(gettext("Notes"))
         .header_suffix(&save_notes_btn)
         .build();
     let notes_view = gtk::TextView::builder()
@@ -12231,7 +12240,7 @@ fn populate_task_live_inspector(
         .right_margin(12)
         .top_margin(10)
         .bottom_margin(10)
-        .css_classes(vec!["task-inspector-notes-view"])
+        .css_classes(["task-inspector-notes-view"])
         .build();
     notes_view.buffer().set_text(&clean_notes);
     {
@@ -13708,13 +13717,13 @@ fn task_status_label(raw: &str) -> String {
         .as_deref()
         .is_some_and(|status| normalize_task_status(status).is_err())
     {
-        return crate::i18n::gettext("Imported Status");
+        return gettext("Imported Status");
     }
     match task_status_value(raw) {
-        "IN-PROCESS" => crate::i18n::gettext("In Progress"),
-        "COMPLETED" => crate::i18n::gettext("Completed"),
-        "CANCELLED" => crate::i18n::gettext("Cancelled"),
-        _ => crate::i18n::gettext("Not Started"),
+        "IN-PROCESS" => gettext("In Progress"),
+        "COMPLETED" => gettext("Completed"),
+        "CANCELLED" => gettext("Cancelled"),
+        _ => gettext("Not Started"),
     }
 }
 
@@ -13836,37 +13845,37 @@ fn append_task_row(
         let is_tomorrow = parsed == context.today + chrono::Duration::days(1);
 
         let due_chip = if is_overdue {
-            format!("<span foreground=\"#e01b24\" weight=\"bold\">⚠️ {}: {due}</span>", crate::i18n::gettext("Overdue"))
+            format!("<span foreground=\"#e01b24\" weight=\"bold\">⚠️ {}: {due}</span>", gettext("Overdue"))
         } else if is_today {
-            format!("<span foreground=\"#e66100\" weight=\"bold\">📅 {}</span>", crate::i18n::gettext("Due Today"))
+            format!("<span foreground=\"#e66100\" weight=\"bold\">📅 {}</span>", gettext("Due Today"))
         } else if is_tomorrow {
-            format!("<span foreground=\"#3584e4\" weight=\"medium\">📅 {} ({due})</span>", crate::i18n::gettext("Tomorrow"))
+            format!("<span foreground=\"#3584e4\" weight=\"medium\">📅 {} ({due})</span>", gettext("Tomorrow"))
         } else {
-            format!("<span alpha=\"80%\">📅 {}: {due}</span>", crate::i18n::gettext("Due"))
+            format!("<span alpha=\"80%\">📅 {}: {due}</span>", gettext("Due"))
         };
         subtitle_parts.push(due_chip);
 
         if let Some(next) = recurrence_due && Some(next) != parsed_due {
-            subtitle_parts.push(format!("<span alpha=\"70%\">🔁 {}: {}</span>", crate::i18n::gettext("Next"), next.format("%Y-%m-%d")));
+            subtitle_parts.push(format!("<span alpha=\"70%\">🔁 {}: {}</span>", gettext("Next"), next.format("%Y-%m-%d")));
         }
     } else if let Some(next) = recurrence_due {
-        subtitle_parts.push(format!("<span alpha=\"80%\">🔁 {}: {}</span>", crate::i18n::gettext("Due Date"), next.format("%Y-%m-%d")));
+        subtitle_parts.push(format!("<span alpha=\"80%\">🔁 {}: {}</span>", gettext("Due Date"), next.format("%Y-%m-%d")));
     }
 
     // 2. Priority indicator
     let prio_num = task.priority().parse::<u32>().ok();
     if let Some(p) = prio_num {
         if (1..=4).contains(&p) {
-            subtitle_parts.push(format!("<span foreground=\"#e01b24\" weight=\"bold\">❗ {}</span>", crate::i18n::gettext("High Priority")));
+            subtitle_parts.push(format!("<span foreground=\"#e01b24\" weight=\"bold\">❗ {}</span>", gettext("High Priority")));
         } else if (6..=9).contains(&p) {
-            subtitle_parts.push(format!("<span alpha=\"60%\">⚪ {}</span>", crate::i18n::gettext("Low Priority")));
+            subtitle_parts.push(format!("<span alpha=\"60%\">⚪ {}</span>", gettext("Low Priority")));
         }
     }
 
     // 3. Status indicator
     match task_status_value(&task.component()) {
-        "IN-PROCESS" => subtitle_parts.push(format!("<span foreground=\"#3584e4\" weight=\"medium\">⏳ {}</span>", crate::i18n::gettext("In Progress"))),
-        "CANCELLED" => subtitle_parts.push(format!("<span alpha=\"55%\">⛔ {}</span>", crate::i18n::gettext("Cancelled"))),
+        "IN-PROCESS" => subtitle_parts.push(format!("<span foreground=\"#3584e4\" weight=\"medium\">⏳ {}</span>", gettext("In Progress"))),
+        "CANCELLED" => subtitle_parts.push(format!("<span alpha=\"55%\">⛔ {}</span>", gettext("Cancelled"))),
         _ => {},
     }
 
@@ -13883,9 +13892,9 @@ fn append_task_row(
 
     let subtitle = if subtitle_parts.is_empty() {
         if completed {
-            format!("<span foreground=\"#26a269\">✓ {}</span>", crate::i18n::gettext("Completed"))
+            format!("<span foreground=\"#26a269\">✓ {}</span>", gettext("Completed"))
         } else {
-            format!("<span alpha=\"50%\">{}</span>", crate::i18n::gettext("No due date"))
+            format!("<span alpha=\"50%\">{}</span>", gettext("No due date"))
         }
     } else {
         subtitle_parts.join(" · ")
@@ -14043,7 +14052,7 @@ fn append_task_row(
         .icon_name("view-list-bullet-symbolic")
         .pixel_size(16)
         .valign(gtk::Align::Center)
-        .css_classes(vec!["task-row-icon"])
+        .css_classes(["task-row-icon"])
         .build();
     row.add_prefix(&task_icon);
     row.add_prefix(&check);
@@ -14058,7 +14067,7 @@ fn append_task_row(
     let quick_edit_button = gtk::Button::builder()
         .icon_name("view-more-symbolic")
         .tooltip_text(&quick_edit_label)
-        .css_classes(vec!["flat", "circular", "task-row-btn"])
+        .css_classes(["flat", "circular", "task-row-btn"])
         .valign(gtk::Align::Center)
         .sensitive(task_source_is_writable_on_page(page, &task.source_uid()))
         .build();
@@ -14077,7 +14086,7 @@ fn append_task_row(
     let edit_button = gtk::Button::builder()
         .icon_name("document-edit-symbolic")
         .tooltip_text(&edit_label)
-        .css_classes(vec!["flat", "circular", "task-row-btn"])
+        .css_classes(["flat", "circular", "task-row-btn"])
         .valign(gtk::Align::Center)
         .build();
     set_accessible_label(&edit_button, &edit_label);
@@ -14112,7 +14121,7 @@ fn append_task_row(
     let export_button = gtk::Button::builder()
         .icon_name("document-save-symbolic")
         .tooltip_text(&export_label)
-        .css_classes(vec!["flat", "circular", "task-row-btn"])
+        .css_classes(["flat", "circular", "task-row-btn"])
         .valign(gtk::Align::Center)
         .build();
     set_accessible_label(&export_button, &export_label);
@@ -14133,7 +14142,7 @@ fn append_task_row(
             return;
         };
         let file_dialog = gtk::FileDialog::builder()
-            .title(&gettext("Save Task as iCalendar"))
+            .title(gettext("Save Task as iCalendar"))
             .initial_name("task.ics")
             .modal(true)
             .build();
@@ -14169,7 +14178,7 @@ fn append_task_row(
     let delete_button = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .tooltip_text(&delete_label)
-        .css_classes(vec!["flat", "circular", "destructive-action", "task-row-btn"])
+        .css_classes(["flat", "circular", "destructive-action", "task-row-btn"])
         .valign(gtk::Align::Center)
         .build();
     set_accessible_label(&delete_button, &delete_label);
@@ -14467,6 +14476,13 @@ fn apply_task_sources(
     mut sources: Vec<ECalSourceCapability>,
     preferred_source_uid: Option<String>,
 ) {
+    sources.retain(|s| {
+        s.source_uid.is_empty()
+            || crate::services::eds_service::is_source_enabled_for_service(
+                &s.source_uid,
+                crate::services::eds_service::EdsSourceKind::Calendar,
+            )
+    });
     let mut source_parents: Vec<String> = sources
         .iter()
         .map(|s| {
@@ -15026,7 +15042,7 @@ fn present_task_assignment_dialog(
     let draft = task_assignment_draft(&component);
     let organizer_entry = gtk::Entry::builder()
         .text(&draft.organizer)
-        .placeholder_text(&gettext("organizer@example.org or full ORGANIZER line"))
+        .placeholder_text(gettext("organizer@example.org or full ORGANIZER line"))
         .hexpand(true)
         .build();
     let attendee_view = gtk::TextView::builder()
@@ -15046,14 +15062,14 @@ fn present_task_assignment_dialog(
         .build();
     content.append(
         &gtk::Label::builder()
-            .label(&gettext("Organizer"))
+            .label(gettext("Organizer"))
             .halign(gtk::Align::Start)
             .build(),
     );
     content.append(&organizer_entry);
     content.append(
         &gtk::Label::builder()
-            .label(&gettext("Attendees (one email or full ATTENDEE line per line)"))
+            .label(gettext("Attendees (one email or full ATTENDEE line per line)"))
             .wrap(true)
             .halign(gtk::Align::Start)
             .build(),
@@ -15061,10 +15077,10 @@ fn present_task_assignment_dialog(
     content.append(&attendee_scroll);
     content.append(
         &gtk::Label::builder()
-            .label(&gettext("Assignment data will be saved. Sending iTIP notifications requires the native Linux/EDS runtime."))
+            .label(gettext("Assignment data will be saved. Sending iTIP notifications requires the native Linux/EDS runtime."))
             .wrap(true)
             .xalign(0.0)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build(),
     );
     let dialog = adw::AlertDialog::new(Some(&gettext("Assign Task")), None);
@@ -15229,12 +15245,12 @@ fn present_new_local_task_source(page: &TasksPage, button: &gtk::Button) {
         return;
     }
     let name_entry = gtk::Entry::builder()
-        .placeholder_text(&gettext("Task list name"))
+        .placeholder_text(gettext("Task list name"))
         .activates_default(true)
         .hexpand(true)
         .build();
     let color_dialog = gtk::ColorDialog::builder()
-        .title(&gettext("Task List Color"))
+        .title(gettext("Task List Color"))
         .build();
     let color_button = gtk::ColorDialogButton::new(Some(color_dialog));
     if let Ok(color) = gtk::gdk::RGBA::parse("#62a0ea") {
@@ -15248,14 +15264,14 @@ fn present_new_local_task_source(page: &TasksPage, button: &gtk::Button) {
         .build();
     content.append(
         &gtk::Label::builder()
-            .label(&gettext("Name"))
+            .label(gettext("Name"))
             .halign(gtk::Align::Start)
             .build(),
     );
     content.append(&name_entry);
     content.append(
         &gtk::Label::builder()
-            .label(&gettext("Color"))
+            .label(gettext("Color"))
             .halign(gtk::Align::Start)
             .build(),
     );
@@ -15431,12 +15447,12 @@ fn present_loaded_task_source_properties(
 ) {
     let name_entry = gtk::Entry::builder()
         .text(&properties.display_name)
-        .placeholder_text(&gettext("Task list name"))
+        .placeholder_text(gettext("Task list name"))
         .activates_default(true)
         .hexpand(true)
         .build();
     let color_dialog = gtk::ColorDialog::builder()
-        .title(&gettext("Task List Color"))
+        .title(gettext("Task List Color"))
         .build();
     let color_button = gtk::ColorDialogButton::new(Some(color_dialog));
     if let Ok(color) = gtk::gdk::RGBA::parse(&properties.color) {
@@ -15444,7 +15460,7 @@ fn present_loaded_task_source_properties(
     }
     let email_entry = gtk::Entry::builder()
         .text(&properties.email_address)
-        .placeholder_text(&gettext("Email address (optional)"))
+        .placeholder_text(gettext("Email address (optional)"))
         .hexpand(true)
         .build();
     let default_was_selected = AppSettings::try_new()
@@ -15465,7 +15481,7 @@ fn present_loaded_task_source_properties(
         .halign(gtk::Align::Start)
         .build();
     let choose_file_button = gtk::Button::builder()
-        .label(&gettext("Choose File…"))
+        .label(gettext("Choose File…"))
         .sensitive(!properties.is_builtin && properties.custom_file_uri.is_some())
         .build();
     let file_row = gtk::Box::builder()
@@ -15481,10 +15497,10 @@ fn present_loaded_task_source_properties(
     custom_writable_check
         .set_visible(!properties.is_builtin && properties.custom_file_uri.is_some());
     let builtin_hint = gtk::Label::builder()
-        .label(&gettext("The built-in task list cannot use an external iCalendar file."))
+        .label(gettext("The built-in task list cannot use an external iCalendar file."))
         .wrap(true)
         .xalign(0.0)
-        .css_classes(vec!["dim-label"])
+        .css_classes(["dim-label"])
         .visible(properties.is_builtin)
         .build();
 
@@ -15561,7 +15577,7 @@ fn present_loaded_task_source_properties(
             return;
         };
         let file_dialog = gtk::FileDialog::builder()
-            .title(&gettext("Select iCalendar File"))
+            .title(gettext("Select iCalendar File"))
             .modal(true)
             .build();
         let file_label = file_label_for_choose.clone();
@@ -15686,7 +15702,7 @@ fn present_task_source_rename(page: &TasksPage, button: &gtk::Button) {
         .build();
     content.append(
         &gtk::Label::builder()
-            .label(&gettext("New Name"))
+            .label(gettext("New Name"))
             .halign(gtk::Align::Start)
             .build(),
     );
@@ -15826,7 +15842,7 @@ fn present_task_source_copy(page: &TasksPage, button: &gtk::Button) {
         .build();
     content.append(
         &gtk::Label::builder()
-            .label(&gettext("Target Task List"))
+            .label(gettext("Target Task List"))
             .halign(gtk::Align::Start)
             .build(),
     );
@@ -16508,21 +16524,21 @@ fn connect_task_quick_editor(
         .width_request(320)
         .build();
     let heading = gtk::Label::builder()
-        .label(&crate::i18n::gettext("Quick Edit Task"))
+        .label(gettext("Quick Edit Task"))
         .halign(gtk::Align::Start)
-        .css_classes(vec!["heading"])
+        .css_classes(["heading"])
         .build();
     content.append(&heading);
 
     let status_model = gtk::StringList::new(&[
-        &crate::i18n::gettext("Not Started"),
-        &crate::i18n::gettext("In Progress"),
-        &crate::i18n::gettext("Completed"),
-        &crate::i18n::gettext("Cancelled"),
+        &gettext("Not Started"),
+        &gettext("In Progress"),
+        &gettext("Completed"),
+        &gettext("Cancelled"),
     ]);
     let status_selector = gtk::DropDown::new(Some(status_model), None::<&gtk::Expression>);
     status_selector.set_selected(task_status_index(&task.component()));
-    let status_row = adw::ActionRow::builder().title(&crate::i18n::gettext("Status")).build();
+    let status_row = adw::ActionRow::builder().title(gettext("Status")).build();
     status_row.add_suffix(&status_selector);
     content.append(&status_row);
 
@@ -16530,7 +16546,7 @@ fn connect_task_quick_editor(
     priority_spin.set_numeric(true);
     priority_spin.set_value(values.priority as f64);
     let priority_row = adw::ActionRow::builder()
-        .title(&gettext("Priority (0 = normal)"))
+        .title(gettext("Priority (0 = normal)"))
         .build();
     priority_row.add_suffix(&priority_spin);
     content.append(&priority_row);
@@ -16540,16 +16556,16 @@ fn connect_task_quick_editor(
         .placeholder_text("YYYY-MM-DD")
         .width_chars(10)
         .build();
-    let due_row = adw::ActionRow::builder().title(&gettext("Due")).build();
+    let due_row = adw::ActionRow::builder().title(gettext("Due")).build();
     due_row.add_suffix(&due_entry);
     content.append(&due_row);
 
     let categories_entry = gtk::Entry::builder()
         .text(&values.categories)
-        .placeholder_text(&gettext("e.g. Work, Personal"))
+        .placeholder_text(gettext("e.g. Work, Personal"))
         .width_chars(18)
         .build();
-    let categories_row = adw::ActionRow::builder().title(&gettext("Categories")).build();
+    let categories_row = adw::ActionRow::builder().title(gettext("Categories")).build();
     categories_row.add_suffix(&categories_entry);
     content.append(&categories_row);
 
@@ -20369,19 +20385,19 @@ mod tests {
     fn task_list_print_and_preview_have_distinct_honest_preparation_states() {
         assert_eq!(
             TaskListPrintAction::Print.preparing_label(),
-            crate::i18n::gettext("Preparing print list…")
+            gettext("Preparing print list…")
         );
         assert_eq!(
             TaskListPrintAction::Preview.preparing_label(),
-            crate::i18n::gettext("Preparing print preview…")
+            gettext("Preparing print preview…")
         );
         assert_eq!(
             TaskListPrintAction::Print.preparation_label(),
-            crate::i18n::gettext("Print document prepared")
+            gettext("Print document prepared")
         );
         assert_eq!(
             TaskListPrintAction::Preview.preparation_label(),
-            crate::i18n::gettext("Print preview prepared")
+            gettext("Print preview prepared")
         );
     }
 
@@ -20479,7 +20495,7 @@ mod tests {
         );
         assert_eq!(
             task_source_capability_label(&source),
-            format!("Team Tasks ({})", crate::i18n::gettext("read-only"))
+            format!("Team Tasks ({})", gettext("read-only"))
         );
 
         source.connected = false;
@@ -20490,7 +20506,7 @@ mod tests {
         );
         assert_eq!(
             task_source_capability_label(&source),
-            format!("Team Tasks ({})", crate::i18n::gettext("unavailable"))
+            format!("Team Tasks ({})", gettext("unavailable"))
         );
     }
 
@@ -20720,17 +20736,17 @@ mod tests {
         }];
         let document = task_preview_document(std::slice::from_ref(&identity), &candidates).unwrap();
         assert_eq!(document.identity, identity);
-        assert!(document.text.contains(&format!("{}\nPlan, review", crate::i18n::gettext("Summary"))));
-        assert!(document.text.contains(&format!("{}\nFREQ=WEEKLY", crate::i18n::gettext("Recurrence"))));
+        assert!(document.text.contains(&format!("{}\nPlan, review", gettext("Summary"))));
+        assert!(document.text.contains(&format!("{}\nFREQ=WEEKLY", gettext("Recurrence"))));
         assert!(
             document
                 .text
-                .contains(&format!("{}\n<img src=remote> safe text", crate::i18n::gettext("Description")))
+                .contains(&format!("{}\n<img src=remote> safe text", gettext("Description")))
         );
         assert!(
             document
                 .text
-                .contains(&format!("{}: https://example.test/attachment.pdf", crate::i18n::gettext("URI (not opened)")))
+                .contains(&format!("{}: https://example.test/attachment.pdf", gettext("URI (not opened)")))
         );
 
         let stale = TaskSelectionIdentity {
@@ -20881,7 +20897,7 @@ mod tests {
         assert_eq!(layout.rows.len(), 2);
         assert_eq!(layout.total_height, 64.0);
         assert_eq!(layout.rows[0].title, "Review pull requests");
-        assert_eq!(layout.rows[0].due_display, crate::i18n::gettext("Today"));
+        assert_eq!(layout.rows[0].due_display, gettext("Today"));
         assert!(!layout.rows[0].completed);
         assert_eq!(layout.rows[1].title, "Submit report");
         assert!(layout.rows[1].completed);

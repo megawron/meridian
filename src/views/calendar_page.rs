@@ -1,3 +1,4 @@
+use crate::i18n::pgettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // CalendarPage — Calendar view with Day/Week/Month navigation, event creation, and task management.
@@ -2435,7 +2436,7 @@ impl CalendarPage {
                 btn.set_child(Some(&gtk::Image::from_icon_name("appointment-soon-symbolic")));
             } else {
                 let label = gtk::Label::builder()
-                    .label(&crate::i18n::gettext("Free/Busy"))
+                    .label(gettext("Free/Busy"))
                     .valign(gtk::Align::Center)
                     .build();
                 btn.set_child(Some(&label));
@@ -2462,7 +2463,7 @@ impl CalendarPage {
                 today_btn.set_child(Some(&gtk::Image::from_icon_name(icon_name)));
             } else {
                 let label = gtk::Label::builder()
-                    .label(&crate::i18n::gettext("Today"))
+                    .label(gettext("Today"))
                     .valign(gtk::Align::Center)
                     .build();
                 today_btn.set_child(Some(&label));
@@ -2544,20 +2545,20 @@ impl CalendarPage {
                 .imp()
                 .calendar_list_projection_count
                 .get()
-                .map(|count| format!("{} ({count})", crate::i18n::gettext("All Events")))
-                .unwrap_or_else(|| crate::i18n::gettext("All Events")),
+                .map(|count| format!("{} ({count})", gettext("All Events")))
+                .unwrap_or_else(|| gettext("All Events")),
         }
     }
 
     pub(crate) fn current_view_title(&self) -> String {
         match *self.imp().current_view.borrow() {
-            CalendarView::Day => crate::i18n::gettext("Day"),
-            CalendarView::Week => crate::i18n::gettext("Week"),
-            CalendarView::WorkWeek => crate::i18n::gettext("Work Week"),
-            CalendarView::Month => crate::i18n::gettext("Month"),
-            CalendarView::Agenda => crate::i18n::gettext("Agenda"),
-            CalendarView::Year => crate::i18n::gettext("Year"),
-            CalendarView::List => crate::i18n::gettext("List"),
+            CalendarView::Day => gettext("Day"),
+            CalendarView::Week => gettext("Week"),
+            CalendarView::WorkWeek => gettext("Work Week"),
+            CalendarView::Month => gettext("Month"),
+            CalendarView::Agenda => gettext("Agenda"),
+            CalendarView::Year => gettext("Year"),
+            CalendarView::List => gettext("List"),
         }
     }
 
@@ -2982,15 +2983,15 @@ impl CalendarPage {
         }
 
         let opt_label = gtk::Label::builder()
-            .label(&gettext("Sidebar Layout"))
-            .css_classes(vec!["heading", "caption"])
+            .label(gettext("Sidebar Layout"))
+            .css_classes(["heading", "caption"])
             .halign(gtk::Align::Start)
             .build();
         opt_box.append(&opt_label);
 
         let hint_label = gtk::Label::builder()
-            .label(&gettext("Choose own section or tab per area (or drag headers)"))
-            .css_classes(vec!["dim-label", "caption"])
+            .label(gettext("Choose own section or tab per area (or drag headers)"))
+            .css_classes(["dim-label", "caption"])
             .halign(gtk::Align::Start)
             .margin_bottom(4)
             .build();
@@ -3009,14 +3010,14 @@ impl CalendarPage {
             let order_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(0)
-                .css_classes(vec!["linked"])
+                .css_classes(["linked"])
                 .valign(gtk::Align::Center)
                 .build();
 
             let up_btn = gtk::Button::builder()
                 .icon_name("go-up-symbolic")
-                .tooltip_text(&gettext("Move up"))
-                .css_classes(vec!["flat"])
+                .tooltip_text(gettext("Move up"))
+                .css_classes(["flat"])
                 .sensitive(idx > 0)
                 .build();
             let page_weak_up = self.downgrade();
@@ -3029,8 +3030,8 @@ impl CalendarPage {
 
             let down_btn = gtk::Button::builder()
                 .icon_name("go-down-symbolic")
-                .tooltip_text(&gettext("Move down"))
-                .css_classes(vec!["flat"])
+                .tooltip_text(gettext("Move down"))
+                .css_classes(["flat"])
                 .sensitive(idx + 1 < total)
                 .build();
             let page_weak_down = self.downgrade();
@@ -3055,30 +3056,30 @@ impl CalendarPage {
             let mode_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .spacing(0)
-                .css_classes(vec!["linked", "sidebar-layout-mode-toggler"])
+                .css_classes(["linked", "sidebar-layout-mode-toggler"])
                 .valign(gtk::Align::Center)
                 .build();
 
             let btn_off = gtk::ToggleButton::builder()
-                .label(&gettext("Off"))
-                .tooltip_text(&gettext("Hide this panel"))
+                .label(gettext("Off"))
+                .tooltip_text(gettext("Hide this panel"))
                 .active(spec.mode == SidebarPanelMode::Off)
                 .build();
             let btn_split = gtk::ToggleButton::builder()
-                .label(&gettext("Section"))
-                .tooltip_text(&gettext("Show as its own resizable section"))
+                .label(gettext("Section"))
+                .tooltip_text(gettext("Show as its own resizable section"))
                 .group(&btn_off)
                 .active(spec.mode == SidebarPanelMode::Split)
                 .build();
             let btn_tab = gtk::ToggleButton::builder()
-                .label(&gettext("Tab"))
-                .tooltip_text(&gettext("Group together as tabs"))
+                .label(gettext("Tab"))
+                .tooltip_text(gettext("Group together as tabs"))
                 .group(&btn_off)
                 .active(spec.mode == SidebarPanelMode::Tab)
                 .build();
             let btn_win = gtk::ToggleButton::builder()
-                .label(&gettext("Window"))
-                .tooltip_text(&gettext("Detach into a standalone window"))
+                .label(gettext("Window"))
+                .tooltip_text(gettext("Detach into a standalone window"))
                 .group(&btn_off)
                 .active(spec.mode == SidebarPanelMode::Window)
                 .build();
@@ -3135,8 +3136,8 @@ impl CalendarPage {
         let is_auto = self.imp().sidebar_manual_bottom_h.get().is_none()
             && self.imp().sidebar_manual_inner_bottom_h.get().is_none();
         let auto_btn = gtk::Button::builder()
-            .css_classes(vec!["flat"])
-            .tooltip_text(&gettext(
+            .css_classes(["flat"])
+            .tooltip_text(gettext(
                 "Automatically fit section heights to their content (or double-click a divider line)",
             ))
             .build();
@@ -3145,10 +3146,10 @@ impl CalendarPage {
             .spacing(8)
             .build();
         let auto_lbl = gtk::Label::builder()
-            .label(&gettext("Auto-fit section heights"))
+            .label(gettext("Auto-fit section heights"))
             .xalign(0.0)
             .hexpand(true)
-            .css_classes(vec!["caption"])
+            .css_classes(["caption"])
             .build();
         let status_lbl = gtk::Label::builder()
             .label(&if is_auto {
@@ -3175,9 +3176,9 @@ impl CalendarPage {
         opt_box.append(&auto_btn);
 
         let hover_chk = gtk::CheckButton::builder()
-            .label(&gettext("Hover preview"))
+            .label(gettext("Hover preview"))
             .active(crate::views::mail_page::SIDEBAR_HOVER_PREVIEW_ENABLED.load(Ordering::Relaxed))
-            .tooltip_text(&gettext("Show preview popover when hovering agenda items, tasks, or memos"))
+            .tooltip_text(gettext("Show preview popover when hovering agenda items, tasks, or memos"))
             .margin_top(2)
             .build();
         let page_weak_hover = self.downgrade();
@@ -3374,7 +3375,7 @@ impl CalendarPage {
                 .child(&tab_lbl)
                 .tooltip_text(&tab_id.display_title())
                 .active(tab_id == active_tab)
-                .css_classes(vec!["flat"])
+                .css_classes(["flat"])
                 .build();
             if let Some(ref group_leader) = first_btn {
                 btn.set_group(Some(group_leader));
@@ -3521,15 +3522,15 @@ impl CalendarPage {
                     }
                     let title_lbl = gtk::Label::builder()
                         .label(&panel_id.display_title())
-                        .css_classes(vec!["title"])
+                        .css_classes(["title"])
                         .build();
                     header.set_title_widget(Some(&title_lbl));
 
                     if panel_id == SidebarPanelId::Tasks {
                         let add_btn = gtk::Button::builder()
                             .icon_name("list-add-symbolic")
-                            .tooltip_text(&gettext("Create new task"))
-                            .css_classes(vec!["flat"])
+                            .tooltip_text(gettext("Create new task"))
+                            .css_classes(["flat"])
                             .build();
                         let page_weak = self.downgrade();
                         add_btn.connect_clicked(move |_| {
@@ -3547,8 +3548,8 @@ impl CalendarPage {
                     } else if panel_id == SidebarPanelId::Memos {
                         let add_btn = gtk::Button::builder()
                             .icon_name("list-add-symbolic")
-                            .tooltip_text(&gettext("Create new memo"))
-                            .css_classes(vec!["flat"])
+                            .tooltip_text(gettext("Create new memo"))
+                            .css_classes(["flat"])
                             .build();
                         let page_weak = self.downgrade();
                         add_btn.connect_clicked(move |_| {
@@ -3852,17 +3853,17 @@ impl CalendarPage {
                 let icon = gtk::Image::builder()
                     .icon_name("window-new-symbolic")
                     .pixel_size(32)
-                    .css_classes(vec!["dim-label"])
+                    .css_classes(["dim-label"])
                     .build();
                 let lbl = gtk::Label::builder()
-                    .label(&gettext("All active panels are open in separate windows."))
+                    .label(gettext("All active panels are open in separate windows."))
                     .wrap(true)
                     .justify(gtk::Justification::Center)
-                    .css_classes(vec!["dim-label", "caption"])
+                    .css_classes(["dim-label", "caption"])
                     .build();
                 let dock_all_btn = gtk::Button::builder()
-                    .label(&gettext("Dock all into sidebar"))
-                    .css_classes(vec!["pill"])
+                    .label(gettext("Dock all into sidebar"))
+                    .css_classes(["pill"])
                     .halign(gtk::Align::Center)
                     .build();
                 let page_weak_dock_all = self.downgrade();
@@ -4433,12 +4434,12 @@ impl CalendarPage {
             icon.set_pixel_size(48);
             icon.add_css_class("dim-label");
             let title_lbl = gtk::Label::builder()
-                .label(&crate::i18n::gettext("No Appointment Selected"))
-                .css_classes(vec!["title-3"])
+                .label(gettext("No Appointment Selected"))
+                .css_classes(["title-3"])
                 .build();
             let desc_lbl = gtk::Label::builder()
-                .label(&crate::i18n::gettext("Select an appointment from the list to view its details"))
-                .css_classes(vec!["caption", "dim-label"])
+                .label(gettext("Select an appointment from the list to view its details"))
+                .css_classes(["caption", "dim-label"])
                 .wrap(true)
                 .build();
             status_box.append(&icon);
@@ -4489,12 +4490,12 @@ impl CalendarPage {
             icon.set_pixel_size(40);
             icon.add_css_class("dim-label");
             let title_lbl = gtk::Label::builder()
-                .label(&crate::i18n::gettext("No Appointment Selected"))
-                .css_classes(vec!["heading", "dim-label"])
+                .label(gettext("No Appointment Selected"))
+                .css_classes(["heading", "dim-label"])
                 .build();
             let desc_lbl = gtk::Label::builder()
-                .label(&crate::i18n::gettext("Select an appointment in the calendar to view its details"))
-                .css_classes(vec!["caption", "dim-label"])
+                .label(gettext("Select an appointment in the calendar to view its details"))
+                .css_classes(["caption", "dim-label"])
                 .wrap(true)
                 .justify(gtk::Justification::Center)
                 .build();
@@ -5098,17 +5099,17 @@ impl CalendarPage {
     pub fn print_visible_agenda(&self) {
         let events = self.loaded_calendar_events();
         if events.is_empty() {
-            show_toast_for_widget(self, &crate::i18n::gettext("No events available to print"));
+            show_toast_for_widget(self, &gettext("No events available to print"));
             return;
         }
         let view_name = match *self.imp().current_view.borrow() {
-            CalendarView::Day => crate::i18n::gettext("Day View"),
-            CalendarView::Week => crate::i18n::gettext("Week View"),
-            CalendarView::WorkWeek => crate::i18n::gettext("Work Week View"),
-            CalendarView::Month => crate::i18n::gettext("Month View"),
-            CalendarView::Agenda => crate::i18n::gettext("Agenda"),
-            CalendarView::Year => crate::i18n::gettext("Year Overview"),
-            CalendarView::List => crate::i18n::gettext("Event List"),
+            CalendarView::Day => gettext("Day View"),
+            CalendarView::Week => gettext("Week View"),
+            CalendarView::WorkWeek => gettext("Work Week View"),
+            CalendarView::Month => gettext("Month View"),
+            CalendarView::Agenda => gettext("Agenda"),
+            CalendarView::Year => gettext("Year Overview"),
+            CalendarView::List => gettext("Event List"),
         };
         match build_calendar_list_print_document(&events, Some(&view_name)) {
             Ok(doc) => {
@@ -5116,7 +5117,7 @@ impl CalendarPage {
                     self,
                     &format!(
                         "{}: {} ({} chars, {} events)",
-                        crate::i18n::gettext("Print document prepared"),
+                        gettext("Print document prepared"),
                         view_name,
                         doc.html.len(),
                         doc.event_count
@@ -5158,7 +5159,7 @@ impl CalendarPage {
         filters.append(&filter_rdf);
 
         let file_dialog = gtk::FileDialog::builder()
-            .title(&gettext("Export Calendar"))
+            .title(gettext("Export Calendar"))
             .filters(&filters)
             .default_filter(&filter_ics)
             .initial_name("calendar.ics")
@@ -6252,31 +6253,31 @@ impl CalendarPage {
 
     fn month_name(month: u32) -> String {
         match month {
-            1 => crate::i18n::gettext("January"),
-            2 => crate::i18n::gettext("February"),
-            3 => crate::i18n::gettext("March"),
-            4 => crate::i18n::gettext("April"),
-            5 => crate::i18n::gettext("May"),
-            6 => crate::i18n::gettext("June"),
-            7 => crate::i18n::gettext("July"),
-            8 => crate::i18n::gettext("August"),
-            9 => crate::i18n::gettext("September"),
-            10 => crate::i18n::gettext("October"),
-            11 => crate::i18n::gettext("November"),
-            12 => crate::i18n::gettext("December"),
-            _ => crate::i18n::gettext("August"),
+            1 => gettext("January"),
+            2 => gettext("February"),
+            3 => gettext("March"),
+            4 => gettext("April"),
+            5 => gettext("May"),
+            6 => gettext("June"),
+            7 => gettext("July"),
+            8 => gettext("August"),
+            9 => gettext("September"),
+            10 => gettext("October"),
+            11 => gettext("November"),
+            12 => gettext("December"),
+            _ => gettext("August"),
         }
     }
 
     fn calendar_grid_weekday_initial(weekday: Weekday) -> String {
         match weekday {
-            Weekday::Mon => crate::i18n::pgettext("grid monday", "M"),
-            Weekday::Tue => crate::i18n::pgettext("grid tuesday", "T"),
-            Weekday::Wed => crate::i18n::pgettext("grid wednesday", "W"),
-            Weekday::Thu => crate::i18n::pgettext("grid thursday", "T"),
-            Weekday::Fri => crate::i18n::pgettext("grid friday", "F"),
-            Weekday::Sat => crate::i18n::pgettext("grid saturday", "S"),
-            Weekday::Sun => crate::i18n::pgettext("grid sunday", "S"),
+            Weekday::Mon => pgettext("grid monday", "M"),
+            Weekday::Tue => pgettext("grid tuesday", "T"),
+            Weekday::Wed => pgettext("grid wednesday", "W"),
+            Weekday::Thu => pgettext("grid thursday", "T"),
+            Weekday::Fri => pgettext("grid friday", "F"),
+            Weekday::Sat => pgettext("grid saturday", "S"),
+            Weekday::Sun => pgettext("grid sunday", "S"),
         }
     }
 
@@ -6345,7 +6346,7 @@ impl CalendarPage {
         // Month selector
         let month_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["date-chooser-navigator"])
+            .css_classes(["date-chooser-navigator"])
             .hexpand(true)
             .halign(if is_popover {
                 gtk::Align::Center
@@ -6355,11 +6356,11 @@ impl CalendarPage {
             .build();
         let btn_prev_month = gtk::Button::builder()
             .icon_name("pan-start-symbolic")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .focus_on_click(false)
-            .tooltip_text(&crate::i18n::gettext("Previous month"))
+            .tooltip_text(gettext("Previous month"))
             .build();
-        set_accessible_label(&btn_prev_month, &crate::i18n::gettext("Previous month"));
+        set_accessible_label(&btn_prev_month, &gettext("Previous month"));
         let lbl_month = if is_popover {
             gtk::Label::builder()
                 .halign(gtk::Align::Center)
@@ -6376,11 +6377,11 @@ impl CalendarPage {
         };
         let btn_next_month = gtk::Button::builder()
             .icon_name("pan-end-symbolic")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .focus_on_click(false)
-            .tooltip_text(&crate::i18n::gettext("Next month"))
+            .tooltip_text(gettext("Next month"))
             .build();
-        set_accessible_label(&btn_next_month, &crate::i18n::gettext("Next month"));
+        set_accessible_label(&btn_next_month, &gettext("Next month"));
         month_box.append(&btn_prev_month);
         month_box.append(&lbl_month);
         month_box.append(&btn_next_month);
@@ -6388,7 +6389,7 @@ impl CalendarPage {
         // Year selector
         let year_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["date-chooser-navigator"])
+            .css_classes(["date-chooser-navigator"])
             .hexpand(true)
             .halign(if is_popover {
                 gtk::Align::Center
@@ -6398,11 +6399,11 @@ impl CalendarPage {
             .build();
         let btn_prev_year = gtk::Button::builder()
             .icon_name("pan-start-symbolic")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .focus_on_click(false)
-            .tooltip_text(&crate::i18n::gettext("Previous year"))
+            .tooltip_text(gettext("Previous year"))
             .build();
-        set_accessible_label(&btn_prev_year, &crate::i18n::gettext("Previous year"));
+        set_accessible_label(&btn_prev_year, &gettext("Previous year"));
         let lbl_year = if is_popover {
             gtk::Label::builder()
                 .halign(gtk::Align::Center)
@@ -6419,11 +6420,11 @@ impl CalendarPage {
         };
         let btn_next_year = gtk::Button::builder()
             .icon_name("pan-end-symbolic")
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .focus_on_click(false)
-            .tooltip_text(&crate::i18n::gettext("Next year"))
+            .tooltip_text(gettext("Next year"))
             .build();
-        set_accessible_label(&btn_next_year, &crate::i18n::gettext("Next year"));
+        set_accessible_label(&btn_next_year, &gettext("Next year"));
         year_box.append(&btn_prev_year);
         year_box.append(&lbl_year);
         year_box.append(&btn_next_year);
@@ -6456,7 +6457,7 @@ impl CalendarPage {
         let mut header_labels = Vec::with_capacity(7);
         for col_idx in 0..7 {
             let header_lbl = gtk::Label::builder()
-                .css_classes(vec!["calendar-popover-weekday-header", "weekday"])
+                .css_classes(["calendar-popover-weekday-header", "weekday"])
                 .halign(gtk::Align::Center)
                 .valign(gtk::Align::Center)
                 .hexpand(true)
@@ -6475,7 +6476,7 @@ impl CalendarPage {
             grid.set_row_baseline_position(grid_row, gtk::BaselinePosition::Center);
 
             let bg_bin = gtk::Box::builder()
-                .css_classes(vec!["date-chooser-current-week"])
+                .css_classes(["date-chooser-current-week"])
                 .halign(gtk::Align::Fill)
                 .hexpand(true)
                 .can_target(false)
@@ -6493,7 +6494,7 @@ impl CalendarPage {
                 .focus_on_click(false)
                 .halign(gtk::Align::Center)
                 .valign(gtk::Align::Center)
-                .css_classes(vec!["flat", "weeknum", "calendar-popover-week-badge"])
+                .css_classes(["flat", "weeknum", "calendar-popover-week-badge"])
                 .build();
             let week_date_cell = Rc::new(Cell::new(initial_date));
             let page_weak = self.downgrade();
@@ -6527,7 +6528,7 @@ impl CalendarPage {
                     .vexpand(true)
                     .build();
                 let dot_box = gtk::Box::builder()
-                    .css_classes(vec!["calendar-day-event-dot"])
+                    .css_classes(["calendar-day-event-dot"])
                     .halign(gtk::Align::Center)
                     .valign(gtk::Align::Center)
                     .width_request(3)
@@ -6543,7 +6544,7 @@ impl CalendarPage {
                     .hexpand(true)
                     .halign(gtk::Align::Fill)
                     .valign(gtk::Align::Center)
-                    .css_classes(vec!["flat", "day", "calendar-popover-day-btn"])
+                    .css_classes(["flat", "day", "calendar-popover-day-btn"])
                     .build();
                 let cell_date_cell = Rc::new(Cell::new(initial_date));
                 let last_gesture_click_time: Rc<Cell<Option<std::time::Instant>>> = Rc::new(Cell::new(None));
@@ -6922,7 +6923,7 @@ impl CalendarPage {
         let cached_guard = widget.cached_markers.borrow();
         let markers = cached_guard.as_ref().map(|(_, m)| m);
 
-        let week_word = crate::i18n::gettext("Week");
+        let week_word = gettext("Week");
         for (row_idx, week_info) in weeks.into_iter().enumerate() {
             if let Some(bg_bin) = widget.week_bg_bins.get(row_idx) {
                 bg_bin.set_visible(false);
@@ -7020,7 +7021,7 @@ impl CalendarPage {
     fn setup_date_switcher_popover(&self, target_btn: &gtk::MenuButton) {
         let popover = gtk::Popover::builder()
             .has_arrow(true)
-            .css_classes(vec!["calendar-date-chooser-popover"])
+            .css_classes(["calendar-date-chooser-popover"])
             .build();
 
         let chooser = self.create_date_chooser_widget(true, Some(popover.clone()));
@@ -7084,7 +7085,7 @@ impl CalendarPage {
             .margin_end(0)
             .margin_top(0)
             .margin_bottom(0)
-            .css_classes(vec!["calendar-sidebar"])
+            .css_classes(["calendar-sidebar"])
             .build();
 
         let mini_calendar_box = gtk::Box::builder()
@@ -7161,7 +7162,7 @@ impl CalendarPage {
         // Native pane border separator (matching gtk::Paned borders across Meridian)
         let minical_border = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["sidebar-minical-pane-border"])
+            .css_classes(["sidebar-minical-pane-border"])
             .halign(gtk::Align::Fill)
             .hexpand(true)
             .vexpand(false)
@@ -7345,7 +7346,7 @@ impl CalendarPage {
 
         let source_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["navigation-sidebar"])
+            .css_classes(["navigation-sidebar"])
             .build();
 
         sidebar_sources_box.append(&source_list);
@@ -7354,8 +7355,8 @@ impl CalendarPage {
             .replace(Some(source_list.clone()));
 
         let calendar_state = gtk::Label::builder()
-            .label(&gettext("Calendars will be shown after synchronization"))
-            .css_classes(vec!["dim-label"])
+            .label(gettext("Calendars will be shown after synchronization"))
+            .css_classes(["dim-label"])
             .wrap(false)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .halign(gtk::Align::Start)
@@ -7368,8 +7369,8 @@ impl CalendarPage {
             .replace(Some(calendar_state.clone()));
 
         let local_item_state = gtk::Label::builder()
-            .label(&gettext("No local .ics data loaded"))
-            .css_classes(vec!["dim-label"])
+            .label(gettext("No local .ics data loaded"))
+            .css_classes(["dim-label"])
             .wrap(false)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .halign(gtk::Align::Start)
@@ -7381,7 +7382,7 @@ impl CalendarPage {
 
         let event_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(["boxed-list"])
             .build();
         sidebar_sources_box.append(&event_list);
         let event_records = Rc::new(RefCell::new(Vec::<CalendarEventRecord>::new()));
@@ -7398,10 +7399,10 @@ impl CalendarPage {
             .memo_records
             .replace(Some(Rc::clone(&memo_records)));
 
-        let category_model = gtk::StringList::new(&[&crate::i18n::gettext("All Categories")]);
+        let category_model = gtk::StringList::new(&[&gettext("All Categories")]);
         let category_selector =
             gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
-        category_selector.set_tooltip_text(Some(&crate::i18n::gettext("Select event category")));
+        category_selector.set_tooltip_text(Some(&gettext("Select event category")));
         self.imp()
             .calendar_category_model
             .replace(Some(category_model.clone()));
@@ -7410,7 +7411,7 @@ impl CalendarPage {
             .replace(Some(category_selector.clone()));
 
         let calendar_search_entry = gtk::SearchEntry::builder()
-            .placeholder_text(&crate::i18n::gettext("Search events…"))
+            .placeholder_text(gettext("Search events…"))
             .hexpand(true)
             .width_chars(6)
             .build();
@@ -7549,11 +7550,11 @@ impl CalendarPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .visible(false)
-            .css_classes(vec!["sidebar-drawer-header"])
+            .css_classes(["sidebar-drawer-header"])
             .build();
         let drawer_icon = gtk::Image::from_icon_name("x-office-calendar-symbolic");
         let drawer_title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Calendar"))
+            .label(gettext("Calendar"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -7564,7 +7565,7 @@ impl CalendarPage {
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .vexpand(true)
-            .css_classes(vec!["meridian-sidebar-drawer"])
+            .css_classes(["meridian-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
         sidebar_outer_box.append(&sidebar_box);
@@ -7585,24 +7586,24 @@ impl CalendarPage {
 
         let prev_btn = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Previous period"))
+            .tooltip_text(gettext("Previous period"))
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&prev_btn, &crate::i18n::gettext("Show previous period"));
+        set_accessible_label(&prev_btn, &gettext("Show previous period"));
 
         let today_btn = gtk::Button::builder()
-            .label(&crate::i18n::gettext("Today"))
-            .tooltip_text(&crate::i18n::gettext("Switch to today"))
+            .label(gettext("Today"))
+            .tooltip_text(gettext("Switch to today"))
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&today_btn, &crate::i18n::gettext("Switch to today"));
+        set_accessible_label(&today_btn, &gettext("Switch to today"));
 
         let next_btn = gtk::Button::builder()
             .icon_name("go-next-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Next period"))
+            .tooltip_text(gettext("Next period"))
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&next_btn, &crate::i18n::gettext("Show next period"));
+        set_accessible_label(&next_btn, &gettext("Show next period"));
         self.imp()
             .calendar_prev_button
             .replace(Some(prev_btn.clone()));
@@ -7623,7 +7624,7 @@ impl CalendarPage {
         nav_box.append(&next_btn);
 
         let title_label = gtk::Label::builder()
-            .css_classes(vec!["calendar-month-date-label"])
+            .css_classes(["calendar-month-date-label"])
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .build();
@@ -7635,12 +7636,12 @@ impl CalendarPage {
             .replace(Some(title_label.clone()));
 
         let title_button = gtk::MenuButton::builder()
-            .css_classes(vec!["flat", "calendar-month-date-button"])
+            .css_classes(["flat", "calendar-month-date-button"])
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
-            .tooltip_text(&crate::i18n::gettext("Select date"))
+            .tooltip_text(gettext("Select date"))
             .build();
-        set_accessible_label(&title_button, &crate::i18n::gettext("Select date"));
+        set_accessible_label(&title_button, &gettext("Select date"));
         self.setup_date_switcher_popover(&title_button);
         self.imp()
             .toolbar_title_button
@@ -7662,11 +7663,11 @@ impl CalendarPage {
 
         let btn_availability = gtk::Button::builder()
             .icon_name("appointment-soon-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Show free/busy availability"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Show free/busy availability"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&btn_availability, &crate::i18n::gettext("Show free/busy"));
+        set_accessible_label(&btn_availability, &gettext("Show free/busy"));
         self.imp()
             .btn_availability
             .replace(Some(btn_availability.clone()));
@@ -7684,7 +7685,7 @@ impl CalendarPage {
         // View mode toggle
         let view_toggle = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .build();
 
@@ -7702,12 +7703,12 @@ impl CalendarPage {
             .borrow_mut()
             .set_view(initial_calendar_view, configured_first_weekday());
 
-        let str_day = crate::i18n::gettext("Day");
-        let str_week = crate::i18n::gettext("Week");
-        let str_workweek = crate::i18n::gettext("Work Week");
-        let str_month = crate::i18n::gettext("Month");
-        let str_agenda = crate::i18n::gettext("Agenda");
-        let str_year = crate::i18n::gettext("Year");
+        let str_day = gettext("Day");
+        let str_week = gettext("Week");
+        let str_workweek = gettext("Work Week");
+        let str_month = gettext("Month");
+        let str_agenda = gettext("Agenda");
+        let str_year = gettext("Year");
 
         let day_btn = gtk::ToggleButton::builder()
             .label(&str_day)
@@ -7758,7 +7759,7 @@ impl CalendarPage {
         let calendar_view_dropdown =
             gtk::DropDown::new(Some(dropdown_model), None::<&gtk::Expression>);
         calendar_view_dropdown.set_valign(gtk::Align::Center);
-        let str_select_view = crate::i18n::gettext("Select calendar view");
+        let str_select_view = gettext("Select calendar view");
         calendar_view_dropdown.set_tooltip_text(Some(&str_select_view));
         calendar_view_dropdown.set_selected(calendar_view_to_index(initial_calendar_view));
         calendar_view_dropdown.set_visible(false);
@@ -7790,9 +7791,9 @@ impl CalendarPage {
             .unwrap_or(true);
         let tag_vpane_toggle_btn = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text(&gettext("Toggle task and memo pane (Ctrl+M)"))
+            .tooltip_text(gettext("Toggle task and memo pane (Ctrl+M)"))
             .active(show_tag_vpane_initial)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&tag_vpane_toggle_btn, &gettext("Show or hide task and memo pane"));
@@ -7806,9 +7807,9 @@ impl CalendarPage {
         sidebar_outer_box.set_visible(sidebar_visible);
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
-            .tooltip_text(&gettext("Toggle sidebar (F9)"))
+            .tooltip_text(gettext("Toggle sidebar (F9)"))
             .active(sidebar_visible)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&sidebar_toggle, &gettext("Show or hide sidebar"));
@@ -7844,7 +7845,7 @@ impl CalendarPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
             .valign(gtk::Align::Center)
-            .css_classes(vec!["calendar-actions-group"])
+            .css_classes(["calendar-actions-group"])
             .build();
         actions_box.append(&btn_availability);
 
@@ -7874,7 +7875,7 @@ impl CalendarPage {
             .margin_top(0)
             .margin_bottom(0)
             .hexpand(true)
-            .css_classes(vec!["unified-view-toolbar", "toolbar", "calendar-toolbar"])
+            .css_classes(["unified-view-toolbar", "toolbar", "calendar-toolbar"])
             .build();
 
         let view_toolbar_scroll = gtk::ScrolledWindow::builder()
@@ -7952,10 +7953,10 @@ impl CalendarPage {
             .margin_end(0)
             .margin_top(0)
             .margin_bottom(0)
-            .css_classes(vec!["calendar-month-canvas"])
+            .css_classes(["calendar-month-canvas"])
             .build();
         set_accessible_role(&month_canvas, gtk::AccessibleRole::Grid);
-        set_accessible_label(&month_canvas, &crate::i18n::gettext("Month View Calendar"));
+        set_accessible_label(&month_canvas, &gettext("Month View Calendar"));
 
         self.imp().month_canvas.replace(Some(month_canvas.clone()));
 
@@ -8475,22 +8476,22 @@ impl CalendarPage {
             match hit {
                 MonthCanvasHit::Event { event, date, .. } => {
                     let time_str = if event.all_day {
-                        crate::i18n::gettext("All Day")
+                        gettext("All Day")
                     } else {
                         let (start_min, end_min, _) = event_occurrence_times_for_date(&event, date, 30);
                         format!("{}-{}", format_clock_minutes(start_min), format_clock_minutes(end_min))
                     };
                     let loc_str = if !event.location.is_empty() {
-                        format!("\n{}: {}", crate::i18n::gettext("Location"), event.location)
+                        format!("\n{}: {}", gettext("Location"), event.location)
                     } else {
                         String::new()
                     };
-                    let tip = format!("{}\n{}: {}{}\n{}: {}", event.summary, crate::i18n::gettext("Time"), time_str, loc_str, crate::i18n::gettext("Calendar"), event.source_display_name);
+                    let tip = format!("{}\n{}: {}{}\n{}: {}", event.summary, gettext("Time"), time_str, loc_str, gettext("Calendar"), event.source_display_name);
                     tooltip.set_text(Some(&tip));
                     true
                 }
                 MonthCanvasHit::Overflow { date } => {
-                    tooltip.set_text(Some(&format!("{} {}", crate::i18n::gettext("Show all events for"), date.format("%d.%m.%Y"))));
+                    tooltip.set_text(Some(&format!("{} {}", gettext("Show all events for"), date.format("%d.%m.%Y"))));
                     true
                 }
                 _ => false,
@@ -8576,7 +8577,7 @@ impl CalendarPage {
                 *page.imp().current_date.borrow_mut() = d;
                 if let Some(canvas) = page.imp().month_canvas.borrow().as_ref() {
                     let formatted_date = d.format("%A, %-d. %B %Y").to_string();
-                    let desc = format!("{}: {}", crate::i18n::gettext("Selected date"), formatted_date);
+                    let desc = format!("{}: {}", gettext("Selected date"), formatted_date);
                     set_accessible_description(canvas, &desc);
                     announce_to_screen_reader(canvas, &desc, gtk::AccessibleAnnouncementPriority::Medium);
                     canvas.queue_draw();
@@ -8773,7 +8774,7 @@ impl CalendarPage {
         ));
         month_canvas.add_controller(scroll_controller);
 
-        calendar_stack.add_titled(&month_container, Some("month"), &crate::i18n::gettext("Month"));
+        calendar_stack.add_titled(&month_container, Some("month"), &gettext("Month"));
 
         // 2. Day View
         let day_view = gtk::Box::builder()
@@ -8788,7 +8789,7 @@ impl CalendarPage {
             .build();
         self.attach_time_grid_zoom_controllers(&day_view);
         self.imp().day_view.replace(Some(day_view.clone()));
-        calendar_stack.add_titled(&day_view, Some("day"), &crate::i18n::gettext("Day"));
+        calendar_stack.add_titled(&day_view, Some("day"), &gettext("Day"));
 
         // 3. Week View
         let week_view = gtk::Box::builder()
@@ -8803,7 +8804,7 @@ impl CalendarPage {
             .build();
         self.attach_time_grid_zoom_controllers(&week_view);
         self.imp().week_view.replace(Some(week_view.clone()));
-        calendar_stack.add_titled(&week_view, Some("week"), &crate::i18n::gettext("Week"));
+        calendar_stack.add_titled(&week_view, Some("week"), &gettext("Week"));
 
         // 4. Workweek time grid
         let workweek_view = gtk::Box::builder()
@@ -8820,7 +8821,7 @@ impl CalendarPage {
         self.imp()
             .workweek_view
             .replace(Some(workweek_view.clone()));
-        calendar_stack.add_titled(&workweek_view, Some("workweek"), &crate::i18n::gettext("Work Week"));
+        calendar_stack.add_titled(&workweek_view, Some("workweek"), &gettext("Work Week"));
 
         // 5. Agenda View: high-performance Cairo canvas with date headers and event rows
         let agenda_view = gtk::Box::builder()
@@ -8836,7 +8837,7 @@ impl CalendarPage {
         self.imp().agenda_view.replace(Some(agenda_view.clone()));
 
         let agenda_title_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Upcoming Events"))
+            .label(gettext("Upcoming Events"))
             .visible(false)
             .build();
         agenda_view.append(&agenda_title_label);
@@ -8856,7 +8857,7 @@ impl CalendarPage {
             .vexpand(true)
             .focusable(true)
             .can_focus(true)
-            .css_classes(vec!["calendar-agenda-canvas"])
+            .css_classes(["calendar-agenda-canvas"])
             .build();
         self.imp().agenda_canvas.replace(Some(agenda_canvas.clone()));
 
@@ -8908,7 +8909,7 @@ impl CalendarPage {
 
         let agenda_detail_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["calendar-agenda-detail-pane"])
+            .css_classes(["calendar-agenda-detail-pane"])
             .hexpand(true)
             .vexpand(true)
             .build();
@@ -9000,7 +9001,7 @@ impl CalendarPage {
             canvas_for_adj.queue_draw();
         });
 
-        calendar_stack.add_titled(&agenda_view, Some("agenda"), &crate::i18n::gettext("Agenda"));
+        calendar_stack.add_titled(&agenda_view, Some("agenda"), &gettext("Agenda"));
 
         // Wire draw function
         let page_weak_draw = self.downgrade();
@@ -9390,7 +9391,7 @@ impl CalendarPage {
         let year_view_options_popover = gtk::Popover::builder()
             .has_arrow(true)
             .autohide(true)
-            .css_classes(vec!["view-options-popover"])
+            .css_classes(["view-options-popover"])
             .build();
 
         let year_view_pop_box = gtk::Box::builder()
@@ -9407,15 +9408,15 @@ impl CalendarPage {
             .spacing(6)
             .build();
         let year_mode_title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Year View Layout"))
-            .css_classes(vec!["caption-heading", "dim-label"])
+            .label(gettext("Year View Layout"))
+            .css_classes(["caption-heading", "dim-label"])
             .xalign(0.0)
             .build();
         year_mode_section.append(&year_mode_title);
 
         let year_mode_toggle_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .homogeneous(true)
             .build();
 
@@ -9428,7 +9429,7 @@ impl CalendarPage {
             .halign(gtk::Align::Center)
             .build();
         planner_btn_content.append(&gtk::Image::from_icon_name("view-list-symbolic"));
-        planner_btn_content.append(&gtk::Label::new(Some(&crate::i18n::gettext("Planner"))));
+        planner_btn_content.append(&gtk::Label::new(Some(&gettext("Planner"))));
         let year_planner_btn = gtk::ToggleButton::builder()
             .child(&planner_btn_content)
             .active(initial_year_style == YearViewStyle::Planner)
@@ -9440,7 +9441,7 @@ impl CalendarPage {
             .halign(gtk::Align::Center)
             .build();
         grid_btn_content.append(&gtk::Image::from_icon_name("view-grid-symbolic"));
-        grid_btn_content.append(&gtk::Label::new(Some(&crate::i18n::gettext("Grid"))));
+        grid_btn_content.append(&gtk::Label::new(Some(&gettext("Grid"))));
         let year_grid_btn = gtk::ToggleButton::builder()
             .child(&grid_btn_content)
             .group(&year_planner_btn)
@@ -9452,7 +9453,7 @@ impl CalendarPage {
             .halign(gtk::Align::Center)
             .build();
         multi_btn_content.append(&gtk::Image::from_icon_name("x-office-calendar-symbolic"));
-        multi_btn_content.append(&gtk::Label::new(Some(&crate::i18n::gettext("Multi-Year"))));
+        multi_btn_content.append(&gtk::Label::new(Some(&gettext("Multi-Year"))));
         let year_multi_btn = gtk::ToggleButton::builder()
             .child(&multi_btn_content)
             .group(&year_planner_btn)
@@ -9479,29 +9480,29 @@ impl CalendarPage {
             .year_grid_ind_section
             .replace(Some(ind_section.clone()));
         let ind_title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Grid Event Indicators"))
-            .css_classes(vec!["caption-heading", "dim-label"])
+            .label(gettext("Grid Event Indicators"))
+            .css_classes(["caption-heading", "dim-label"])
             .xalign(0.0)
             .build();
         ind_section.append(&ind_title);
 
         let ind_toggle_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .homogeneous(true)
             .build();
 
         let ind_single_btn = gtk::ToggleButton::builder()
-            .label(&crate::i18n::gettext("Single Dot"))
+            .label(gettext("Single Dot"))
             .active(initial_indicator_style == YearGridIndicatorStyle::SingleDot)
             .build();
         let ind_dots_btn = gtk::ToggleButton::builder()
-            .label(&crate::i18n::gettext("Multi Dot"))
+            .label(gettext("Multi Dot"))
             .group(&ind_single_btn)
             .active(initial_indicator_style == YearGridIndicatorStyle::ColoredDots)
             .build();
         let ind_heatmap_btn = gtk::ToggleButton::builder()
-            .label(&crate::i18n::gettext("Heatmap"))
+            .label(gettext("Heatmap"))
             .group(&ind_single_btn)
             .active(initial_indicator_style == YearGridIndicatorStyle::Heatmap)
             .build();
@@ -9513,8 +9514,8 @@ impl CalendarPage {
         year_view_pop_box.append(&ind_section);
 
         let zoom_hint = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Tip: Ctrl + Scroll zooms the view in and out"))
-            .css_classes(vec!["caption", "dim-label"])
+            .label(gettext("Tip: Ctrl + Scroll zooms the view in and out"))
+            .css_classes(["caption", "dim-label"])
             .xalign(0.0)
             .build();
         year_view_pop_box.append(&zoom_hint);
@@ -9526,7 +9527,7 @@ impl CalendarPage {
                 YearViewStyle::Planner => "view-list-symbolic",
                 YearViewStyle::Grid | YearViewStyle::MultiYear => "view-grid-symbolic",
             })
-            .tooltip_text(&crate::i18n::gettext("Switch Year View Style (Planner / Grid / Multi-Year)"))
+            .tooltip_text(gettext("Switch Year View Style (Planner / Grid / Multi-Year)"))
             .popover(&year_view_options_popover)
             .valign(gtk::Align::Center)
             .build();
@@ -9692,7 +9693,7 @@ impl CalendarPage {
             .vexpand(true)
             .can_focus(true)
             .focusable(true)
-            .css_classes(vec!["calendar-year-canvas"])
+            .css_classes(["calendar-year-canvas"])
             .build();
         self.imp().year_canvas.replace(Some(year_canvas.clone()));
 
@@ -9743,7 +9744,7 @@ impl CalendarPage {
             .wide_handle(false)
             .hexpand(true)
             .vexpand(true)
-            .css_classes(vec!["year-view-paned"])
+            .css_classes(["year-view-paned"])
             .build();
 
         year_paned.set_start_child(Some(&calendar_area));
@@ -10717,11 +10718,11 @@ impl CalendarPage {
                             .map(|s| s.event_count)
                             .sum();
                         let text = if total == 0 {
-                            format!("{}: {}", crate::i18n::gettext("Open year view for"), target_y)
+                            format!("{}: {}", gettext("Open year view for"), target_y)
                         } else if total == 1 {
-                            format!("{} · 1 {}", target_y, crate::i18n::gettext("event"))
+                            format!("{} · 1 {}", target_y, gettext("event"))
                         } else {
-                            format!("{} · {} {}", target_y, total, crate::i18n::gettext("events"))
+                            format!("{} · {} {}", target_y, total, gettext("events"))
                         };
                         tooltip.set_text(Some(&text));
                         true
@@ -10732,9 +10733,9 @@ impl CalendarPage {
                         if let Some(summary) = summaries.get(&(target_y, target_m)) {
                             if summary.event_count > 0 {
                                 let count_lbl = if summary.event_count == 1 {
-                                    format!("1 {}", crate::i18n::gettext("event"))
+                                    format!("1 {}", gettext("event"))
                                 } else {
-                                    format!("{} {}", summary.event_count, crate::i18n::gettext("events"))
+                                    format!("{} {}", summary.event_count, gettext("events"))
                                 };
                                 let root_box = gtk::Box::builder()
                                     .orientation(gtk::Orientation::Vertical)
@@ -10757,7 +10758,7 @@ impl CalendarPage {
                                     .build();
                                 let cnt_lbl = gtk::Label::builder()
                                     .label(&count_lbl)
-                                    .css_classes(vec!["dim-label", "caption"])
+                                    .css_classes(["dim-label", "caption"])
                                     .halign(gtk::Align::End)
                                     .build();
                                 hdr_box.append(&title_lbl);
@@ -10803,9 +10804,9 @@ impl CalendarPage {
                                         .label(&format!(
                                             "+{} {}",
                                             summary.event_count - shown_items.len(),
-                                            crate::i18n::gettext("more…")
+                                            gettext("more…")
                                         ))
-                                        .css_classes(vec!["dim-label", "caption"])
+                                        .css_classes(["dim-label", "caption"])
                                         .halign(gtk::Align::Start)
                                         .build();
                                     root_box.append(&more_lbl);
@@ -10817,13 +10818,13 @@ impl CalendarPage {
                         }
                         tooltip.set_text(Some(&format!(
                             "{}: {}",
-                            crate::i18n::gettext("Go to month view for"),
+                            gettext("Go to month view for"),
                             month_label
                         )));
                         true
                     }
                     YearCanvasHitTarget::MonthHeader(m) => {
-                        tooltip.set_text(Some(&format!("{}: {} {}", crate::i18n::gettext("Go to month view for"), Self::calendar_month_name(m), year)));
+                        tooltip.set_text(Some(&format!("{}: {} {}", gettext("Go to month view for"), Self::calendar_month_name(m), year)));
                         true
                     }
                     YearCanvasHitTarget::Day(date) => {
@@ -10835,9 +10836,9 @@ impl CalendarPage {
                         let text = if count == 0 {
                             format_date(date)
                         } else if count == 1 {
-                            format!("{} · 1 {}", format_date(date), crate::i18n::gettext("event"))
+                            format!("{} · 1 {}", format_date(date), gettext("event"))
                         } else {
-                            format!("{} · {} {}", format_date(date), count, crate::i18n::gettext("events"))
+                            format!("{} · {} {}", format_date(date), count, gettext("events"))
                         };
                         tooltip.set_text(Some(&text));
                         true
@@ -10856,7 +10857,7 @@ impl CalendarPage {
             }
         });
 
-        calendar_stack.add_titled(&year_view, Some("year"), &crate::i18n::gettext("Year"));
+        calendar_stack.add_titled(&year_view, Some("year"), &gettext("Year"));
 
         // 7. List View: permanent high-performance Cairo canvas with native ScrolledWindow
         let list_view = gtk::Box::builder()
@@ -10867,7 +10868,7 @@ impl CalendarPage {
         self.imp().list_view.replace(Some(list_view.clone()));
 
         let list_count_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("0 filtered events"))
+            .label(gettext("0 filtered events"))
             .visible(false)
             .build();
         list_view.append(&list_count_label);
@@ -10887,7 +10888,7 @@ impl CalendarPage {
             .vexpand(true)
             .focusable(true)
             .can_focus(true)
-            .css_classes(vec!["calendar-list-canvas"])
+            .css_classes(["calendar-list-canvas"])
             .build();
         self.imp().calendar_list_canvas.replace(Some(list_canvas.clone()));
 
@@ -11174,7 +11175,7 @@ impl CalendarPage {
             }
         });
 
-        calendar_stack.add_titled(&list_view, Some("list"), &crate::i18n::gettext("List"));
+        calendar_stack.add_titled(&list_view, Some("list"), &gettext("List"));
 
         calendar_stack.set_visible_child_name(match initial_calendar_view {
             CalendarView::Day => "day",
@@ -11372,7 +11373,7 @@ impl CalendarPage {
             .shrink_start_child(false)
             .shrink_end_child(false)
             .vexpand(true)
-            .css_classes(vec!["todo-sidebar"])
+            .css_classes(["todo-sidebar"])
             .build();
         let tag_inner_vpaned = gtk::Paned::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -11596,7 +11597,7 @@ impl CalendarPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["sidebar-section-header-slim"])
+            .css_classes(["sidebar-section-header-slim"])
             .build();
         self.imp()
             .taskpad_header
@@ -11604,8 +11605,8 @@ impl CalendarPage {
 
         let taskpad_collapse_btn = gtk::Button::builder()
             .icon_name("pan-down-symbolic")
-            .css_classes(vec!["flat", "circular"])
-            .tooltip_text(&gettext("Toggle section"))
+            .css_classes(["flat", "circular"])
+            .tooltip_text(gettext("Toggle section"))
             .valign(gtk::Align::Center)
             .build();
         self.imp()
@@ -11613,8 +11614,8 @@ impl CalendarPage {
             .replace(Some(taskpad_collapse_btn.clone()));
 
         let taskpad_title = gtk::Label::builder()
-            .label(&gettext("Tasks"))
-            .css_classes(vec!["heading"])
+            .label(gettext("Tasks"))
+            .css_classes(["heading"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .ellipsize(pango::EllipsizeMode::End)
@@ -11623,7 +11624,7 @@ impl CalendarPage {
         self.imp().taskpad_title.replace(Some(taskpad_title.clone()));
 
         let taskpad_count = gtk::Label::builder()
-            .css_classes(vec!["dim-label", "caption"])
+            .css_classes(["dim-label", "caption"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
@@ -11634,7 +11635,7 @@ impl CalendarPage {
         let taskpad_stack_switcher = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
@@ -11645,8 +11646,8 @@ impl CalendarPage {
         let taskpad_spacer = gtk::Box::builder().hexpand(true).build();
         let taskpad_add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new task"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new task"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         taskpad_add_btn.connect_clicked(move |btn| {
@@ -11662,8 +11663,8 @@ impl CalendarPage {
 
         let taskpad_memos_add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new memo"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new memo"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
@@ -11680,8 +11681,8 @@ impl CalendarPage {
 
         let sidebar_options_btn = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
-            .css_classes(vec!["flat", "circular"])
-            .tooltip_text(&gettext("Sidebar layout"))
+            .css_classes(["flat", "circular"])
+            .tooltip_text(gettext("Sidebar layout"))
             .valign(gtk::Align::Center)
             .build();
 
@@ -11737,7 +11738,7 @@ impl CalendarPage {
             .justify(gtk::Justification::Center)
             .margin_top(12)
             .margin_bottom(12)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         self.imp()
             .taskpad_state
@@ -11749,7 +11750,7 @@ impl CalendarPage {
             .focusable(true)
             .hexpand(true)
             .vexpand(true)
-            .css_classes(vec!["taskpad-canvas"])
+            .css_classes(["taskpad-canvas"])
             .build();
         self.imp().taskpad_canvas.replace(Some(taskpad_canvas.clone()));
 
@@ -12029,7 +12030,7 @@ impl CalendarPage {
             .margin_bottom(0)
             .vexpand(true)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["memos-sidebar-section"])
+            .css_classes(["memos-sidebar-section"])
             .build();
         memopad_section_box.set_overflow(gtk::Overflow::Hidden);
         self.imp()
@@ -12044,7 +12045,7 @@ impl CalendarPage {
             .margin_top(4)
             .margin_bottom(2)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec![
+            .css_classes([
                 "memos-section-header",
                 "sidebar-section-header-slim",
             ])
@@ -12055,8 +12056,8 @@ impl CalendarPage {
 
         let memopad_collapse_btn = gtk::Button::builder()
             .icon_name("pan-down-symbolic")
-            .css_classes(vec!["flat", "circular"])
-            .tooltip_text(&gettext("Toggle section"))
+            .css_classes(["flat", "circular"])
+            .tooltip_text(gettext("Toggle section"))
             .valign(gtk::Align::Center)
             .build();
         self.imp()
@@ -12064,15 +12065,15 @@ impl CalendarPage {
             .replace(Some(memopad_collapse_btn.clone()));
 
         let memopad_title = gtk::Label::builder()
-            .label(&gettext("Memos"))
-            .css_classes(vec!["heading"])
+            .label(gettext("Memos"))
+            .css_classes(["heading"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .ellipsize(pango::EllipsizeMode::End)
             .width_chars(1)
             .build();
         let memopad_count = gtk::Label::builder()
-            .css_classes(vec!["dim-label", "caption"])
+            .css_classes(["dim-label", "caption"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
@@ -12082,8 +12083,8 @@ impl CalendarPage {
         let memopad_spacer = gtk::Box::builder().hexpand(true).build();
         let memopad_add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new memo"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new memo"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         memopad_add_btn.connect_clicked(move |btn| {
@@ -12107,7 +12108,7 @@ impl CalendarPage {
             .margin_bottom(0)
             .vexpand(true)
             .hexpand(true)
-            .css_classes(vec!["memos-panel-scroll"])
+            .css_classes(["memos-panel-scroll"])
             .build();
         self.imp()
             .memopad_content_box
@@ -12118,7 +12119,7 @@ impl CalendarPage {
             .justify(gtk::Justification::Center)
             .margin_top(12)
             .margin_bottom(12)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         self.imp()
             .memopad_state
@@ -12131,7 +12132,7 @@ impl CalendarPage {
             .hexpand(true)
             .vexpand(true)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["memopad-canvas"])
+            .css_classes(["memopad-canvas"])
             .build();
         self.imp().memopad_canvas.replace(Some(memopad_canvas.clone()));
 
@@ -12435,7 +12436,7 @@ impl CalendarPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["sidebar-section-header-slim"])
+            .css_classes(["sidebar-section-header-slim"])
             .build();
         self.imp()
             .lower_header
@@ -12443,8 +12444,8 @@ impl CalendarPage {
 
         let inspector_collapse_btn = gtk::Button::builder()
             .icon_name("pan-down-symbolic")
-            .css_classes(vec!["flat", "circular"])
-            .tooltip_text(&gettext("Toggle section"))
+            .css_classes(["flat", "circular"])
+            .tooltip_text(gettext("Toggle section"))
             .valign(gtk::Align::Center)
             .build();
         self.imp()
@@ -12452,8 +12453,8 @@ impl CalendarPage {
             .replace(Some(inspector_collapse_btn.clone()));
 
         let sidebar_details_title = gtk::Label::builder()
-            .label(&gettext("Details"))
-            .css_classes(vec!["heading"])
+            .label(gettext("Details"))
+            .css_classes(["heading"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .ellipsize(pango::EllipsizeMode::End)
@@ -12467,7 +12468,7 @@ impl CalendarPage {
         let switcher_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .visible(initial_show_memos)
             .build();
@@ -12479,8 +12480,8 @@ impl CalendarPage {
 
         let sidebar_tasks_add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new task"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new task"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
@@ -12497,8 +12498,8 @@ impl CalendarPage {
 
         let sidebar_memos_add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("Create new memo"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("Create new memo"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .visible(false)
             .build();
@@ -12565,7 +12566,7 @@ impl CalendarPage {
             .vexpand(true)
             .hexpand(true)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["calendar-sidebar-scroll"])
+            .css_classes(["calendar-sidebar-scroll"])
             .child(&event_inspector_content)
             .build();
         self.imp()
@@ -13386,7 +13387,7 @@ impl CalendarPage {
                 .margin_start(0)
                 .margin_end(6)
                 .valign(gtk::Align::Center)
-                .css_classes(vec![
+                .css_classes([
                     "calendar-sidebar-row",
                     "calendar-sidebar-group-row",
                     "sidebar-account-row",
@@ -13410,7 +13411,7 @@ impl CalendarPage {
                 .halign(gtk::Align::Start)
                 .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
-                .css_classes(vec!["account-heading"])
+                .css_classes(["account-heading"])
                 .build();
             group_box.append(&group_label);
 
@@ -13418,7 +13419,7 @@ impl CalendarPage {
                 .child(&group_box)
                 .activatable(true)
                 .selectable(false)
-                .css_classes(vec![
+                .css_classes([
                     "calendar-sidebar-group-row",
                     "account-root-row",
                     "sidebar-account-row",
@@ -13463,7 +13464,7 @@ impl CalendarPage {
                     .spacing(6)
                     .margin_start(14)
                     .margin_end(6)
-                    .css_classes(vec!["calendar-sidebar-row", "calendar-sidebar-child-row"])
+                    .css_classes(["calendar-sidebar-row", "calendar-sidebar-child-row"])
                     .build();
 
                 // Checkbox styled in the calendar's color
@@ -13478,8 +13479,8 @@ impl CalendarPage {
                     .active(item.enabled && selector.is_selected(&source_uid))
                     .sensitive(item.enabled)
                     .valign(gtk::Align::Center)
-                    .tooltip_text(&gettext("Show or hide calendar in views"))
-                    .css_classes(vec![color_class.as_str()])
+                    .tooltip_text(gettext("Show or hide calendar in views"))
+                    .css_classes([color_class.as_str()])
                     .build();
 
                 self.imp()
@@ -13556,7 +13557,7 @@ impl CalendarPage {
                     .child(&child_box)
                     .activatable(true)
                     .selectable(true)
-                    .css_classes(vec!["calendar-sidebar-child-row"])
+                    .css_classes(["calendar-sidebar-child-row"])
                     .build();
 
                 let page_weak_for_menu = self.downgrade();
@@ -13631,7 +13632,14 @@ impl CalendarPage {
     }
 
     pub(crate) fn apply_calendar_sources(&self, mut sources: Vec<eds_service::EdsSource>) {
-        sources.retain(|s| s.enabled);
+        sources.retain(|s| {
+            s.enabled
+                && (s.uid.is_empty()
+                    || crate::services::eds_service::is_source_enabled_for_service(
+                        &s.uid,
+                        crate::services::eds_service::EdsSourceKind::Calendar,
+                    ))
+        });
         sources.sort_by_cached_key(|source| {
             (source.display_name.to_lowercase(), source.uid.clone())
         });
@@ -13678,7 +13686,7 @@ impl CalendarPage {
                 items.push(
                     crate::models::source_selector::SourceSelectorItem::new(
                         &cal_uid,
-                        &crate::i18n::gettext("Calendar"),
+                        &gettext("Calendar"),
                         "calendar",
                         true,
                         true,
@@ -13690,12 +13698,12 @@ impl CalendarPage {
         }
 
         if CalendarStoreService::new().is_writable() && !items.iter().any(|i| i.uid == "local-calendar") {
-            let color = calendar_source_color("local-calendar", &crate::i18n::gettext("Local Calendar"));
-            register_calendar_source_color("local-calendar", &crate::i18n::gettext("Local Calendar"), &color);
+            let color = calendar_source_color("local-calendar", &gettext("Local Calendar"));
+            register_calendar_source_color("local-calendar", &gettext("Local Calendar"), &color);
             items.push(
                 crate::models::source_selector::SourceSelectorItem::new(
                     "local-calendar",
-                    &crate::i18n::gettext("Local Calendar"),
+                    &gettext("Local Calendar"),
                     "local",
                     true,
                     true,
@@ -13705,32 +13713,148 @@ impl CalendarPage {
             );
         }
 
-        {
+        let (sources_changed, removed_uids, hidden_changed) = {
             let mut selector = self.imp().calendar_source_selector.borrow_mut();
+            let prev_uids: HashSet<String> = selector
+                .sources()
+                .iter()
+                .map(|s| s.uid.clone())
+                .collect();
+            let prev_hidden = self.imp().hidden_calendar_sources.borrow().clone();
             selector.update_sources(items);
             if let Some(settings) = AppSettings::try_new() {
                 selector.load_from_settings(&settings);
             }
-            *self.imp().hidden_calendar_sources.borrow_mut() =
-                selector.hidden_uids().into_iter().collect();
+            let new_hidden: HashSet<String> = selector.hidden_uids().into_iter().collect();
+            let hidden_changed = prev_hidden != new_hidden;
+            *self.imp().hidden_calendar_sources.borrow_mut() = new_hidden;
+            let new_uids: HashSet<String> = selector
+                .sources()
+                .iter()
+                .map(|s| s.uid.clone())
+                .collect();
+            let removed_uids: HashSet<String> = prev_uids.difference(&new_uids).cloned().collect();
+            (prev_uids != new_uids, removed_uids, hidden_changed)
+        };
+
+        let mut snapshot_pruned = false;
+        let is_source_allowed = |source_uid: &str| -> bool {
+            source_uid.is_empty()
+                || (!removed_uids.contains(source_uid)
+                    && crate::services::eds_service::is_source_enabled_for_service(
+                        source_uid,
+                        crate::services::eds_service::EdsSourceKind::Calendar,
+                    ))
+        };
+        let existing_index = self.imp().calendar_snapshot_index.borrow().clone();
+        if let Some(existing_index) = existing_index {
+            let has_disallowed = existing_index
+                .snapshot
+                .events
+                .iter()
+                .any(|ev| !is_source_allowed(&ev.source_uid))
+                || existing_index
+                    .snapshot
+                    .tasks
+                    .iter()
+                    .any(|t| !is_source_allowed(&t.source_uid))
+                || existing_index
+                    .snapshot
+                    .memos
+                    .iter()
+                    .any(|m| !is_source_allowed(&m.source_uid));
+            if has_disallowed {
+                let mut filtered_snapshot = (*existing_index.snapshot).clone();
+                filtered_snapshot
+                    .events
+                    .retain(|ev| is_source_allowed(&ev.source_uid));
+                filtered_snapshot
+                    .tasks
+                    .retain(|t| is_source_allowed(&t.source_uid));
+                filtered_snapshot
+                    .memos
+                    .retain(|m| is_source_allowed(&m.source_uid));
+                let rebuilt = Arc::new(CalendarSnapshotIndex::new(Arc::new(filtered_snapshot)));
+                self.imp()
+                    .calendar_snapshot_index
+                    .replace(Some(Arc::clone(&rebuilt)));
+                if let Some(event_records) = self.imp().event_records.borrow().as_ref() {
+                    *event_records.borrow_mut() = rebuilt.snapshot.events.clone();
+                }
+                if let Some(task_records) = self.imp().task_records.borrow().as_ref() {
+                    *task_records.borrow_mut() = rebuilt.snapshot.tasks.clone();
+                }
+                if let Some(memo_records) = self.imp().memo_records.borrow().as_ref() {
+                    *memo_records.borrow_mut() = rebuilt.snapshot.memos.clone();
+                }
+                snapshot_pruned = true;
+            }
+        } else {
+            if let Some(event_records) = self.imp().event_records.borrow().as_ref() {
+                let before = event_records.borrow().len();
+                event_records
+                    .borrow_mut()
+                    .retain(|ev| is_source_allowed(&ev.source_uid));
+                if event_records.borrow().len() != before {
+                    snapshot_pruned = true;
+                }
+            }
+            if let Some(task_records) = self.imp().task_records.borrow().as_ref() {
+                let before = task_records.borrow().len();
+                task_records
+                    .borrow_mut()
+                    .retain(|t| is_source_allowed(&t.source_uid));
+                if task_records.borrow().len() != before {
+                    snapshot_pruned = true;
+                }
+            }
+            if let Some(memo_records) = self.imp().memo_records.borrow().as_ref() {
+                let before = memo_records.borrow().len();
+                memo_records
+                    .borrow_mut()
+                    .retain(|m| is_source_allowed(&m.source_uid));
+                if memo_records.borrow().len() != before {
+                    snapshot_pruned = true;
+                }
+            }
+        }
+
+        if sources_changed || hidden_changed || snapshot_pruned {
+            self.bump_calendar_revision();
+            self.imp().year_projection_cache.borrow_mut().clear();
+            self.imp().multi_year_summaries.borrow_mut().clear();
+            self.imp().multi_year_loaded_years.borrow_mut().clear();
+            self.imp().multi_year_rendered_key.replace(None);
+            self.imp().month_rendered_key.replace(None);
+            self.imp().agenda_rendered_key.replace(None);
+            self.imp().year_rendered_key.replace(None);
+            self.imp().calendar_list_rendered_key.replace(None);
+            self.imp().mini_calendar_last_key.replace(None);
         }
 
         if self.imp().calendar_load_error.borrow().is_some()
             || self.imp().calendar_snapshot_index.borrow().is_none()
+            || sources_changed
+            || snapshot_pruned
         {
             self.start_calendar_snapshot_load();
         }
 
         self.render_calendar_sidebar();
+        self.refresh_task_sidebar();
+        self.refresh_calendar_category_model();
         self.refresh_calendar_views();
         self.refresh_event_list_visibility();
         self.refresh_task_and_memo_panes();
     }
 
     pub(crate) fn reload_calendar_sources(&self) {
-        if self.imp().calendar_source_selector.borrow().sources().is_empty() {
-            let cached_sources = crate::services::eds_source_cache_service::EdsSourceCache::new()
-                .load(crate::services::eds_service::EdsSourceKind::Calendar);
+        let cached_sources = crate::services::eds_service::load_cached_sources_fast(
+            crate::services::eds_service::EdsSourceKind::Calendar,
+        );
+        if !cached_sources.is_empty()
+            || self.imp().calendar_source_selector.borrow().sources().is_empty()
+        {
             self.apply_calendar_sources(cached_sources);
         }
 
@@ -13817,7 +13941,7 @@ impl CalendarPage {
                     let dialog = crate::dialogs::SourcePropertiesDialog::new(
                         &uid_props,
                         &name_props,
-                        &crate::i18n::gettext("Calendar"),
+                        &gettext("Calendar"),
                         &col_props,
                         is_writable,
                         is_primary,
@@ -13862,7 +13986,7 @@ impl CalendarPage {
                     let page_weak_save = page.downgrade();
                     let dialog = crate::dialogs::ManageGroupsDialog::new(
                         root_window.as_ref(),
-                        &crate::i18n::gettext("Calendar"),
+                        &gettext("Calendar"),
                         &current_sel,
                         move |updated_selector| {
                             if let Some(page) = page_weak_save.upgrade() {
@@ -13891,7 +14015,7 @@ impl CalendarPage {
 
         let popover = crate::models::source_selector::create_source_context_popover(
             is_primary,
-            &crate::i18n::gettext("Calendar"),
+            &gettext("Calendar"),
             on_exclusive,
             on_select_all,
             on_set_default,
@@ -14682,7 +14806,9 @@ impl CalendarPage {
         let inspected = self.imp().current_inspected_event.borrow().clone();
         if let Some((current_ev, date)) = inspected {
             if let Some(id) = CalendarEventIdentity::from_event(&current_ev) {
-                if let Some(updated_ev) = self.unique_loaded_calendar_event(&id) {
+                if let Some(updated_ev) = self.unique_loaded_calendar_event(&id)
+                    && self.calendar_source_is_visible(&updated_ev.source_uid)
+                {
                     *self.imp().current_inspected_event.borrow_mut() = Some((updated_ev, date));
                     self.refresh_event_inspector();
                 } else {
@@ -14766,7 +14892,7 @@ impl CalendarPage {
             self.imp().calendar_category_filter.replace(None);
         }
 
-        let mut names = vec![crate::i18n::gettext("All Categories")];
+        let mut names = vec![gettext("All Categories")];
         names.extend(categories);
         let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
         model.splice(0, model.n_items(), &name_refs);
@@ -14784,10 +14910,10 @@ impl CalendarPage {
             if let Some(label) = self.imp().calendar_data_state.borrow().as_ref() {
                 match self.calendar_data_state() {
                     CalendarDataState::Loading => {
-                        label.set_label(&crate::i18n::gettext("Loading calendars…"));
+                        label.set_label(&gettext("Loading calendars…"));
                     }
                     CalendarDataState::Error => {
-                        let default_err = crate::i18n::gettext("Failed to load calendars");
+                        let default_err = gettext("Failed to load calendars");
                         label.set_label(
                             self.imp()
                                 .calendar_load_error
@@ -14989,14 +15115,14 @@ impl CalendarPage {
             .hexpand(true)
             .vexpand(false)
             .valign(gtk::Align::Start)
-            .css_classes(vec!["calendar-header-grid"])
+            .css_classes(["calendar-header-grid"])
             .build();
 
         // Row 0, Col 0: Primary Timezone label (e.g. "Berlin")
         let tz_name = primary_timezone_header_label();
         let time_header = gtk::Label::builder()
             .label(&tz_name)
-            .css_classes(vec!["calendar-grid-header-cell", "calendar-timezone-header"])
+            .css_classes(["calendar-grid-header-cell", "calendar-timezone-header"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .margin_start(4)
@@ -15009,7 +15135,7 @@ impl CalendarPage {
             let sec_header_text = secondary_timezone_header_label(&second_zone_name);
             let sec_header = gtk::Label::builder()
                 .label(&sec_header_text)
-                .css_classes(vec!["calendar-grid-header-cell", "secondary-tz-header"])
+                .css_classes(["calendar-grid-header-cell", "secondary-tz-header"])
                 .halign(gtk::Align::Center)
                 .valign(gtk::Align::Center)
                 .width_request(time_col_width)
@@ -15163,14 +15289,14 @@ impl CalendarPage {
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Fill)
             .vexpand(false)
-            .css_classes(vec!["calendar-allday-label"])
+            .css_classes(["calendar-allday-label"])
             .width_request(time_col_width)
             .build();
 
         if !unique_allday.is_empty() {
             if !is_collapsed {
                 let all_day_label = gtk::Label::builder()
-                    .label(&crate::i18n::gettext("All Day"))
+                    .label(gettext("All Day"))
                     .halign(gtk::Align::Center)
                     .valign(gtk::Align::Start)
                     .vexpand(false)
@@ -15194,9 +15320,9 @@ impl CalendarPage {
                 .vexpand(true)
                 .margin_bottom(3)
                 .tooltip_text(if is_collapsed {
-                    crate::i18n::gettext("Expand all-day events")
+                    gettext("Expand all-day events")
                 } else {
-                    crate::i18n::gettext("Collapse all-day events")
+                    gettext("Collapse all-day events")
                 })
                 .build();
             let page_weak = self.downgrade();
@@ -15214,7 +15340,7 @@ impl CalendarPage {
             all_day_container.append(&expander_btn);
         } else {
             let all_day_label = gtk::Label::builder()
-                .label(&crate::i18n::gettext("All Day"))
+                .label(gettext("All Day"))
                 .halign(gtk::Align::Center)
                 .valign(gtk::Align::Center)
                 .vexpand(true)
@@ -15228,7 +15354,7 @@ impl CalendarPage {
         if let Some(ref sec_group) = sec_col_group {
             let sec_allday_box = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
-                .css_classes(vec![
+                .css_classes([
                     "calendar-allday-label",
                     "calendar-time-gutter-secondary",
                 ])
@@ -15257,7 +15383,7 @@ impl CalendarPage {
         for (day_index, day) in days.iter().enumerate() {
             let bg_cell = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
-                .css_classes(vec!["calendar-allday-cell"])
+                .css_classes(["calendar-allday-cell"])
                 .hexpand(true)
                 .vexpand(false)
                 .height_request(allday_h)
@@ -15345,7 +15471,7 @@ impl CalendarPage {
             .row_homogeneous(is_fit_24h)
             .hexpand(true)
             .vexpand(true)
-            .css_classes(vec!["calendar-time-grid"])
+            .css_classes(["calendar-time-grid"])
             .build();
 
         let total_hours = 24usize;
@@ -15358,7 +15484,7 @@ impl CalendarPage {
             .hexpand(false)
             .vexpand(true)
             .can_target(false)
-            .css_classes(vec!["calendar-time-gutter", "calendar-hour-cell"])
+            .css_classes(["calendar-time-gutter", "calendar-hour-cell"])
             .build();
         let gutter_canvas = gtk::DrawingArea::builder()
             .width_request(time_col_width)
@@ -15386,7 +15512,7 @@ impl CalendarPage {
             let lbl = gtk::Label::builder()
                 .use_markup(true)
                 .label(&format_hour_markup_scaled(minute, use_12h, hour_label_scale))
-                .css_classes(vec!["calendar-time-gutter-label"])
+                .css_classes(["calendar-time-gutter-label"])
                 .width_request(time_col_width)
                 .xalign(1.0)
                 .valign(gtk::Align::Start)
@@ -15474,7 +15600,7 @@ impl CalendarPage {
                 .hexpand(false)
                 .vexpand(true)
                 .can_target(false)
-                .css_classes(vec![
+                .css_classes([
                     "calendar-time-gutter",
                     "calendar-time-gutter-secondary",
                     "calendar-hour-cell",
@@ -15500,7 +15626,7 @@ impl CalendarPage {
                     .unwrap_or_default();
                 let lbl = gtk::Label::builder()
                     .label(&text)
-                    .css_classes(vec!["secondary-tz-label", "caption", "dim-label"])
+                    .css_classes(["secondary-tz-label", "caption", "dim-label"])
                     .width_request(time_col_width - 4)
                     .xalign(1.0)
                     .valign(gtk::Align::Start)
@@ -15611,7 +15737,7 @@ impl CalendarPage {
                 .vexpand(true)
                 .can_focus(true)
                 .focusable(true)
-                .css_classes(vec!["calendar-day-canvas"])
+                .css_classes(["calendar-day-canvas"])
                 .build();
             day_groups[day_index].add_widget(&drawing_area);
             self.imp().continuous_day_canvases.borrow_mut().push(drawing_area.clone());
@@ -15772,7 +15898,7 @@ impl CalendarPage {
                 }
 
                 // 5. Current-time red indicator line
-                // Rendered above the event cards ("über deren div"), but below text labels ("unter der beschriftung")
+                // Rendered above the event cards, but below text labels
                 if target_date == current_today {
                     draw_current_time_indicator_line(cr, width, height, now_min);
                 }
@@ -16890,13 +17016,13 @@ impl CalendarPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .halign(gtk::Align::Center)
-            .css_classes(vec!["calendar-year-nav-strip"])
+            .css_classes(["calendar-year-nav-strip"])
             .build();
 
         let prev_btn = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
-            .css_classes(vec!["flat", "calendar-year-nav-arrow"])
-            .tooltip_text(&gettext("Previous year"))
+            .css_classes(["flat", "calendar-year-nav-arrow"])
+            .tooltip_text(gettext("Previous year"))
             .build();
         let page_prev = self.downgrade();
         prev_btn.connect_clicked(move |_| {
@@ -16914,7 +17040,7 @@ impl CalendarPage {
                 } else {
                     vec!["flat", "calendar-year-nav-btn"]
                 })
-                .tooltip_text(&gettext("Show year {y}").replace("{y}", &y.to_string()))
+                .tooltip_text(gettext("Show year {y}").replace("{y}", &y.to_string()))
                 .build();
             let page_y = self.downgrade();
             year_btn.connect_clicked(move |_| {
@@ -16927,8 +17053,8 @@ impl CalendarPage {
 
         let next_btn = gtk::Button::builder()
             .icon_name("go-next-symbolic")
-            .css_classes(vec!["flat", "calendar-year-nav-arrow"])
-            .tooltip_text(&gettext("Next year"))
+            .css_classes(["flat", "calendar-year-nav-arrow"])
+            .tooltip_text(gettext("Next year"))
             .build();
         let page_next = self.downgrade();
         next_btn.connect_clicked(move |_| {
@@ -16941,10 +17067,10 @@ impl CalendarPage {
         let today_year = Local::now().date_naive().year();
         if current_year != today_year {
             let today_btn = gtk::Button::builder()
-                .label(&crate::i18n::gettext("Today"))
-                .css_classes(vec!["flat", "pill"])
+                .label(gettext("Today"))
+                .css_classes(["flat", "pill"])
                 .margin_start(12)
-                .tooltip_text(&crate::i18n::gettext("Return to current year"))
+                .tooltip_text(gettext("Return to current year"))
                 .build();
             let page_today = self.downgrade();
             today_btn.connect_clicked(move |_| {
@@ -17049,14 +17175,14 @@ impl CalendarPage {
                 .orientation(gtk::Orientation::Horizontal)
                 .height_request(HOUR_HEIGHT as i32)
                 .hexpand(true)
-                .css_classes(vec!["appointment-timeline-hour-row"])
+                .css_classes(["appointment-timeline-hour-row"])
                 .build();
             let lbl = gtk::Label::builder()
                 .label(&format!("{h}⁰⁰"))
                 .width_request(34)
                 .halign(gtk::Align::End)
                 .valign(gtk::Align::Start)
-                .css_classes(vec!["appointment-timeline-hour-label"])
+                .css_classes(["appointment-timeline-hour-label"])
                 .build();
             let sep = gtk::Separator::builder()
                 .orientation(gtk::Orientation::Horizontal)
@@ -17132,7 +17258,7 @@ impl CalendarPage {
                     .valign(gtk::Align::Fill)
                     .width_request(col_width as i32)
                     .height_request(h.max(22.0) as i32)
-                    .css_classes(vec!["flat", "calendar-grid-event", chip_class.as_str()])
+                    .css_classes(["flat", "calendar-grid-event", chip_class.as_str()])
                     .tooltip_text(&format!("{}\n{} · {}", title, item.time_text, item.event.source_display_name))
                     .build();
 
@@ -17166,7 +17292,7 @@ impl CalendarPage {
             let now_min = (now.hour() * 60 + now.minute()) as f64;
             let now_y = (now_min / 60.0) * HOUR_HEIGHT;
             let time_line = gtk::Box::builder()
-                .css_classes(vec!["calendar-current-time-line"])
+                .css_classes(["calendar-current-time-line"])
                 .height_request(2)
                 .width_request((available_width + 4.0) as i32)
                 .can_target(false)
@@ -17235,19 +17361,19 @@ impl CalendarPage {
         let header_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
-            .css_classes(vec!["calendar-year-details-header"])
+            .css_classes(["calendar-year-details-header"])
             .build();
 
         let title_lbl = gtk::Label::builder()
             .label(&format_date(date))
-            .css_classes(vec!["calendar-year-details-title"])
+            .css_classes(["calendar-year-details-title"])
             .halign(gtk::Align::Start)
             .ellipsize(pango::EllipsizeMode::End)
             .build();
         let title_btn = gtk::Button::builder()
             .child(&title_lbl)
-            .tooltip_text(&gettext("Open in Day View"))
-            .css_classes(vec!["flat", "calendar-year-details-title-btn"])
+            .tooltip_text(gettext("Open in Day View"))
+            .css_classes(["flat", "calendar-year-details-title-btn"])
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
@@ -17270,12 +17396,12 @@ impl CalendarPage {
         let current_mode = self.imp().year_preview_mode.get();
         let switcher_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .build();
 
         let list_btn = gtk::Button::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text(&gettext("Show as list"))
+            .tooltip_text(gettext("Show as list"))
             .css_classes(if current_mode == YearPreviewMode::List {
                 vec!["suggested-action"]
             } else {
@@ -17296,7 +17422,7 @@ impl CalendarPage {
 
         let sched_btn = gtk::Button::builder()
             .icon_name("x-office-calendar-symbolic")
-            .tooltip_text(&gettext("Show as schedule"))
+            .tooltip_text(gettext("Show as schedule"))
             .css_classes(if current_mode == YearPreviewMode::Schedule {
                 vec!["suggested-action"]
             } else {
@@ -17345,7 +17471,7 @@ impl CalendarPage {
             YearPreviewMode::List => {
                 let event_list = gtk::ListBox::builder()
                     .selection_mode(gtk::SelectionMode::Single)
-                    .css_classes(vec!["calendar-year-details-list"])
+                    .css_classes(["calendar-year-details-list"])
                     .vexpand(true)
                     .build();
                 self.connect_calendar_event_selection(&event_list);
@@ -17372,21 +17498,20 @@ impl CalendarPage {
                     let empty_icon = gtk::Image::builder()
                         .icon_name("x-office-calendar-symbolic")
                         .pixel_size(32)
-                        .css_classes(vec!["dim-label"])
+                        .css_classes(["dim-label"])
                         .build();
                     let empty_lbl = gtk::Label::builder()
-                        .label(&gettext("No appointments"))
-                        .css_classes(vec!["dim-label", "heading"])
+                        .label(gettext("No appointments"))
+                        .css_classes(["dim-label", "heading"])
                         .build();
                     let empty_sub = gtk::Label::builder()
-                        .label(
-                            &gettext("No appointments scheduled for {date}.")
+                        .label(gettext("No appointments scheduled for {date}.")
                                 .replace("{date}", &format_date(date)),
                         )
                         .wrap(true)
                         .wrap_mode(pango::WrapMode::WordChar)
                         .justify(gtk::Justification::Center)
-                        .css_classes(vec!["dim-label", "caption"])
+                        .css_classes(["dim-label", "caption"])
                         .build();
                     empty_box.append(&empty_icon);
                     empty_box.append(&empty_lbl);
@@ -17424,7 +17549,7 @@ impl CalendarPage {
         let row = gtk::ListBoxRow::builder()
             .activatable(true)
             .selectable(true)
-            .css_classes(vec!["calendar-year-event-row"])
+            .css_classes(["calendar-year-event-row"])
             .build();
 
         let hbox = gtk::Box::builder()
@@ -17443,7 +17568,7 @@ impl CalendarPage {
         let color_bar = gtk::Box::builder()
             .width_request(4)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["calendar-year-event-bar", bar_class.as_str()])
+            .css_classes(["calendar-year-event-bar", bar_class.as_str()])
             .build();
         hbox.append(&color_bar);
 
@@ -17464,13 +17589,13 @@ impl CalendarPage {
             .halign(gtk::Align::Start)
             .wrap(true)
             .wrap_mode(pango::WrapMode::WordChar)
-            .css_classes(vec!["calendar-year-event-title"])
+            .css_classes(["calendar-year-event-title"])
             .build();
         text_col.append(&title_lbl);
 
         // Time and details
         let time_str = if event.all_day {
-            crate::i18n::gettext("All Day")
+            gettext("All Day")
         } else {
             let (_, _, text) = event_occurrence_times_for_date(event, date, 30);
             if !text.is_empty() {
@@ -17502,7 +17627,7 @@ impl CalendarPage {
                 .label(&sub_parts.join(" · "))
                 .halign(gtk::Align::Start)
                 .ellipsize(pango::EllipsizeMode::End)
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .build();
             text_col.append(&sub_lbl);
         }
@@ -17527,7 +17652,7 @@ impl CalendarPage {
             });
         }
 
-        row.set_tooltip_text(Some(&format!("{}\n{}", title, crate::i18n::gettext("(Click to edit)"))));
+        row.set_tooltip_text(Some(&format!("{}\n{}", title, gettext("(Click to edit)"))));
         event_list.append(&row);
     }
 
@@ -19872,7 +19997,7 @@ impl CalendarPage {
             .autohide(true)
             .has_arrow(true)
             .pointing_to(&cell_rect)
-            .css_classes(vec!["year-planner-day-popover"])
+            .css_classes(["year-planner-day-popover"])
             .build();
         popover.set_parent(area);
 
@@ -19914,7 +20039,7 @@ impl CalendarPage {
 
         let day_num_lbl = gtk::Label::builder()
             .label(&date.day().to_string())
-            .css_classes(vec!["year-planner-popover-day-number"])
+            .css_classes(["year-planner-popover-day-number"])
             .valign(gtk::Align::Center)
             .build();
         header_row.append(&day_num_lbl);
@@ -19950,7 +20075,7 @@ impl CalendarPage {
             .label(&top_line_str)
             .xalign(0.0)
             .ellipsize(pango::EllipsizeMode::End)
-            .css_classes(vec!["year-planner-popover-weekday"])
+            .css_classes(["year-planner-popover-weekday"])
             .build();
         meta_col.append(&weekday_lbl);
 
@@ -19963,12 +20088,12 @@ impl CalendarPage {
             .label(&Self::calendar_month_name(date.month()))
             .xalign(0.0)
             .hexpand(true)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
         let kw_lbl = gtk::Label::builder()
             .label(&format!("{} {}", gettext("W"), date.iso_week().week()))
             .xalign(1.0)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
         sub_row.append(&month_lbl);
         sub_row.append(&kw_lbl);
@@ -19977,8 +20102,8 @@ impl CalendarPage {
 
         let add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text(&gettext("New Appointment"))
-            .css_classes(vec!["flat", "circular"])
+            .tooltip_text(gettext("New Appointment"))
+            .css_classes(["flat", "circular"])
             .valign(gtk::Align::Center)
             .build();
         {
@@ -20011,11 +20136,11 @@ impl CalendarPage {
 
         if day_events.is_empty() {
             let empty_lbl = gtk::Label::builder()
-                .label(&gettext("No appointments"))
+                .label(gettext("No appointments"))
                 .xalign(0.0)
                 .margin_top(2)
                 .margin_bottom(2)
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .build();
             root_box.append(&empty_lbl);
         } else {
@@ -20048,7 +20173,7 @@ impl CalendarPage {
                 let pill_btn = gtk::Button::builder()
                     .label(&title)
                     .halign(gtk::Align::Fill)
-                    .css_classes(vec!["flat", "calendar-grid-event", chip_class.as_str()])
+                    .css_classes(["flat", "calendar-grid-event", chip_class.as_str()])
                     .build();
                 let identity = CalendarEventIdentity::from_event(ev);
                 let page_weak = self.downgrade();
@@ -20079,7 +20204,7 @@ impl CalendarPage {
                 let (r, g, b) = parse_hex_color(&color).unwrap_or((53, 132, 228));
 
                 let row_btn = gtk::Button::builder()
-                    .css_classes(vec!["flat", "year-planner-popover-event-row"])
+                    .css_classes(["flat", "year-planner-popover-event-row"])
                     .halign(gtk::Align::Fill)
                     .build();
                 let row_box = gtk::Box::builder()
@@ -20092,7 +20217,7 @@ impl CalendarPage {
                     .label(&time_str)
                     .xalign(0.0)
                     .width_chars(5)
-                    .css_classes(vec!["caption", "dim-label", "numeric"])
+                    .css_classes(["caption", "dim-label", "numeric"])
                     .build();
                 row_box.append(&time_lbl);
 
@@ -20118,7 +20243,7 @@ impl CalendarPage {
                     .xalign(0.0)
                     .hexpand(true)
                     .ellipsize(pango::EllipsizeMode::End)
-                    .css_classes(vec!["caption"])
+                    .css_classes(["caption"])
                     .build();
                 row_box.append(&title_lbl);
 
@@ -20791,6 +20916,14 @@ impl CalendarPage {
     }
 
     fn calendar_source_is_visible(&self, source_uid: &str) -> bool {
+        if !source_uid.is_empty()
+            && !crate::services::eds_service::is_source_enabled_for_service(
+                source_uid,
+                crate::services::eds_service::EdsSourceKind::Calendar,
+            )
+        {
+            return false;
+        }
         !self
             .imp()
             .hidden_calendar_sources
@@ -20980,7 +21113,7 @@ impl CalendarPage {
                     page.finish_calendar_mutation(&mutation_token);
                     show_toast_for_widget(
                         &page,
-                        &format!("{}: {error}", crate::i18n::gettext("Failed to confirm event move")),
+                        &format!("{}: {error}", gettext("Failed to confirm event move")),
                     );
                     page.reload_calendar_data();
                     return;
@@ -21022,13 +21155,13 @@ impl CalendarPage {
                     page.bump_calendar_revision();
                     page.rebuild_calendar_index_from_records();
                     page.refresh_calendar_views();
-                    show_toast_for_widget(&page, &format!("{} ({})", crate::i18n::gettext("Event moved"), result.uid));
+                    show_toast_for_widget(&page, &format!("{} ({})", gettext("Event moved"), result.uid));
                 }
                 Err(error) => {
                     page.finish_calendar_mutation(&mutation_token);
                     show_toast_for_widget(
                         &page,
-                        &format!("{}: {error}", crate::i18n::gettext("Could not move event")),
+                        &format!("{}: {error}", gettext("Could not move event")),
                     );
                     page.reload_calendar_data();
                 }
@@ -21162,7 +21295,7 @@ impl CalendarPage {
                     page.finish_calendar_mutation(&mutation_token);
                     show_toast_for_widget(
                         &page,
-                        &format!("{}: {error}", crate::i18n::gettext("Failed to confirm event update")),
+                        &format!("{}: {error}", gettext("Failed to confirm event update")),
                     );
                     page.reload_calendar_data();
                     return;
@@ -21210,7 +21343,7 @@ impl CalendarPage {
                     page.finish_calendar_mutation(&mutation_token);
                     show_toast_for_widget(
                         &page,
-                        &format!("{}: {error}", crate::i18n::gettext("Could not update appointment duration")),
+                        &format!("{}: {error}", gettext("Could not update appointment duration")),
                     );
                 }
             }
@@ -21811,7 +21944,7 @@ pub(crate) fn prepare_taskpad_layout(tasks: &[TaskRecord], today: NaiveDate) -> 
 
     for task in tasks {
         let title = if task.summary.trim().is_empty() {
-            crate::i18n::gettext("(No Subject)")
+            gettext("(No Subject)")
         } else {
             task.summary.clone()
         };
@@ -21820,11 +21953,11 @@ pub(crate) fn prepare_taskpad_layout(tasks: &[TaskRecord], today: NaiveDate) -> 
             let date_str = task.due.split_whitespace().next().unwrap_or(&task.due);
             if let Ok(due_date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
                 let text = if due_date == today {
-                    crate::i18n::gettext("Today")
+                    gettext("Today")
                 } else if due_date == today + chrono::Duration::days(1) {
-                    crate::i18n::gettext("Tomorrow")
+                    gettext("Tomorrow")
                 } else if due_date == today - chrono::Duration::days(1) {
-                    crate::i18n::gettext("Yesterday")
+                    gettext("Yesterday")
                 } else {
                     due_date.format("%d.%m.%Y").to_string()
                 };
@@ -24522,8 +24655,8 @@ fn draw_agenda_date_header(
     // 2. Today badge & Date text (borderless modern Libadwaita header)
     let _ = cr.save();
     if is_today {
-        // Modern Libadwaita "HEUTE" / "TODAY" pill badge right in front of the date
-        let today_str = crate::i18n::gettext("Today");
+        // Modern Libadwaita "TODAY" pill badge right in front of the date
+        let today_str = gettext("Today");
         cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
         cr.set_font_size(11.0);
         let today_ext = cr.text_extents(&today_str).ok();
@@ -24688,7 +24821,7 @@ pub(crate) fn draw_agenda_canvas(
                 // 4. Time column (Uniform, calm regular font — no competing bold weights, zero offset)
                 let time_x = 16.0;
                 let time_w = 105.0;
-                let all_day_label = crate::i18n::gettext("All Day");
+                let all_day_label = gettext("All Day");
                 let is_all_day = time_str == &all_day_label || time_str.eq_ignore_ascii_case("all-day") || time_str.eq_ignore_ascii_case("ganztägig");
 
                 let _ = cr.save();
@@ -24814,7 +24947,7 @@ fn prepare_calendar_list_row(event: &CalendarEventRecord) -> PreparedCalendarLis
         String::new()
     };
     let time_str = if event.all_day {
-        crate::i18n::gettext("All Day")
+        gettext("All Day")
     } else if !event.end.is_empty() {
         let t1 = event.start.split(' ').nth(1).unwrap_or(&event.start);
         let t2 = event.end.split(' ').nth(1).unwrap_or(&event.end);
@@ -24825,7 +24958,7 @@ fn prepare_calendar_list_row(event: &CalendarEventRecord) -> PreparedCalendarLis
         "-".to_string()
     };
     let title = if event.summary.trim().is_empty() {
-        crate::i18n::gettext("(Untitled)")
+        gettext("(Untitled)")
     } else {
         event.summary.trim().to_string()
     };
@@ -25111,7 +25244,7 @@ fn show_calendar_event_context_menu(
                 let initial_name = format!("{}.ics", if safe_name.is_empty() { "appointment" } else { &safe_name });
 
                 let file_dialog = gtk::FileDialog::builder()
-                    .title(&gettext("Export Appointment"))
+                    .title(gettext("Export Appointment"))
                     .filters(&filters)
                     .default_filter(&filter_ics)
                     .initial_name(&initial_name)
@@ -25431,7 +25564,7 @@ fn show_month_overflow_popover(
     let popover = gtk::Popover::builder()
         .autohide(true)
         .has_arrow(true)
-        .css_classes(vec!["calendar-month-day-popover"])
+        .css_classes(["calendar-month-day-popover"])
         .build();
     if let Some(ref rect) = pointing_to {
         popover.set_pointing_to(Some(rect));
@@ -25464,15 +25597,15 @@ fn show_month_overflow_popover(
 
     let day_num_label = gtk::Label::builder()
         .label(&format!("{}", date.day()))
-        .css_classes(vec!["month-popover-day-number"])
+        .css_classes(["month-popover-day-number"])
         .hexpand(true)
         .xalign(0.0)
         .build();
 
     let day_btn = gtk::Button::builder()
         .child(&day_num_label)
-        .css_classes(vec!["flat", "month-popover-day-btn"])
-        .tooltip_text(&crate::i18n::gettext("Open in Day View"))
+        .css_classes(["flat", "month-popover-day-btn"])
+        .tooltip_text(gettext("Open in Day View"))
         .hexpand(true)
         .halign(gtk::Align::Start)
         .build();
@@ -25500,8 +25633,8 @@ fn show_month_overflow_popover(
 
     let close_btn = gtk::Button::builder()
         .icon_name("window-close-symbolic")
-        .css_classes(vec!["flat", "circular", "month-popover-close-btn"])
-        .tooltip_text(&crate::i18n::gettext("Close"))
+        .css_classes(["flat", "circular", "month-popover-close-btn"])
+        .tooltip_text(gettext("Close"))
         .valign(gtk::Align::Center)
         .build();
     let popover_close = popover.clone();
@@ -25542,8 +25675,8 @@ fn show_month_overflow_popover(
 
     if events.is_empty() {
         let empty_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("No appointments"))
-            .css_classes(vec!["dim-label"])
+            .label(gettext("No appointments"))
+            .css_classes(["dim-label"])
             .margin_top(16)
             .margin_bottom(16)
             .build();
@@ -25565,7 +25698,7 @@ fn show_month_overflow_popover(
             );
 
             let summary_text = if event.summary.trim().is_empty() {
-                crate::i18n::gettext("(Untitled)")
+                gettext("(Untitled)")
             } else {
                 event.summary.clone()
             };
@@ -25575,12 +25708,12 @@ fn show_month_overflow_popover(
                 .xalign(0.0)
                 .hexpand(true)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
-                .css_classes(vec!["month-popover-event-title"])
+                .css_classes(["month-popover-event-title"])
                 .build();
 
             let row_button = gtk::Button::builder()
                 .child(&title_label)
-                .css_classes(vec!["month-popover-event-chip", &class_name])
+                .css_classes(["month-popover-event-chip", &class_name])
                 .tooltip_text(&summary_text)
                 .build();
 
@@ -25613,8 +25746,8 @@ fn show_month_overflow_popover(
 
     // ── Bottom Action: "New Event..." ──
     let new_event_btn = gtk::Button::builder()
-        .label(&crate::i18n::gettext("New Event…"))
-        .css_classes(vec!["flat", "month-popover-new-event-btn"])
+        .label(gettext("New Event…"))
+        .css_classes(["flat", "month-popover-new-event-btn"])
         .halign(gtk::Align::Center)
         .margin_top(10)
         .margin_bottom(2)
@@ -26762,23 +26895,23 @@ fn configured_weekday_names_short() -> [String; 7] {
 fn configured_weekday_names_full() -> [String; 7] {
     if configured_first_weekday() == Weekday::Sun {
         [
-            crate::i18n::gettext("Sunday"),
-            crate::i18n::gettext("Monday"),
-            crate::i18n::gettext("Tuesday"),
-            crate::i18n::gettext("Wednesday"),
-            crate::i18n::gettext("Thursday"),
-            crate::i18n::gettext("Friday"),
-            crate::i18n::gettext("Saturday"),
+            gettext("Sunday"),
+            gettext("Monday"),
+            gettext("Tuesday"),
+            gettext("Wednesday"),
+            gettext("Thursday"),
+            gettext("Friday"),
+            gettext("Saturday"),
         ]
     } else {
         [
-            crate::i18n::gettext("Monday"),
-            crate::i18n::gettext("Tuesday"),
-            crate::i18n::gettext("Wednesday"),
-            crate::i18n::gettext("Thursday"),
-            crate::i18n::gettext("Friday"),
-            crate::i18n::gettext("Saturday"),
-            crate::i18n::gettext("Sunday"),
+            gettext("Monday"),
+            gettext("Tuesday"),
+            gettext("Wednesday"),
+            gettext("Thursday"),
+            gettext("Friday"),
+            gettext("Saturday"),
+            gettext("Sunday"),
         ]
     }
 }
@@ -26786,23 +26919,23 @@ fn configured_weekday_names_full() -> [String; 7] {
 fn configured_weekday_names() -> [String; 7] {
     if configured_first_weekday() == Weekday::Sun {
         [
-            crate::i18n::gettext("Sun"),
-            crate::i18n::gettext("Mon"),
-            crate::i18n::gettext("Tue"),
-            crate::i18n::gettext("Wed"),
-            crate::i18n::gettext("Thu"),
-            crate::i18n::gettext("Fri"),
-            crate::i18n::gettext("Sat"),
+            gettext("Sun"),
+            gettext("Mon"),
+            gettext("Tue"),
+            gettext("Wed"),
+            gettext("Thu"),
+            gettext("Fri"),
+            gettext("Sat"),
         ]
     } else {
         [
-            crate::i18n::gettext("Mon"),
-            crate::i18n::gettext("Tue"),
-            crate::i18n::gettext("Wed"),
-            crate::i18n::gettext("Thu"),
-            crate::i18n::gettext("Fri"),
-            crate::i18n::gettext("Sat"),
-            crate::i18n::gettext("Sun"),
+            gettext("Mon"),
+            gettext("Tue"),
+            gettext("Wed"),
+            gettext("Thu"),
+            gettext("Fri"),
+            gettext("Sat"),
+            gettext("Sun"),
         ]
     }
 }
@@ -26873,25 +27006,25 @@ fn shift_month(date: NaiveDate, direction: i32) -> NaiveDate {
 
 fn weekday_name(date: NaiveDate) -> String {
     match date.weekday() {
-        Weekday::Mon => crate::i18n::gettext("Monday"),
-        Weekday::Tue => crate::i18n::gettext("Tuesday"),
-        Weekday::Wed => crate::i18n::gettext("Wednesday"),
-        Weekday::Thu => crate::i18n::gettext("Thursday"),
-        Weekday::Fri => crate::i18n::gettext("Friday"),
-        Weekday::Sat => crate::i18n::gettext("Saturday"),
-        Weekday::Sun => crate::i18n::gettext("Sunday"),
+        Weekday::Mon => gettext("Monday"),
+        Weekday::Tue => gettext("Tuesday"),
+        Weekday::Wed => gettext("Wednesday"),
+        Weekday::Thu => gettext("Thursday"),
+        Weekday::Fri => gettext("Friday"),
+        Weekday::Sat => gettext("Saturday"),
+        Weekday::Sun => gettext("Sunday"),
     }
 }
 
 fn weekday_short_name(weekday: Weekday) -> String {
     match weekday {
-        Weekday::Mon => crate::i18n::gettext("Mon"),
-        Weekday::Tue => crate::i18n::gettext("Tue"),
-        Weekday::Wed => crate::i18n::gettext("Wed"),
-        Weekday::Thu => crate::i18n::gettext("Thu"),
-        Weekday::Fri => crate::i18n::gettext("Fri"),
-        Weekday::Sat => crate::i18n::gettext("Sat"),
-        Weekday::Sun => crate::i18n::gettext("Sun"),
+        Weekday::Mon => gettext("Mon"),
+        Weekday::Tue => gettext("Tue"),
+        Weekday::Wed => gettext("Wed"),
+        Weekday::Thu => gettext("Thu"),
+        Weekday::Fri => gettext("Fri"),
+        Weekday::Sat => gettext("Sat"),
+        Weekday::Sun => gettext("Sun"),
     }
 }
 
@@ -27259,6 +27392,14 @@ pub(crate) fn task_matches_calendar_filter(
     category_filter: Option<&str>,
     hidden_sources: &HashSet<String>,
 ) -> bool {
+    if !task.source_uid.is_empty()
+        && !crate::services::eds_service::is_source_enabled_for_service(
+            &task.source_uid,
+            crate::services::eds_service::EdsSourceKind::Calendar,
+        )
+    {
+        return false;
+    }
     if hidden_sources.contains(&task.source_uid)
         || hidden_sources.contains(&task.source_display_name)
         || hidden_sources
@@ -27290,6 +27431,14 @@ pub(crate) fn memo_matches_calendar_filter(
     category_filter: Option<&str>,
     hidden_sources: &HashSet<String>,
 ) -> bool {
+    if !memo.source_uid.is_empty()
+        && !crate::services::eds_service::is_source_enabled_for_service(
+            &memo.source_uid,
+            crate::services::eds_service::EdsSourceKind::Calendar,
+        )
+    {
+        return false;
+    }
     if hidden_sources.contains(&memo.source_uid)
         || hidden_sources.contains(&memo.source_display_name)
         || hidden_sources
@@ -27373,8 +27522,8 @@ fn format_full_german_date(date: NaiveDate) -> String {
 fn format_duration_text(minutes: u32) -> String {
     let hours = minutes / 60;
     let mins = minutes % 60;
-    let hr_str = crate::i18n::gettext("hr");
-    let min_str = crate::i18n::gettext("min");
+    let hr_str = gettext("hr");
+    let min_str = gettext("min");
     if hours > 0 && mins > 0 {
         format!("{hours} {hr_str} {mins} {min_str}")
     } else if hours > 0 {
@@ -27388,15 +27537,15 @@ fn format_recurrence_summary(event: &CalendarEventRecord) -> Option<String> {
     let rule_raw = ical_property(&event.component, "RRULE")?;
     let rule_upper = rule_raw.to_uppercase();
     if rule_upper.contains("FREQ=DAILY") {
-        Some(crate::i18n::gettext("Daily recurrence"))
+        Some(gettext("Daily recurrence"))
     } else if rule_upper.contains("FREQ=WEEKLY") {
-        Some(crate::i18n::gettext("Weekly recurrence"))
+        Some(gettext("Weekly recurrence"))
     } else if rule_upper.contains("FREQ=MONTHLY") {
-        Some(crate::i18n::gettext("Monthly recurrence"))
+        Some(gettext("Monthly recurrence"))
     } else if rule_upper.contains("FREQ=YEARLY") {
-        Some(crate::i18n::gettext("Yearly recurrence"))
+        Some(gettext("Yearly recurrence"))
     } else {
-        Some(crate::i18n::gettext("Recurring event"))
+        Some(gettext("Recurring event"))
     }
 }
 
@@ -27507,12 +27656,12 @@ pub(crate) fn event_occurrence_times_for_date(
         format!("{start_str}–{end_str}")
     } else if occ_start_dt.date() < day && occ_end_dt.date() == day {
         let end_str = format_clock_minutes(end_min);
-        format!("{} {end_str}", crate::i18n::gettext("until"))
+        format!("{} {end_str}", gettext("until"))
     } else if occ_start_dt.date() == day && occ_end_dt.date() > day {
         let start_str = format_clock_minutes(start_min);
-        format!("{} {start_str}", crate::i18n::gettext("from"))
+        format!("{} {start_str}", gettext("from"))
     } else {
-        crate::i18n::gettext("All Day")
+        gettext("All Day")
     };
 
     (start_min, end_min, time_text)
@@ -27533,13 +27682,13 @@ fn prompt_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
 
     if recurring {
         let scope_dialog = adw::AlertDialog::new(
-            Some(&crate::i18n::gettext("Delete recurring appointment")),
-            Some(&crate::i18n::gettext("Choose the deletion scope. Single occurrences and future occurrences are offered once the backend adapter can confirm them without data loss as exception or split.")),
+            Some(&gettext("Delete recurring appointment")),
+            Some(&gettext("Choose the deletion scope. Single occurrences and future occurrences are offered once the backend adapter can confirm them without data loss as exception or split.")),
         );
-        let cancel_label = crate::i18n::gettext("Cancel");
-        let this_label = crate::i18n::gettext("Only this appointment");
-        let future_label = crate::i18n::gettext("This and future");
-        let series_label = crate::i18n::gettext("Delete entire series");
+        let cancel_label = gettext("Cancel");
+        let this_label = gettext("Only this appointment");
+        let future_label = gettext("This and future");
+        let series_label = gettext("Delete entire series");
         scope_dialog.add_responses(&[
             ("cancel", &cancel_label),
             ("this", &this_label),
@@ -27570,8 +27719,8 @@ fn prompt_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                 }
                 Ok(CalendarDeletePlan::UnsupportedOccurrenceScope { scope }) => {
                     let description = match scope {
-                        CalendarRecurringDeleteScope::ThisOccurrence => crate::i18n::gettext("The current backend adapter cannot yet delete this single occurrence without data loss; the series remains unchanged."),
-                        CalendarRecurringDeleteScope::ThisAndFuture => crate::i18n::gettext("A split starting at this occurrence cannot yet be performed by the current backend adapter without data loss; the series remains unchanged."),
+                        CalendarRecurringDeleteScope::ThisOccurrence => gettext("The current backend adapter cannot yet delete this single occurrence without data loss; the series remains unchanged."),
+                        CalendarRecurringDeleteScope::ThisAndFuture => gettext("A split starting at this occurrence cannot yet be performed by the current backend adapter without data loss; the series remains unchanged."),
                         CalendarRecurringDeleteScope::EntireSeries => unreachable!(),
                     };
                     show_toast_for_widget(&widget_for_scope, &description);
@@ -27592,9 +27741,9 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
     event: &CalendarEventRecord,
 ) {
     let confirmation_message = if event.source_uid == "local-calendar" {
-        crate::i18n::gettext("The appointment will be permanently removed from the local calendar.")
+        gettext("The appointment will be permanently removed from the local calendar.")
     } else {
-        crate::i18n::gettext("The appointment will be permanently removed from the synchronized calendar.")
+        gettext("The appointment will be permanently removed from the synchronized calendar.")
     };
     let page_weak_for_action = page.downgrade();
     let widget_for_action = widget.clone();
@@ -27602,9 +27751,9 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
 
     crate::dialogs::run_destructive_action(
         widget,
-        &crate::i18n::gettext("Delete appointment?"),
+        &gettext("Delete appointment?"),
         &confirmation_message,
-        &crate::i18n::gettext("Delete"),
+        &gettext("Delete"),
         move || {
             let Some(page) = page_weak_for_action.upgrade() else {
                 return;
@@ -27612,14 +27761,14 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
             let Some(identity) = identity_for_action.clone() else {
                 show_toast_for_widget(
                     &widget_for_action,
-                    &crate::i18n::gettext("The appointment has no unique identity and was not deleted"),
+                    &gettext("The appointment has no unique identity and was not deleted"),
                 );
                 return;
             };
             let Some(event_record) = page.unique_loaded_calendar_event(&identity) else {
                 show_toast_for_widget(
                     &widget_for_action,
-                    &crate::i18n::gettext("The appointment is not uniquely loaded and was not deleted"),
+                    &gettext("The appointment is not uniquely loaded and was not deleted"),
                 );
                 page.reload_calendar_data();
                 return;
@@ -27663,7 +27812,7 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                 if !page.calendar_event_mutation_is_current(&mutation_token) {
                     show_toast_for_widget(
                         &widget_for_result,
-                        &crate::i18n::gettext("The calendar state has changed; the deletion result was discarded"),
+                        &gettext("The calendar state has changed; the deletion result was discarded"),
                     );
                     page.reload_calendar_data();
                     return;
@@ -27688,7 +27837,7 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                         page.refresh_calendar_views();
                         show_toast_for_widget(
                             &widget_for_result,
-                            &crate::i18n::gettext("Appointment deleted ({id})").replace("{id}", &result.uid),
+                            &gettext("Appointment deleted ({id})").replace("{id}", &result.uid),
                         );
                         if let Some(window) = widget_for_result
                             .root()
@@ -27701,7 +27850,7 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                         page.finish_calendar_mutation(&mutation_token);
                         show_toast_for_widget(
                             &widget_for_result,
-                            &crate::i18n::gettext("ECal confirmed a different appointment UID ({id}); nothing was removed").replace("{id}", &result.uid),
+                            &gettext("ECal confirmed a different appointment UID ({id}); nothing was removed").replace("{id}", &result.uid),
                         );
                         page.reload_calendar_data();
                     }
@@ -27709,7 +27858,7 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                         page.finish_calendar_mutation(&mutation_token);
                         show_toast_for_widget(
                             &widget_for_result,
-                            &crate::i18n::gettext("Appointment could not be deleted: {error}").replace("{error}", &error.to_string()),
+                            &gettext("Appointment could not be deleted: {error}").replace("{error}", &error.to_string()),
                         );
                         page.reload_calendar_data();
                     }
@@ -27717,7 +27866,7 @@ fn execute_delete_calendar_event<W: IsA<gtk::Widget> + Clone + 'static>(
                         page.finish_calendar_mutation(&mutation_token);
                         show_toast_for_widget(
                             &widget_for_result,
-                            &crate::i18n::gettext("Delete operation failed: {error}").replace("{error}", &error.to_string()),
+                            &gettext("Delete operation failed: {error}").replace("{error}", &error.to_string()),
                         );
                         page.reload_calendar_data();
                     }
@@ -27773,7 +27922,7 @@ fn parse_ical_attendees(component: &str) -> Vec<CalendarAttendeeInfo> {
             if !email.is_empty() {
                 email.clone()
             } else {
-                crate::i18n::gettext("Attendee")
+                gettext("Attendee")
             }
         });
         attendees.push(CalendarAttendeeInfo {
@@ -27856,25 +28005,25 @@ fn format_alarm_summary(component: &str) -> Option<String> {
         if let AlarmTrigger::Relative { offset_seconds, .. } = &alarm.trigger {
             let abs_sec = offset_seconds.abs();
             let time_str = if *offset_seconds == 0 {
-                crate::i18n::gettext("At start time")
+                gettext("At start time")
             } else if abs_sec < 3600 {
                 let mins = abs_sec / 60;
-                crate::i18n::ngettext("{n} min before", "{n} min before", mins as u32)
+                ngettext("{n} min before", "{n} min before", mins as u32)
                     .replace("{n}", &mins.to_string())
             } else if abs_sec < 86400 {
                 let hours = abs_sec / 3600;
                 if hours == 1 {
-                    crate::i18n::gettext("1 hour before")
+                    gettext("1 hour before")
                 } else {
-                    crate::i18n::ngettext("{n} hour before", "{n} hours before", hours as u32)
+                    ngettext("{n} hour before", "{n} hours before", hours as u32)
                         .replace("{n}", &hours.to_string())
                 }
             } else {
                 let days = abs_sec / 86400;
                 if days == 1 {
-                    crate::i18n::gettext("1 day before")
+                    gettext("1 day before")
                 } else {
-                    crate::i18n::ngettext("{n} day before", "{n} days before", days as u32)
+                    ngettext("{n} day before", "{n} days before", days as u32)
                         .replace("{n}", &days.to_string())
                 }
             };
@@ -27882,7 +28031,7 @@ fn format_alarm_summary(component: &str) -> Option<String> {
         }
     }
     if summaries.is_empty() {
-        Some(crate::i18n::gettext("Reminder set"))
+        Some(gettext("Reminder set"))
     } else {
         Some(summaries.join(", "))
     }
@@ -27892,20 +28041,20 @@ fn extract_event_badges(component: &str) -> Vec<(String, &'static str)> {
     let mut badges = Vec::new();
     if let Some(status) = ical_property(component, "STATUS") {
         match status.trim().to_ascii_uppercase().as_str() {
-            "TENTATIVE" => badges.push((crate::i18n::gettext("Tentative"), "warning-pill")),
-            "CANCELLED" => badges.push((crate::i18n::gettext("Cancelled"), "destructive-pill")),
+            "TENTATIVE" => badges.push((gettext("Tentative"), "warning-pill")),
+            "CANCELLED" => badges.push((gettext("Cancelled"), "destructive-pill")),
             _ => {}
         }
     }
     if let Some(transp) = ical_property(component, "TRANSP") {
         if transp.trim().eq_ignore_ascii_case("TRANSPARENT") {
-            badges.push((crate::i18n::gettext("Free"), "success-pill"));
+            badges.push((gettext("Free"), "success-pill"));
         }
     }
     if let Some(class) = ical_property(component, "CLASS") {
         match class.trim().to_ascii_uppercase().as_str() {
-            "PRIVATE" => badges.push((crate::i18n::gettext("Private"), "neutral-pill")),
-            "CONFIDENTIAL" => badges.push((crate::i18n::gettext("Confidential"), "neutral-pill")),
+            "PRIVATE" => badges.push((gettext("Private"), "neutral-pill")),
+            "CONFIDENTIAL" => badges.push((gettext("Confidential"), "neutral-pill")),
             _ => {}
         }
     }
@@ -27948,9 +28097,9 @@ fn format_event_timing_summary(
     let (start_min, end_min, _) = event_occurrence_times_for_date(event, effective_date, 30);
     let diff_min = end_min.saturating_sub(start_min);
     let dur_text = if event.all_day {
-        crate::i18n::gettext("All Day")
+        gettext("All Day")
     } else {
-        format!("{} {}", format_duration_text(diff_min), crate::i18n::gettext("duration"))
+        format!("{} {}", format_duration_text(diff_min), gettext("duration"))
     };
 
     let start_dt = effective_date
@@ -27970,7 +28119,7 @@ fn format_event_timing_summary(
         let hours = (elapsed % 1440) / 60;
         let mins = elapsed % 60;
         if days > 0 {
-            crate::i18n::ngettext(
+            ngettext(
                 "Ended {d} day, {h} hours ago",
                 "Ended {d} days, {h} hours ago",
                 days as u32,
@@ -27978,21 +28127,21 @@ fn format_event_timing_summary(
             .replace("{d}", &days.to_string())
             .replace("{h}", &hours.to_string())
         } else if hours > 0 {
-            crate::i18n::gettext("Ended {h}h, {m}m ago")
+            gettext("Ended {h}h, {m}m ago")
                 .replace("{h}", &hours.to_string())
                 .replace("{m}", &mins.to_string())
         } else {
-            crate::i18n::gettext("Ended {m}m ago").replace("{m}", &mins.max(1).to_string())
+            gettext("Ended {m}m ago").replace("{m}", &mins.max(1).to_string())
         }
     } else if now >= start_dt && now <= end_dt {
-        crate::i18n::gettext("Happening now")
+        gettext("Happening now")
     } else {
         let remaining = (start_dt - now).num_minutes();
         let days = remaining / 1440;
         let hours = (remaining % 1440) / 60;
         let mins = remaining % 60;
         if days > 0 {
-            crate::i18n::ngettext(
+            ngettext(
                 "Starts in {d} day, {h} hours",
                 "Starts in {d} days, {h} hours",
                 days as u32,
@@ -28000,11 +28149,11 @@ fn format_event_timing_summary(
             .replace("{d}", &days.to_string())
             .replace("{h}", &hours.to_string())
         } else if hours > 0 {
-            crate::i18n::gettext("Starts in {h}h, {m}m")
+            gettext("Starts in {h}h, {m}m")
                 .replace("{h}", &hours.to_string())
                 .replace("{m}", &mins.to_string())
         } else {
-            crate::i18n::gettext("Starts in {m}m").replace("{m}", &remaining.max(1).to_string())
+            gettext("Starts in {m}m").replace("{m}", &remaining.max(1).to_string())
         }
     };
 
@@ -28126,19 +28275,19 @@ pub(crate) fn save_calendar_event_inline(
         let Ok(result) = receiver.recv().await else { return; };
         let Some(page) = page_weak.upgrade() else { return; };
         if !page.calendar_event_mutation_is_current(&mutation_token) {
-            show_toast_for_widget(&page, &crate::i18n::gettext("The calendar state has changed; the edit was discarded"));
+            show_toast_for_widget(&page, &gettext("The calendar state has changed; the edit was discarded"));
             page.reload_calendar_data();
             return;
         }
         match result {
             Ok(_) => {
                 page.finish_calendar_mutation(&mutation_token);
-                show_toast_for_widget(&page, &crate::i18n::gettext("Appointment updated"));
+                show_toast_for_widget(&page, &gettext("Appointment updated"));
                 page.reload_calendar_data();
             }
             Err(err) => {
                 page.finish_calendar_mutation(&mutation_token);
-                show_toast_for_widget(&page, &format!("{}: {err}", crate::i18n::gettext("Failed to save appointment")));
+                show_toast_for_widget(&page, &format!("{}: {err}", gettext("Failed to save appointment")));
             }
         }
     });
@@ -28159,18 +28308,18 @@ fn format_rrule_detail_description(rrule: &str) -> Option<String> {
         let day_names: Vec<String> = bydays
             .split(',')
             .map(|code| match code.trim() {
-                "MO" => crate::i18n::gettext("Monday"),
-                "TU" => crate::i18n::gettext("Tuesday"),
-                "WE" => crate::i18n::gettext("Wednesday"),
-                "TH" => crate::i18n::gettext("Thursday"),
-                "FR" => crate::i18n::gettext("Friday"),
-                "SA" => crate::i18n::gettext("Saturday"),
-                "SU" => crate::i18n::gettext("Sunday"),
+                "MO" => gettext("Monday"),
+                "TU" => gettext("Tuesday"),
+                "WE" => gettext("Wednesday"),
+                "TH" => gettext("Thursday"),
+                "FR" => gettext("Friday"),
+                "SA" => gettext("Saturday"),
+                "SU" => gettext("Sunday"),
                 other => other.to_string(),
             })
             .collect();
         if !day_names.is_empty() {
-            return Some(format!("{}: {}", crate::i18n::gettext("On"), day_names.join(", ")));
+            return Some(format!("{}: {}", gettext("On"), day_names.join(", ")));
         }
     }
     None
@@ -28178,7 +28327,7 @@ fn format_rrule_detail_description(rrule: &str) -> Option<String> {
 
 fn format_recurrence_end_summary(component: &str) -> String {
     let Some(rrule) = ical_property(component, "RRULE") else {
-        return crate::i18n::gettext("Never");
+        return gettext("Never");
     };
     for part in rrule.split(';') {
         if let Some(until) = part.strip_prefix("UNTIL=") {
@@ -28191,16 +28340,16 @@ fn format_recurrence_end_summary(component: &str) -> String {
             }
             return until.to_string();
         } else if let Some(count) = part.strip_prefix("COUNT=") {
-            return format!("{} {}", count, crate::i18n::gettext("times"));
+            return format!("{} {}", count, gettext("times"));
         }
     }
-    crate::i18n::gettext("Never")
+    gettext("Never")
 }
 
 fn inspector_field_label(text: &str) -> gtk::Label {
     gtk::Label::builder()
         .label(text)
-        .css_classes(vec!["caption", "dim-label"])
+        .css_classes(["caption", "dim-label"])
         .halign(gtk::Align::End)
         .valign(gtk::Align::Center)
         .width_chars(8)
@@ -28216,7 +28365,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
 ) -> gtk::Box {
     let identity = CalendarEventIdentity::from_event(event);
     let color = event_color_for_record(event);
-    let cal_default = crate::i18n::gettext("Calendar");
+    let cal_default = gettext("Calendar");
     let cal_name = if event.source_display_name.trim().is_empty() {
         cal_default.as_str()
     } else {
@@ -28237,8 +28386,8 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     // 1. Full-width Title Entry + Action Buttons placed in the Details section header
     let title_entry = gtk::Entry::builder()
         .text(&event.summary)
-        .placeholder_text(&crate::i18n::gettext("Event title"))
-        .css_classes(vec!["calendar-details-title-entry"])
+        .placeholder_text(gettext("Event title"))
+        .css_classes(["calendar-details-title-entry"])
         .hexpand(true)
         .width_chars(1)
         .build();
@@ -28246,30 +28395,30 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         entry.select_region(0, 0);
     });
 
-    let save_label_str = crate::i18n::gettext("Save");
+    let save_label_str = gettext("Save");
     let save_content = adw::ButtonContent::builder()
         .icon_name("object-select-symbolic")
         .label(&save_label_str)
         .build();
     let save_btn = gtk::Button::builder()
         .child(&save_content)
-        .tooltip_text(&crate::i18n::gettext("Save changes"))
-        .css_classes(vec!["suggested-action", "calendar-details-save-btn"])
+        .tooltip_text(gettext("Save changes"))
+        .css_classes(["suggested-action", "calendar-details-save-btn"])
         .valign(gtk::Align::Center)
         .visible(false)
         .build();
 
     let more_btn = gtk::Button::builder()
         .icon_name("document-edit-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Open full editor dialog"))
-        .css_classes(vec!["flat", "circular", "calendar-details-inline-action-btn"])
+        .tooltip_text(gettext("Open full editor dialog"))
+        .css_classes(["flat", "circular", "calendar-details-inline-action-btn"])
         .valign(gtk::Align::Center)
         .build();
 
     let del_btn = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Delete Appointment"))
-        .css_classes(vec![
+        .tooltip_text(gettext("Delete Appointment"))
+        .css_classes([
             "flat",
             "destructive-action",
             "circular",
@@ -28317,12 +28466,12 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
 
     let overflow_edit_btn = make_overflow_row(
         "document-edit-symbolic",
-        &crate::i18n::gettext("Open full editor dialog"),
+        &gettext("Open full editor dialog"),
         false,
     );
     let overflow_del_btn = make_overflow_row(
         "user-trash-symbolic",
-        &crate::i18n::gettext("Delete Appointment"),
+        &gettext("Delete Appointment"),
         true,
     );
     {
@@ -28356,8 +28505,8 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     let details_overflow_btn = gtk::MenuButton::builder()
         .icon_name("view-more-horizontal-symbolic")
         .popover(&details_overflow_popover)
-        .tooltip_text(&crate::i18n::gettext("More actions"))
-        .css_classes(vec!["flat", "circular", "calendar-details-inline-action-btn"])
+        .tooltip_text(gettext("More actions"))
+        .css_classes(["flat", "circular", "calendar-details-inline-action-btn"])
         .valign(gtk::Align::Center)
         .visible(false)
         .build();
@@ -28387,7 +28536,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
     let cal_label = gtk::Label::builder()
         .label(cal_name)
-        .css_classes(vec!["caption", "heading"])
+        .css_classes(["caption", "heading"])
         .ellipsize(pango::EllipsizeMode::End)
         .width_chars(1)
         .build();
@@ -28399,7 +28548,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     for (badge_text, badge_class) in badges {
         let badge_lbl = gtk::Label::builder()
             .label(&badge_text)
-            .css_classes(vec!["calendar-badge-pill", badge_class])
+            .css_classes(["calendar-badge-pill", badge_class])
             .valign(gtk::Align::Center)
             .build();
         cal_row.append(&badge_lbl);
@@ -28490,8 +28639,8 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     loc_icon.add_css_class("dim-label");
     let loc_entry = gtk::Entry::builder()
         .text(&event.location)
-        .placeholder_text(&crate::i18n::gettext("Location"))
-        .css_classes(vec!["calendar-details-field-entry"])
+        .placeholder_text(gettext("Location"))
+        .css_classes(["calendar-details-field-entry"])
         .hexpand(true)
         .width_chars(1)
         .build();
@@ -28510,7 +28659,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     };
     let timing_lbl = gtk::Label::builder()
         .label(&combined_timing)
-        .css_classes(vec!["caption", "dim-label"])
+        .css_classes(["caption", "dim-label"])
         .wrap(true)
         .wrap_mode(pango::WrapMode::WordChar)
         .xalign(0.0)
@@ -28554,13 +28703,13 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .text(&init_start_date)
         .width_chars(10)
         .max_width_chars(10)
-        .css_classes(vec!["calendar-details-compact-entry"])
+        .css_classes(["calendar-details-compact-entry"])
         .build();
     let entry_start_time = gtk::Entry::builder()
         .text(&init_start_time)
         .width_chars(5)
         .max_width_chars(5)
-        .css_classes(vec!["calendar-details-compact-entry"])
+        .css_classes(["calendar-details-compact-entry"])
         .visible(!all_day)
         .build();
 
@@ -28568,13 +28717,13 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .text(&init_end_date)
         .width_chars(10)
         .max_width_chars(10)
-        .css_classes(vec!["calendar-details-compact-entry"])
+        .css_classes(["calendar-details-compact-entry"])
         .build();
     let entry_end_time = gtk::Entry::builder()
         .text(&init_end_time)
         .width_chars(5)
         .max_width_chars(5)
-        .css_classes(vec!["calendar-details-compact-entry"])
+        .css_classes(["calendar-details-compact-entry"])
         .visible(!all_day)
         .build();
 
@@ -28601,7 +28750,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
     let mut grid_row = 0i32;
 
     // Row: all-day
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("all-day")), 0, grid_row, 1, 1);
+    grid.attach(&inspector_field_label(&gettext("all-day")), 0, grid_row, 1, 1);
     grid.attach(&allday_switch, 1, grid_row, 1, 1);
     grid_row += 1;
 
@@ -28613,7 +28762,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .build();
     starts_box.append(&entry_start_date);
     starts_box.append(&entry_start_time);
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("starts")), 0, grid_row, 1, 1);
+    grid.attach(&inspector_field_label(&gettext("starts")), 0, grid_row, 1, 1);
     grid.attach(&starts_box, 1, grid_row, 1, 1);
     grid_row += 1;
 
@@ -28625,7 +28774,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .build();
     ends_box.append(&entry_end_date);
     ends_box.append(&entry_end_time);
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("ends")), 0, grid_row, 1, 1);
+    grid.attach(&inspector_field_label(&gettext("ends")), 0, grid_row, 1, 1);
     grid.attach(&ends_box, 1, grid_row, 1, 1);
     grid_row += 1;
 
@@ -28642,50 +28791,50 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         let rec_subtitle = format_rrule_detail_description(&rrule_raw);
         let rec_main_lbl = gtk::Label::builder()
             .label(&rec_text)
-            .css_classes(vec!["caption"])
+            .css_classes(["caption"])
             .halign(gtk::Align::Start)
             .build();
         rec_box.append(&rec_main_lbl);
         if let Some(sub) = rec_subtitle {
             let rec_sub_lbl = gtk::Label::builder()
                 .label(&sub)
-                .css_classes(vec!["caption", "dim-label"])
+                .css_classes(["caption", "dim-label"])
                 .wrap(true)
                 .wrap_mode(pango::WrapMode::WordChar)
                 .halign(gtk::Align::Start)
                 .build();
             rec_box.append(&rec_sub_lbl);
         }
-        grid.attach(&inspector_field_label(&crate::i18n::gettext("repeat")), 0, grid_row, 1, 1);
+        grid.attach(&inspector_field_label(&gettext("repeat")), 0, grid_row, 1, 1);
         grid.attach(&rec_box, 1, grid_row, 1, 1);
         grid_row += 1;
 
         let end_summary = format_recurrence_end_summary(&event.component);
         let end_lbl = gtk::Label::builder()
             .label(&end_summary)
-            .css_classes(vec!["caption"])
+            .css_classes(["caption"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
-        grid.attach(&inspector_field_label(&crate::i18n::gettext("end")), 0, grid_row, 1, 1);
+        grid.attach(&inspector_field_label(&gettext("end")), 0, grid_row, 1, 1);
         grid.attach(&end_lbl, 1, grid_row, 1, 1);
         grid_row += 1;
     } else {
         let _ = has_recurrence;
         let rec_lbl = gtk::Label::builder()
-            .label(&crate::i18n::gettext("None"))
-            .css_classes(vec!["caption", "dim-label"])
+            .label(gettext("None"))
+            .css_classes(["caption", "dim-label"])
             .halign(gtk::Align::Start)
             .valign(gtk::Align::Center)
             .build();
-        grid.attach(&inspector_field_label(&crate::i18n::gettext("repeat")), 0, grid_row, 1, 1);
+        grid.attach(&inspector_field_label(&gettext("repeat")), 0, grid_row, 1, 1);
         grid.attach(&rec_lbl, 1, grid_row, 1, 1);
         grid_row += 1;
     }
 
     // Row: alarm
     let alarm_opt = format_alarm_summary(&event.component);
-    let alarm_summary = alarm_opt.clone().unwrap_or_else(|| crate::i18n::gettext("None"));
+    let alarm_summary = alarm_opt.clone().unwrap_or_else(|| gettext("None"));
     let alarm_val_lbl = gtk::Label::builder()
         .label(&alarm_summary)
         .css_classes(if alarm_opt.is_some() {
@@ -28698,7 +28847,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .wrap(true)
         .wrap_mode(pango::WrapMode::WordChar)
         .build();
-    grid.attach(&inspector_field_label(&crate::i18n::gettext("alarm")), 0, grid_row, 1, 1);
+    grid.attach(&inspector_field_label(&gettext("alarm")), 0, grid_row, 1, 1);
     grid.attach(&alarm_val_lbl, 1, grid_row, 1, 1);
 
     content_box.append(&grid);
@@ -28712,9 +28861,9 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
             .margin_top(2)
             .build();
         let conf_btn = gtk::Button::builder()
-            .label(&crate::i18n::gettext("Join meeting"))
+            .label(gettext("Join meeting"))
             .icon_name("call-start-symbolic")
-            .css_classes(vec!["suggested-action", "pill"])
+            .css_classes(["suggested-action", "pill"])
             .hexpand(true)
             .build();
         let conf_url_clone = conf_url.clone();
@@ -28736,8 +28885,8 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         let att_icon = gtk::Image::from_icon_name("avatar-default-symbolic");
         att_icon.add_css_class("dim-label");
         let att_lbl = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Attendees"))
-            .css_classes(vec!["caption", "heading"])
+            .label(gettext("Attendees"))
+            .css_classes(["caption", "heading"])
             .build();
         att_header.append(&att_icon);
         att_header.append(&att_lbl);
@@ -28760,7 +28909,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
             let chip_text = format!("{status_prefix}{}", att.name);
             let chip = gtk::Label::builder()
                 .label(&chip_text)
-                .css_classes(vec!["calendar-attendee-chip"])
+                .css_classes(["calendar-attendee-chip"])
                 .tooltip_text(att.email.as_deref().unwrap_or(&att.name))
                 .ellipsize(pango::EllipsizeMode::End)
                 .build();
@@ -28771,8 +28920,8 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
 
     // 8. Compact Notes / Description (auto-sizing, no huge empty gap when notes are empty)
     let notes_label = gtk::Label::builder()
-        .label(&crate::i18n::gettext("Notes"))
-        .css_classes(vec!["caption", "heading"])
+        .label(gettext("Notes"))
+        .css_classes(["caption", "heading"])
         .xalign(0.0)
         .margin_top(2)
         .build();
@@ -28787,7 +28936,7 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
         .min_content_height(if has_notes { 48 } else { 28 })
         .max_content_height(110)
         .vexpand(false)
-        .css_classes(vec!["calendar-details-note-box", "calendar-sidebar-scroll"])
+        .css_classes(["calendar-details-note-box", "calendar-sidebar-scroll"])
         .build();
     let notes_view = gtk::TextView::builder()
         .wrap_mode(gtk::WrapMode::WordChar)
@@ -28935,13 +29084,13 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
     }
     let identity = CalendarEventIdentity::from_event(event);
     let color = event_color_for_record(event);
-    let cal_default = crate::i18n::gettext("Calendar");
+    let cal_default = gettext("Calendar");
     let cal_name = if event.source_display_name.trim().is_empty() {
         cal_default.as_str()
     } else {
         event.source_display_name.trim()
     };
-    let untitled_default = crate::i18n::gettext("(Untitled)");
+    let untitled_default = gettext("(Untitled)");
     let title = if event.summary.trim().is_empty() {
         untitled_default.as_str()
     } else {
@@ -28961,7 +29110,7 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
     let header_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
-        .css_classes(vec!["calendar-details-header"])
+        .css_classes(["calendar-details-header"])
         .build();
 
     let cal_badge = gtk::Box::builder()
@@ -28973,18 +29122,18 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
     dot.set_markup(&format!("<span foreground=\"{color}\" size=\"large\">●</span>"));
     let cal_label = gtk::Label::builder()
         .label(cal_name)
-        .css_classes(vec!["caption", "dim-label"])
+        .css_classes(["caption", "dim-label"])
         .build();
     cal_badge.append(&dot);
     cal_badge.append(&cal_label);
     header_box.append(&cal_badge);
 
-    // Progressive status/privacy badges (Vorläufig, Abgesagt, Frei, Privat, Vertraulich)
+    // Progressive status/privacy badges (Tentative, Canceled, Free, Private, Confidential)
     let badges = extract_event_badges(&event.component);
     for (badge_text, badge_class) in badges {
         let badge_lbl = gtk::Label::builder()
             .label(&badge_text)
-            .css_classes(vec!["calendar-badge-pill", badge_class])
+            .css_classes(["calendar-badge-pill", badge_class])
             .valign(gtk::Align::Center)
             .build();
         header_box.append(&badge_lbl);
@@ -28996,8 +29145,8 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
     // Edit button in header
     let edit_btn = gtk::Button::builder()
         .icon_name("document-edit-symbolic")
-        .css_classes(vec!["flat", "circular"])
-        .tooltip_text(&crate::i18n::gettext("Edit Appointment"))
+        .css_classes(["flat", "circular"])
+        .tooltip_text(gettext("Edit Appointment"))
         .valign(gtk::Align::Center)
         .build();
     let popover_edit = popover_opt.cloned();
@@ -29017,8 +29166,8 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
     // Delete button in header
     let del_btn = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
-        .css_classes(vec!["flat", "circular", "destructive-action"])
-        .tooltip_text(&crate::i18n::gettext("Delete Appointment"))
+        .css_classes(["flat", "circular", "destructive-action"])
+        .tooltip_text(gettext("Delete Appointment"))
         .valign(gtk::Align::Center)
         .build();
     let popover_del = popover_opt.cloned();
@@ -29040,8 +29189,8 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
         if let Some(popover) = popover_opt {
             let close_btn = gtk::Button::builder()
                 .icon_name("window-close-symbolic")
-                .css_classes(vec!["flat", "circular"])
-                .tooltip_text(&crate::i18n::gettext("Close"))
+                .css_classes(["flat", "circular"])
+                .tooltip_text(gettext("Close"))
                 .valign(gtk::Align::Center)
                 .build();
             let popover_close = popover.clone();
@@ -29062,15 +29211,15 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
         let now_banner = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
-            .css_classes(vec!["calendar-now-banner", "accent"])
+            .css_classes(["calendar-now-banner", "accent"])
             .margin_top(2)
             .margin_bottom(2)
             .build();
         let clock_icon = gtk::Image::from_icon_name("preferences-system-time-symbolic");
         clock_icon.add_css_class("accent");
         let now_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Currently happening now"))
-            .css_classes(vec!["heading"])
+            .label(gettext("Currently happening now"))
+            .css_classes(["heading"])
             .build();
         now_banner.append(&clock_icon);
         now_banner.append(&now_label);
@@ -29080,7 +29229,7 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
     // ── Title ──
     let title_label = gtk::Label::builder()
         .label(title)
-        .css_classes(vec!["title-2"])
+        .css_classes(["title-2"])
         .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::WordChar)
         .selectable(true)
@@ -29108,14 +29257,14 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
     let date_str = format_full_german_date(effective_date);
     let date_label = gtk::Label::builder()
         .label(&date_str)
-        .css_classes(vec!["heading"])
+        .css_classes(["heading"])
         .xalign(0.0)
         .selectable(true)
         .build();
     time_details_box.append(&date_label);
 
     let duration_str = if event.all_day {
-        crate::i18n::gettext("All Day")
+        gettext("All Day")
     } else {
         let (start_min, end_min, _) = event_occurrence_times_for_date(event, effective_date, 30);
         let diff = end_min.saturating_sub(start_min);
@@ -29130,7 +29279,7 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
     };
     let time_label = gtk::Label::builder()
         .label(&duration_str)
-        .css_classes(vec!["caption", "dim-label"])
+        .css_classes(["caption", "dim-label"])
         .xalign(0.0)
         .selectable(true)
         .build();
@@ -29146,7 +29295,7 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
         rec_icon.add_css_class("dim-label");
         let rec_label = gtk::Label::builder()
             .label(&recurrence_text)
-            .css_classes(vec!["caption", "dim-label"])
+            .css_classes(["caption", "dim-label"])
             .build();
         recurrence_box.append(&rec_icon);
         recurrence_box.append(&rec_label);
@@ -29191,9 +29340,9 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
         conf_box.append(&conf_icon);
 
         let conf_btn = gtk::Button::builder()
-            .label(&crate::i18n::gettext("Join meeting"))
+            .label(gettext("Join meeting"))
             .icon_name("call-start-symbolic")
-            .css_classes(vec!["suggested-action", "pill"])
+            .css_classes(["suggested-action", "pill"])
             .valign(gtk::Align::Center)
             .build();
         let conf_url_clone = conf_url.clone();
@@ -29226,9 +29375,9 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
 
         if let Some(org_name) = organizer {
             let org_label = gtk::Label::builder()
-                .label(&crate::i18n::gettext("Organizer: {name}").replace("{name}", &org_name))
+                .label(gettext("Organizer: {name}").replace("{name}", &org_name))
                 .xalign(0.0)
-                .css_classes(vec!["caption"])
+                .css_classes(["caption"])
                 .selectable(true)
                 .build();
             att_content.append(&org_label);
@@ -29252,7 +29401,7 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
                 let chip_text = format!("{status_prefix}{}", att.name);
                 let chip = gtk::Label::builder()
                     .label(&chip_text)
-                    .css_classes(vec!["calendar-attendee-chip"])
+                    .css_classes(["calendar-attendee-chip"])
                     .tooltip_text(att.email.as_deref().unwrap_or(&att.name))
                     .build();
                 att_flow.append(&chip);
@@ -29260,8 +29409,8 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
             if attendees.len() > 6 {
                 let rem = attendees.len() - 6;
                 let more_chip = gtk::Label::builder()
-                    .label(&crate::i18n::ngettext("+{n} more", "+{n} more", rem as u32).replace("{n}", &rem.to_string()))
-                    .css_classes(vec!["caption", "dim-label"])
+                    .label(ngettext("+{n} more", "+{n} more", rem as u32).replace("{n}", &rem.to_string()))
+                    .css_classes(["caption", "dim-label"])
                     .build();
                 att_flow.append(&more_chip);
             }
@@ -29284,7 +29433,7 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
         alarm_box.append(&alarm_icon);
 
         let alarm_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Reminder: {summary}").replace("{summary}", &alarm_summary))
+            .label(gettext("Reminder: {summary}").replace("{summary}", &alarm_summary))
             .xalign(0.0)
             .selectable(true)
             .hexpand(true)
@@ -29318,7 +29467,7 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
         for cat in categories {
             let cat_pill = gtk::Label::builder()
                 .label(&cat)
-                .css_classes(vec!["calendar-badge-pill"])
+                .css_classes(["calendar-badge-pill"])
                 .build();
             if let Some(cat_col) = cat_store.color_for(&cat) {
                 let pill_class = ensure_category_pill_css_class(&cat_col);
@@ -29343,7 +29492,7 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
 
     let note_card = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .css_classes(vec!["calendar-details-note-box"])
+        .css_classes(["calendar-details-note-box"])
         .hexpand(true)
         .build();
     let desc_trimmed = event.description.trim();
@@ -29358,8 +29507,8 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
         note_card.append(&desc_label);
     } else {
         let desc_placeholder = gtk::Label::builder()
-            .label(&crate::i18n::gettext("No notes or description added"))
-            .css_classes(vec!["caption", "dim-label"])
+            .label(gettext("No notes or description added"))
+            .css_classes(["caption", "dim-label"])
             .xalign(0.0)
             .build();
         note_card.append(&desc_placeholder);
@@ -29369,8 +29518,8 @@ pub(crate) fn build_calendar_event_details_content<W: IsA<gtk::Widget> + Clone +
 
     // ── Edit Button at Bottom ──
     let edit_full_btn = gtk::Button::builder()
-        .label(&crate::i18n::gettext("Edit Appointment"))
-        .css_classes(vec!["suggested-action"])
+        .label(gettext("Edit Appointment"))
+        .css_classes(["suggested-action"])
         .margin_top(4)
         .halign(gtk::Align::Fill)
         .build();
@@ -29401,7 +29550,7 @@ fn show_calendar_event_details_popover_full<W: IsA<gtk::Widget> + Clone + 'stati
     let popover = gtk::Popover::builder()
         .autohide(true)
         .has_arrow(true)
-        .css_classes(vec!["calendar-details-popover"])
+        .css_classes(["calendar-details-popover"])
         .build();
     if let Some(ref rect) = pointing_to {
         popover.set_pointing_to(Some(rect));
@@ -29529,7 +29678,7 @@ fn calendar_grid_compact_allday_chip(
     continues_left: bool,
     continues_right: bool,
 ) -> gtk::Widget {
-    let untitled_default = crate::i18n::gettext("(Untitled)");
+    let untitled_default = gettext("(Untitled)");
     let title = if event.summary.trim().is_empty() {
         untitled_default.as_str()
     } else {
@@ -29545,7 +29694,7 @@ fn calendar_grid_compact_allday_chip(
         .hexpand(true)
         .vexpand(false)
         .height_request(chip_h)
-        .css_classes(vec!["flat", "calendar-grid-event", "all-day-compact-chip"])
+        .css_classes(["flat", "calendar-grid-event", "all-day-compact-chip"])
         .build();
     chip_button.set_cursor_from_name(Some("pointer"));
 
@@ -29769,7 +29918,7 @@ fn calendar_grid_compact_allday_chip(
 
     chip_button.set_child(Some(&drawing_area));
 
-    set_accessible_label(&chip_button, &crate::i18n::gettext("Open appointment: {title}").replace("{title}", title));
+    set_accessible_label(&chip_button, &gettext("Open appointment: {title}").replace("{title}", title));
     let acc_desc = if !event.source_display_name.is_empty() {
         format!("{time_text} · {}", event.source_display_name)
     } else {
@@ -29827,7 +29976,7 @@ fn build_compact_chip_preview_popover(
         .position(gtk::PositionType::Bottom)
         .can_focus(false)
         .focusable(false)
-        .css_classes(vec!["compact-chip-preview-popover"])
+        .css_classes(["compact-chip-preview-popover"])
         .build();
     let initial_x = last_cursor_x.get();
     let initial_rect = gdk::Rectangle::new(initial_x.round() as i32, 0, 1, 6);
@@ -29866,7 +30015,7 @@ fn build_compact_chip_preview_popover(
 
     let title_lbl = gtk::Label::builder()
         .label(title)
-        .css_classes(vec!["compact-chip-preview-title"])
+        .css_classes(["compact-chip-preview-title"])
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .max_width_chars(36)
         .halign(gtk::Align::Start)
@@ -29882,7 +30031,7 @@ fn build_compact_chip_preview_popover(
     if !sub_text.is_empty() {
         let sub_lbl = gtk::Label::builder()
             .label(&sub_text)
-            .css_classes(vec!["dim-label", "compact-chip-preview-subtitle"])
+            .css_classes(["dim-label", "compact-chip-preview-subtitle"])
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(36)
             .halign(gtk::Align::Start)
@@ -29970,7 +30119,7 @@ fn calendar_grid_event_chip(
     continues_left: bool,
     continues_right: bool,
 ) -> gtk::Widget {
-    let untitled_default = crate::i18n::gettext("(Untitled)");
+    let untitled_default = gettext("(Untitled)");
     let title = if event.summary.trim().is_empty() {
         untitled_default.as_str()
     } else {
@@ -29989,7 +30138,7 @@ fn calendar_grid_event_chip(
             .hexpand(true)
             .vexpand(false)
             .height_request(chip_h)
-            .css_classes(vec!["flat", "calendar-grid-event", "all-day-chip"])
+            .css_classes(["flat", "calendar-grid-event", "all-day-chip"])
             .build();
 
         let dim_past = page
@@ -30083,7 +30232,7 @@ fn calendar_grid_event_chip(
             cr.set_font_size(12.0);
             cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
 
-            let untitled = crate::i18n::gettext("(Untitled)");
+            let untitled = gettext("(Untitled)");
             let summary_str = if ev_draw.summary.trim().is_empty() {
                 untitled.as_str()
             } else {
@@ -30118,7 +30267,7 @@ fn calendar_grid_event_chip(
         chip_button.add_controller(motion);
         chip_button.set_child(Some(&drawing_area));
 
-        set_accessible_label(&chip_button, &crate::i18n::gettext("Open appointment: {title}").replace("{title}", title));
+        set_accessible_label(&chip_button, &gettext("Open appointment: {title}").replace("{title}", title));
         if !event.source_display_name.is_empty() {
             chip_button.set_tooltip_text(Some(&format!(
                 "{title}\n{time_text} · {}",
@@ -30227,7 +30376,7 @@ fn calendar_grid_event_chip(
             .margin_top(1)
             .margin_bottom(1)
             .height_request(-1)
-            .css_classes(vec!["flat", "calendar-grid-event", chip_class.as_str()])
+            .css_classes(["flat", "calendar-grid-event", chip_class.as_str()])
             .build();
 
         let dim_past = page
@@ -30276,7 +30425,7 @@ fn calendar_grid_event_chip(
             .build();
 
         chip_button.set_child(Some(&label));
-        set_accessible_label(&chip_button, &crate::i18n::gettext("Open appointment: {title}").replace("{title}", title));
+        set_accessible_label(&chip_button, &gettext("Open appointment: {title}").replace("{title}", title));
         if !event.source_display_name.is_empty() {
             chip_button.set_tooltip_text(Some(&format!(
                 "{title}\n{time_text} · {}",
@@ -30381,7 +30530,7 @@ fn calendar_event_row(page: &CalendarPage, event: &CalendarEventRecord) -> adw::
     if !event.source_display_name.trim().is_empty() {
         details.push(event.source_display_name.trim().to_string());
     }
-    let untitled = crate::i18n::gettext("(Untitled)");
+    let untitled = gettext("(Untitled)");
     let row = adw::ActionRow::builder()
         .title(
             glib::markup_escape_text(if event.summary.trim().is_empty() {
@@ -30399,7 +30548,7 @@ fn calendar_event_row(page: &CalendarPage, event: &CalendarEventRecord) -> adw::
     let color = event_color_for_record(event);
     let category_dot = gtk::Label::new(None);
     category_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
-    let default_cal = crate::i18n::gettext("Calendar");
+    let default_cal = gettext("Calendar");
     category_dot.set_tooltip_text(Some(if !event.source_display_name.is_empty() {
         event.source_display_name.as_str()
     } else {
@@ -30482,14 +30631,14 @@ pub(crate) fn event_time_text_for_date(
     use_12h: bool,
 ) -> String {
     if is_event_all_day_on_date(event, date) {
-        return crate::i18n::gettext("All Day");
+        return gettext("All Day");
     }
     event_time_text_with_12h(event, use_12h)
 }
 
 fn event_time_text_with_12h(event: &CalendarEventRecord, use_12h: bool) -> String {
     if event.all_day || event.start.len() <= 10 {
-        return crate::i18n::gettext("All Day");
+        return gettext("All Day");
     }
     if !use_12h {
         if let (Some(start_str), Some(end_str)) = (quick_time_str(&event.start), quick_time_str(&event.end)) {
@@ -31224,17 +31373,17 @@ fn plan_calendar_event_transfer(
         return Err(error);
     }
     if !destination_writable {
-        return Err(crate::i18n::gettext("The destination is not confirmed as writable"));
+        return Err(gettext("The destination is not confirmed as writable"));
     }
     let destination_uid = destination_uid.trim();
     if destination_uid.is_empty() {
-        return Err(crate::i18n::gettext("Missing calendar identity for destination"));
+        return Err(gettext("Missing calendar identity for destination"));
     }
     if event.source_uid.trim() == destination_uid {
-        return Err(crate::i18n::gettext("Source and destination are the same calendar"));
+        return Err(gettext("Source and destination are the same calendar"));
     }
     if event.component.trim().is_empty() {
-        return Err(crate::i18n::gettext("No calendar data available for this appointment"));
+        return Err(gettext("No calendar data available for this appointment"));
     }
     Ok(CalendarTransferPlan {
         kind,
@@ -31253,7 +31402,7 @@ fn plan_calendar_event_delete(
         return Err(error);
     }
     if event.source_uid.trim().is_empty() || event.uid.trim().is_empty() {
-        return Err(crate::i18n::gettext("The appointment has no unique source and UID"));
+        return Err(gettext("The appointment has no unique source and UID"));
     }
     if calendar_event_is_recurring(event)
         && !matches!(scope, CalendarRecurringDeleteScope::EntireSeries)
@@ -31512,6 +31661,14 @@ fn event_matches_calendar_filter_with_options(
     hidden_sources: &HashSet<String>,
     hide_cancelled: bool,
 ) -> bool {
+    if !event.source_uid.is_empty()
+        && !crate::services::eds_service::is_source_enabled_for_service(
+            &event.source_uid,
+            crate::services::eds_service::EdsSourceKind::Calendar,
+        )
+    {
+        return false;
+    }
     if hidden_sources.contains(&event.source_uid)
         || hidden_sources.contains(&event.source_display_name)
         || hidden_sources
@@ -31548,6 +31705,14 @@ fn index_event_matches_filter(
     let Some(meta) = index.metas.get(idx) else {
         return false;
     };
+    if !event.source_uid.is_empty()
+        && !crate::services::eds_service::is_source_enabled_for_service(
+            &event.source_uid,
+            crate::services::eds_service::EdsSourceKind::Calendar,
+        )
+    {
+        return false;
+    }
     if !hidden_sources.is_empty()
         && (hidden_sources.contains(&event.source_uid)
             || hidden_sources.contains(&event.source_display_name)
@@ -31900,22 +32065,22 @@ fn calendar_event_identity_from_action_row(
 fn event_mutation_error(event: &CalendarEventRecord) -> Option<String> {
     if calendar_recurrence_id(event).is_some() {
         return Some(
-            crate::i18n::gettext("Recurring exceptions with RECURRENCE-ID cannot be safely modified via the available calendar API"),
+            gettext("Recurring exceptions with RECURRENCE-ID cannot be safely modified via the available calendar API"),
         );
     }
     if event.source_uid.trim().is_empty() {
-        return Some(crate::i18n::gettext("This appointment originates from a read-only imported source"));
+        return Some(gettext("This appointment originates from a read-only imported source"));
     }
     if event.uid.trim().is_empty() {
-        return Some(crate::i18n::gettext("This appointment does not have a stable UID and cannot be modified"));
+        return Some(gettext("This appointment does not have a stable UID and cannot be modified"));
     }
     if event.component.trim().is_empty() {
-        return Some(crate::i18n::gettext("No calendar data available for this appointment"));
+        return Some(gettext("No calendar data available for this appointment"));
     }
     match ical_property(&event.component, "UID") {
         Some(uid) if uid == event.uid => None,
-        Some(_) => Some(crate::i18n::gettext("The appointment UID and the iCalendar UID do not match")),
-        None => Some(crate::i18n::gettext("The iCalendar component does not possess a stable UID")),
+        Some(_) => Some(gettext("The appointment UID and the iCalendar UID do not match")),
+        None => Some(gettext("The iCalendar component does not possess a stable UID")),
     }
 }
 
@@ -31925,7 +32090,7 @@ fn validated_event_mutation_component(
 ) -> Result<String, String> {
     if result.uid != event.uid {
         return Err(
-            crate::i18n::gettext("The calendar service returned a different appointment UID; the view was not modified"),
+            gettext("The calendar service returned a different appointment UID; the view was not modified"),
         );
     }
     let component = result
@@ -31933,11 +32098,11 @@ fn validated_event_mutation_component(
         .clone()
         .filter(|component| !component.trim().is_empty())
         .ok_or_else(|| {
-            crate::i18n::gettext("The calendar service confirmed the change without an iCalendar component; the view was not modified")
+            gettext("The calendar service confirmed the change without an iCalendar component; the view was not modified")
         })?;
     if ical_property(&component, "UID").as_deref() != Some(event.uid.as_str()) {
         return Err(
-            crate::i18n::gettext("The calendar service returned an iCalendar component with a different UID; the view was not modified"),
+            gettext("The calendar service returned an iCalendar component with a different UID; the view was not modified"),
         );
     }
     let returned_recurrence_id = ical_property(&component, "RECURRENCE-ID")
@@ -31945,7 +32110,7 @@ fn validated_event_mutation_component(
         .filter(|value| !value.is_empty());
     if returned_recurrence_id != calendar_recurrence_id(event) {
         return Err(
-            crate::i18n::gettext("The calendar service returned a different recurring exception; the view was not modified"),
+            gettext("The calendar service returned a different recurring exception; the view was not modified"),
         );
     }
     Ok(component)
@@ -32105,18 +32270,18 @@ fn append_event_row(
 
     let edit_button = gtk::Button::builder()
         .icon_name("document-edit-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Edit Appointment"))
-        .css_classes(vec!["flat"])
+        .tooltip_text(gettext("Edit Appointment"))
+        .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&edit_button, &crate::i18n::gettext("Edit Appointment"));
+    set_accessible_label(&edit_button, &gettext("Edit Appointment"));
     let delete_button = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Delete Appointment"))
-        .css_classes(vec!["flat", "destructive-action"])
+        .tooltip_text(gettext("Delete Appointment"))
+        .css_classes(["flat", "destructive-action"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&delete_button, &crate::i18n::gettext("Delete Appointment"));
+    set_accessible_label(&delete_button, &gettext("Delete Appointment"));
     let action_state =
         calendar_event_action_state(&event, CalendarStoreService::new().is_writable());
     let recurring = action_state.recurring;
@@ -32124,36 +32289,36 @@ fn append_event_row(
     delete_button.set_sensitive(action_state.can_delete);
     let print_button = gtk::Button::builder()
         .icon_name("document-print-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Print Appointment"))
-        .css_classes(vec!["flat"])
+        .tooltip_text(gettext("Print Appointment"))
+        .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&print_button, &crate::i18n::gettext("Print Appointment"));
+    set_accessible_label(&print_button, &gettext("Print Appointment"));
     print_button.set_sensitive(action_state.can_print);
     let export_button = gtk::Button::builder()
         .icon_name("document-save-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Export Appointment (iCalendar, CSV, RDF)"))
-        .css_classes(vec!["flat"])
+        .tooltip_text(gettext("Export Appointment (iCalendar, CSV, RDF)"))
+        .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
-    set_accessible_label(&export_button, &crate::i18n::gettext("Export Appointment"));
+    set_accessible_label(&export_button, &gettext("Export Appointment"));
     export_button.set_sensitive(action_state.can_export);
     let copy_button = gtk::Button::builder()
         .icon_name("edit-copy-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Copy to Local Calendar"))
-        .css_classes(vec!["flat"])
+        .tooltip_text(gettext("Copy to Local Calendar"))
+        .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .sensitive(action_state.can_copy_to_local)
         .build();
-    set_accessible_label(&copy_button, &crate::i18n::gettext("Copy to Local Calendar"));
+    set_accessible_label(&copy_button, &gettext("Copy to Local Calendar"));
     let move_button = gtk::Button::builder()
         .icon_name("go-jump-symbolic")
-        .tooltip_text(&crate::i18n::gettext("Move to Local Calendar"))
-        .css_classes(vec!["flat"])
+        .tooltip_text(gettext("Move to Local Calendar"))
+        .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .sensitive(action_state.can_move_to_local)
         .build();
-    set_accessible_label(&move_button, &crate::i18n::gettext("Move to Local Calendar"));
+    set_accessible_label(&move_button, &gettext("Move to Local Calendar"));
     row.add_suffix(&edit_button);
     row.add_suffix(&print_button);
     row.add_suffix(&export_button);
@@ -32172,14 +32337,14 @@ fn append_event_row(
         let Some(identity) = event_identity_for_edit.as_ref() else {
             show_toast_for_widget(
                 &edit_button_for_click,
-                &crate::i18n::gettext("The appointment has no unique identity and was not opened"),
+                &gettext("The appointment has no unique identity and was not opened"),
             );
             return;
         };
         let Some(event_for_edit) = page.unique_loaded_calendar_event(identity) else {
             show_toast_for_widget(
                 &edit_button_for_click,
-                &crate::i18n::gettext("The appointment is not uniquely loaded and was not opened"),
+                &gettext("The appointment is not uniquely loaded and was not opened"),
             );
             return;
         };
@@ -32208,7 +32373,7 @@ fn append_event_row(
     let event_for_print = event.clone();
     print_button.connect_clicked(move |btn| {
         let summary_display = if event_for_print.summary.trim().is_empty() {
-            crate::i18n::gettext("Appointment")
+            gettext("Appointment")
         } else {
             event_for_print.summary.trim().to_string()
         };
@@ -32216,13 +32381,13 @@ fn append_event_row(
             Ok(doc) => {
                 show_toast_for_widget(
                     btn,
-                    &crate::i18n::gettext("Print preview for “{title}” prepared ({count} characters); print portal is Linux handoff")
+                    &gettext("Print preview for “{title}” prepared ({count} characters); print portal is Linux handoff")
                         .replace("{title}", &summary_display)
                         .replace("{count}", &doc.html.len().to_string()),
                 );
             }
             Err(err) => {
-                show_toast_for_widget(btn, &crate::i18n::gettext("Printing failed: {error}").replace("{error}", &err.to_string()));
+                show_toast_for_widget(btn, &gettext("Printing failed: {error}").replace("{error}", &err.to_string()));
             }
         }
     });
@@ -32235,7 +32400,7 @@ fn append_event_row(
         {
             show_toast_for_widget(
                 &export_button,
-                &crate::i18n::gettext("No calendar data available for this appointment"),
+                &gettext("No calendar data available for this appointment"),
             );
             return;
         }
@@ -32247,17 +32412,17 @@ fn append_event_row(
         };
 
         let filter_ics = gtk::FileFilter::new();
-        let ics_name = crate::i18n::gettext("iCalendar (*.ics)");
+        let ics_name = gettext("iCalendar (*.ics)");
         filter_ics.set_name(Some(&ics_name));
         filter_ics.add_pattern("*.ics");
 
         let filter_csv = gtk::FileFilter::new();
-        let csv_name = crate::i18n::gettext("Comma-separated values (*.csv)");
+        let csv_name = gettext("Comma-separated values (*.csv)");
         filter_csv.set_name(Some(&csv_name));
         filter_csv.add_pattern("*.csv");
 
         let filter_rdf = gtk::FileFilter::new();
-        let rdf_name = crate::i18n::gettext("RDF / RSS 1.0 (*.rdf)");
+        let rdf_name = gettext("RDF / RSS 1.0 (*.rdf)");
         filter_rdf.set_name(Some(&rdf_name));
         filter_rdf.add_pattern("*.rdf");
 
@@ -32285,7 +32450,7 @@ fn append_event_row(
         );
 
         let file_dialog = gtk::FileDialog::builder()
-            .title(&crate::i18n::gettext("Export Appointment"))
+            .title(gettext("Export Appointment"))
             .filters(&filters)
             .default_filter(&filter_ics)
             .initial_name(&initial_name)
@@ -32326,11 +32491,11 @@ fn append_event_row(
             match save_result {
                 Ok(_) => show_toast_for_widget(
                     &export_button_for_result,
-                    &crate::i18n::gettext("Appointment exported as {format}").replace("{format}", format.display_label()),
+                    &gettext("Appointment exported as {format}").replace("{format}", format.display_label()),
                 ),
                 Err(error) => show_toast_for_widget(
                     &export_button_for_result,
-                    &crate::i18n::gettext("Appointment could not be saved: {error}").replace("{error}", &error.to_string()),
+                    &gettext("Appointment could not be saved: {error}").replace("{error}", &error.to_string()),
                 ),
             }
         });
@@ -32377,13 +32542,13 @@ fn append_event_row(
         }
         if recurring && !delete_scope_confirmed_for_signal.replace(false) {
             let scope_dialog = adw::AlertDialog::new(
-                Some(&crate::i18n::gettext("Delete recurring appointment")),
-                Some(&crate::i18n::gettext("Choose the deletion scope. Single occurrences and future occurrences are offered once the backend adapter can confirm them without data loss as exception or split.")),
+                Some(&gettext("Delete recurring appointment")),
+                Some(&gettext("Choose the deletion scope. Single occurrences and future occurrences are offered once the backend adapter can confirm them without data loss as exception or split.")),
             );
-            let cancel_label = crate::i18n::gettext("Cancel");
-            let this_label = crate::i18n::gettext("Only this appointment");
-            let future_label = crate::i18n::gettext("This and future");
-            let series_label = crate::i18n::gettext("Delete entire series");
+            let cancel_label = gettext("Cancel");
+            let this_label = gettext("Only this appointment");
+            let future_label = gettext("This and future");
+            let series_label = gettext("Delete entire series");
             scope_dialog.add_responses(&[
                 ("cancel", &cancel_label),
                 ("this", &this_label),
@@ -32412,8 +32577,8 @@ fn append_event_row(
                     }
                     Ok(CalendarDeletePlan::UnsupportedOccurrenceScope { scope }) => {
                         let description = match scope {
-                            CalendarRecurringDeleteScope::ThisOccurrence => crate::i18n::gettext("The current backend adapter cannot yet delete this single occurrence without data loss; the series remains unchanged."),
-                            CalendarRecurringDeleteScope::ThisAndFuture => crate::i18n::gettext("A split starting at this occurrence cannot yet be performed by the current backend adapter without data loss; the series remains unchanged."),
+                            CalendarRecurringDeleteScope::ThisOccurrence => gettext("The current backend adapter cannot yet delete this single occurrence without data loss; the series remains unchanged."),
+                            CalendarRecurringDeleteScope::ThisAndFuture => gettext("A split starting at this occurrence cannot yet be performed by the current backend adapter without data loss; the series remains unchanged."),
                             CalendarRecurringDeleteScope::EntireSeries => unreachable!(),
                         };
                         show_toast_for_widget(&delete_button_for_scope, &description);
@@ -32425,9 +32590,9 @@ fn append_event_row(
             return;
         }
         let confirmation_message = if event_for_delete.source_uid == "local-calendar" {
-            crate::i18n::gettext("The appointment will be permanently removed from the local calendar.")
+            gettext("The appointment will be permanently removed from the local calendar.")
         } else {
-            crate::i18n::gettext("The appointment will be permanently removed from the synchronized calendar.")
+            gettext("The appointment will be permanently removed from the synchronized calendar.")
         };
         let event_records_for_action = Rc::clone(&event_records_for_delete);
         let event_list_for_action = event_list_for_delete.clone();
@@ -32436,9 +32601,9 @@ fn append_event_row(
         let event_identity_for_action = event_identity_for_delete.clone();
         crate::dialogs::run_destructive_action(
             &delete_button,
-            &crate::i18n::gettext("Delete appointment?"),
+            &gettext("Delete appointment?"),
             &confirmation_message,
-            &crate::i18n::gettext("Delete"),
+            &gettext("Delete"),
             move || {
                 let Some(page) = page_weak_for_action.upgrade() else {
                     return;
@@ -32446,14 +32611,14 @@ fn append_event_row(
                 let Some(identity) = event_identity_for_action.clone() else {
                     show_toast_for_widget(
                         &delete_button_for_action,
-                        &crate::i18n::gettext("The appointment has no unique identity and was not deleted"),
+                        &gettext("The appointment has no unique identity and was not deleted"),
                     );
                     return;
                 };
                 let Some(event_for_action) = page.unique_loaded_calendar_event(&identity) else {
                     show_toast_for_widget(
                         &delete_button_for_action,
-                        &crate::i18n::gettext("The appointment is not uniquely loaded and was not deleted"),
+                        &gettext("The appointment is not uniquely loaded and was not deleted"),
                     );
                     page.reload_calendar_data();
                     return;
@@ -32500,7 +32665,7 @@ fn append_event_row(
                         delete_button_for_result.set_sensitive(true);
                         show_toast_for_widget(
                             &delete_button_for_result,
-                            &crate::i18n::gettext("The calendar state has changed; the deletion result was discarded"),
+                            &gettext("The calendar state has changed; the deletion result was discarded"),
                         );
                         page.reload_calendar_data();
                         return;
@@ -32526,7 +32691,7 @@ fn append_event_row(
                             page.refresh_calendar_views();
                             show_toast_for_widget(
                                 &delete_button_for_result,
-                                &crate::i18n::gettext("Appointment deleted ({id})").replace("{id}", &result.uid),
+                                &gettext("Appointment deleted ({id})").replace("{id}", &result.uid),
                             );
                             if let Some(window) = delete_button_for_result
                                 .root()
@@ -32540,7 +32705,7 @@ fn append_event_row(
                             delete_button_for_result.set_sensitive(true);
                             show_toast_for_widget(
                                 &delete_button_for_result,
-                                &crate::i18n::gettext("ECal confirmed a different appointment UID ({id}); nothing was removed").replace("{id}", &result.uid),
+                                &gettext("ECal confirmed a different appointment UID ({id}); nothing was removed").replace("{id}", &result.uid),
                             );
                             page.reload_calendar_data();
                         }
@@ -32549,7 +32714,7 @@ fn append_event_row(
                             delete_button_for_result.set_sensitive(true);
                             show_toast_for_widget(
                                 &delete_button_for_result,
-                                &crate::i18n::gettext("Appointment could not be deleted: {error}").replace("{error}", &error.to_string()),
+                                &gettext("Appointment could not be deleted: {error}").replace("{error}", &error.to_string()),
                             );
                             page.reload_calendar_data();
                         }
@@ -32558,7 +32723,7 @@ fn append_event_row(
                             delete_button_for_result.set_sensitive(true);
                             show_toast_for_widget(
                                 &delete_button_for_result,
-                                &crate::i18n::gettext("Appointment deletion channel closed: {error}").replace("{error}", &error.to_string()),
+                                &gettext("Appointment deletion channel closed: {error}").replace("{error}", &error.to_string()),
                             );
                             page.reload_calendar_data();
                         }
@@ -33877,7 +34042,7 @@ mod tests {
         assert_eq!(event_time_text(&event), "09:30–10:45");
         event.all_day = true;
         let time_txt = event_time_text(&event);
-        assert_eq!(time_txt, crate::i18n::gettext("All Day"));
+        assert_eq!(time_txt, gettext("All Day"));
     }
 
     #[test]
@@ -33959,7 +34124,7 @@ mod tests {
             shift_event_component(raw, 1).expect_err("complex series must not be corrupted");
         assert_eq!(
             error,
-            crate::i18n::gettext("This recurrence cannot be moved safely by dragging; please edit the appointment")
+            gettext("This recurrence cannot be moved safely by dragging; please edit the appointment")
         );
     }
 
@@ -34737,9 +34902,9 @@ mod tests {
             assert_eq!(
                 names[0],
                 if configured_first_weekday() == Weekday::Sun {
-                    crate::i18n::gettext("Sun")
+                    gettext("Sun")
                 } else {
-                    crate::i18n::gettext("Mon")
+                    gettext("Mon")
                 }
             );
             return;
@@ -34751,34 +34916,34 @@ mod tests {
         settings.set_calendar_week_start("monday");
         assert_eq!(configured_first_weekday(), Weekday::Mon);
         let mon_names = configured_weekday_names();
-        assert_eq!(mon_names[0], crate::i18n::gettext("Mon"));
+        assert_eq!(mon_names[0], gettext("Mon"));
         assert_eq!(
             mon_names,
             [
-                crate::i18n::gettext("Mon"),
-                crate::i18n::gettext("Tue"),
-                crate::i18n::gettext("Wed"),
-                crate::i18n::gettext("Thu"),
-                crate::i18n::gettext("Fri"),
-                crate::i18n::gettext("Sat"),
-                crate::i18n::gettext("Sun"),
+                gettext("Mon"),
+                gettext("Tue"),
+                gettext("Wed"),
+                gettext("Thu"),
+                gettext("Fri"),
+                gettext("Sat"),
+                gettext("Sun"),
             ]
         );
 
         settings.set_calendar_week_start("sunday");
         assert_eq!(configured_first_weekday(), Weekday::Sun);
         let sun_names = configured_weekday_names();
-        assert_eq!(sun_names[0], crate::i18n::gettext("Sun"));
+        assert_eq!(sun_names[0], gettext("Sun"));
         assert_eq!(
             sun_names,
             [
-                crate::i18n::gettext("Sun"),
-                crate::i18n::gettext("Mon"),
-                crate::i18n::gettext("Tue"),
-                crate::i18n::gettext("Wed"),
-                crate::i18n::gettext("Thu"),
-                crate::i18n::gettext("Fri"),
-                crate::i18n::gettext("Sat"),
+                gettext("Sun"),
+                gettext("Mon"),
+                gettext("Tue"),
+                gettext("Wed"),
+                gettext("Thu"),
+                gettext("Fri"),
+                gettext("Sat"),
             ]
         );
 
@@ -34788,12 +34953,12 @@ mod tests {
                 settings.set_calendar_week_start("monday");
                 assert_eq!(configured_first_weekday(), Weekday::Mon);
                 let n = configured_weekday_names();
-                assert_eq!(n[0], crate::i18n::gettext("Mon"));
+                assert_eq!(n[0], gettext("Mon"));
             } else {
                 settings.set_calendar_week_start("sunday");
                 assert_eq!(configured_first_weekday(), Weekday::Sun);
                 let n = configured_weekday_names();
-                assert_eq!(n[0], crate::i18n::gettext("Sun"));
+                assert_eq!(n[0], gettext("Sun"));
             }
         }
 
@@ -34808,7 +34973,7 @@ mod tests {
             let n = configured_weekday_names();
             assert_eq!(
                 n[0],
-                crate::i18n::gettext("Mon"),
+                gettext("Mon"),
                 "Invalid week-start '{invalid}' must safely default to Monday"
             );
         }
@@ -35152,34 +35317,34 @@ mod tests {
         let (d1_start, d1_end, d1_text) = event_occurrence_times_for_date(&event, day1, 30);
         assert_eq!(d1_start, 1320); // 22:00
         assert_eq!(d1_end, 1440);   // 24:00 / midnight
-        assert_eq!(d1_text, format!("{} 22:00", crate::i18n::gettext("from")));
+        assert_eq!(d1_text, format!("{} 22:00", gettext("from")));
 
         let day2 = NaiveDate::from_ymd_opt(2026, 9, 8).unwrap();
         let (d2_start, d2_end, d2_text) = event_occurrence_times_for_date(&event, day2, 30);
         assert_eq!(d2_start, 0);   // 00:00 / midnight
         assert_eq!(d2_end, 240);   // 04:00
-        assert_eq!(d2_text, format!("{} 04:00", crate::i18n::gettext("until")));
+        assert_eq!(d2_text, format!("{} 04:00", gettext("until")));
     }
 
     #[test]
     fn test_duration_and_recurrence_formatting() {
         let d90 = format_duration_text(90);
-        assert_eq!(d90, format!("1 {} 30 {}", crate::i18n::gettext("hr"), crate::i18n::gettext("min")));
+        assert_eq!(d90, format!("1 {} 30 {}", gettext("hr"), gettext("min")));
         let d60 = format_duration_text(60);
-        assert_eq!(d60, format!("1 {}", crate::i18n::gettext("hr")));
+        assert_eq!(d60, format!("1 {}", gettext("hr")));
         let d120 = format_duration_text(120);
-        assert_eq!(d120, format!("2 {}", crate::i18n::gettext("hr")));
+        assert_eq!(d120, format!("2 {}", gettext("hr")));
         let d45 = format_duration_text(45);
-        assert_eq!(d45, format!("45 {}", crate::i18n::gettext("min")));
+        assert_eq!(d45, format!("45 {}", gettext("min")));
 
         let mut event = event_with_start("2026-09-09 10:00");
         event.component = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nRRULE:FREQ=WEEKLY;BYDAY=MO\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string();
         let weekly = format_recurrence_summary(&event);
-        assert_eq!(weekly, Some(crate::i18n::gettext("Weekly recurrence")));
+        assert_eq!(weekly, Some(gettext("Weekly recurrence")));
 
         event.component = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nRRULE:FREQ=DAILY\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string();
         let daily = format_recurrence_summary(&event);
-        assert_eq!(daily, Some(crate::i18n::gettext("Daily recurrence")));
+        assert_eq!(daily, Some(gettext("Daily recurrence")));
     }
 
     #[test]
@@ -35205,9 +35370,9 @@ mod tests {
         assert_eq!(
             badges,
             vec![
-                (crate::i18n::gettext("Tentative"), "warning-pill"),
-                (crate::i18n::gettext("Free"), "success-pill"),
-                (crate::i18n::gettext("Confidential"), "neutral-pill"),
+                (gettext("Tentative"), "warning-pill"),
+                (gettext("Free"), "success-pill"),
+                (gettext("Confidential"), "neutral-pill"),
             ]
         );
     }
@@ -35218,7 +35383,7 @@ mod tests {
         let summary = format_alarm_summary(component);
         assert_eq!(
             summary,
-            Some(crate::i18n::ngettext("{n} min before", "{n} min before", 15).replace("{n}", "15"))
+            Some(ngettext("{n} min before", "{n} min before", 15).replace("{n}", "15"))
         );
     }
 
@@ -35294,18 +35459,18 @@ mod tests {
         let short = configured_weekday_names_short();
         let full = configured_weekday_names_full();
         assert_eq!(short.len(), 7);
-        assert_eq!(weekday_short_name(Weekday::Mon), crate::i18n::gettext("Mon"));
-        assert_eq!(weekday_short_name(Weekday::Sun), crate::i18n::gettext("Sun"));
+        assert_eq!(weekday_short_name(Weekday::Mon), gettext("Mon"));
+        assert_eq!(weekday_short_name(Weekday::Sun), gettext("Sun"));
         if configured_first_weekday() == Weekday::Mon {
-            assert_eq!(short[0], crate::i18n::gettext("Mon"));
-            assert_eq!(short[6], crate::i18n::gettext("Sun"));
-            assert_eq!(full[0], crate::i18n::gettext("Monday"));
-            assert_eq!(full[6], crate::i18n::gettext("Sunday"));
+            assert_eq!(short[0], gettext("Mon"));
+            assert_eq!(short[6], gettext("Sun"));
+            assert_eq!(full[0], gettext("Monday"));
+            assert_eq!(full[6], gettext("Sunday"));
         } else {
-            assert_eq!(short[0], crate::i18n::gettext("Sun"));
-            assert_eq!(short[6], crate::i18n::gettext("Sat"));
-            assert_eq!(full[0], crate::i18n::gettext("Sunday"));
-            assert_eq!(full[6], crate::i18n::gettext("Saturday"));
+            assert_eq!(short[0], gettext("Sun"));
+            assert_eq!(short[6], gettext("Sat"));
+            assert_eq!(full[0], gettext("Sunday"));
+            assert_eq!(full[6], gettext("Saturday"));
         }
     }
 
@@ -35982,7 +36147,7 @@ mod tests {
         match &items[4] {
             PreparedAgendaItem::EventRow { record, time_str, y, height, .. } => {
                 assert_eq!(record.uid, "ev-3");
-                assert_eq!(time_str, &crate::i18n::gettext("All Day"));
+                assert_eq!(time_str, &gettext("All Day"));
                 assert_eq!(*y, 164.0);
                 assert_eq!(*height, 46.0);
             }
@@ -36190,7 +36355,7 @@ mod tests {
                 },
                 identity: None,
                 color: (53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0),
-                time_str: "Ganztägig".to_string(),
+                time_str: "All day".to_string(),
                 title: "Bad putzen".to_string(),
                 sub: String::new(),
                 category: None,
@@ -36207,7 +36372,7 @@ mod tests {
                     summary: "Team-Sprint & Quartalsplanung".to_string(),
                     start: "2026-10-06 09:00".to_string(),
                     end: "2026-10-06 10:30".to_string(),
-                    location: "Großer Konferenzraum B".to_string(),
+                    location: "Large Conference Room B".to_string(),
                     description: String::new(),
                     all_day: false,
                 },
@@ -36215,7 +36380,7 @@ mod tests {
                 color: (230.0 / 255.0, 97.0 / 255.0, 0.0 / 255.0),
                 time_str: "09:00–10:30".to_string(),
                 title: "Team-Sprint & Quartalsplanung".to_string(),
-                sub: "Großer Konferenzraum B".to_string(),
+                sub: "Large Conference Room B".to_string(),
                 category: Some("Arbeit".to_string()),
                 y: 82.0,
                 height: 46.0,
@@ -36906,14 +37071,14 @@ mod tests {
 
         // Verify orientation icons and regression against missing symbolic icons
         let (side_icon, _) = match YearPreviewOrientation::Side {
-            YearPreviewOrientation::Side => ("pan-down-symbolic", crate::i18n::gettext("Show preview at bottom")),
-            YearPreviewOrientation::Bottom => ("sidebar-show-right-symbolic", crate::i18n::gettext("Show preview on right")),
+            YearPreviewOrientation::Side => ("pan-down-symbolic", gettext("Show preview at bottom")),
+            YearPreviewOrientation::Bottom => ("sidebar-show-right-symbolic", gettext("Show preview on right")),
         };
         assert_eq!(side_icon, "pan-down-symbolic");
 
         let (bottom_icon, _) = match YearPreviewOrientation::Bottom {
-            YearPreviewOrientation::Side => ("pan-down-symbolic", crate::i18n::gettext("Show preview at bottom")),
-            YearPreviewOrientation::Bottom => ("sidebar-show-right-symbolic", crate::i18n::gettext("Show preview on right")),
+            YearPreviewOrientation::Side => ("pan-down-symbolic", gettext("Show preview at bottom")),
+            YearPreviewOrientation::Bottom => ("sidebar-show-right-symbolic", gettext("Show preview on right")),
         };
         assert_eq!(bottom_icon, "sidebar-show-right-symbolic");
     }
@@ -37133,7 +37298,7 @@ mod tests {
 
         // Task 1: Due today -> "Today", not overdue
         let due0 = layout.items[0].due_text.as_deref();
-        assert_eq!(due0, Some(crate::i18n::gettext("Today").as_str()));
+        assert_eq!(due0, Some(gettext("Today").as_str()));
         assert!(!layout.items[0].is_overdue);
 
         // Task 2: Due in the past (2026-09-10 < 2026-09-15) and not completed -> is_overdue
@@ -37185,7 +37350,7 @@ mod tests {
         assert_eq!(layout.items.len(), 2);
         assert_eq!(layout.total_height, 34.0 * 2.0);
         assert_eq!(layout.items[0].title, "Shopping list");
-        assert_eq!(layout.items[1].title, crate::i18n::gettext("(Untitled)"));
+        assert_eq!(layout.items[1].title, gettext("(Untitled)"));
 
         // Hit testing
         let hit0 = hit_test_memopad(&layout, 50.0, 15.0);
@@ -39530,12 +39695,12 @@ mod tests {
             uid: "busycal-test-1".to_string(),
             source_uid: "src-1".to_string(),
             source_display_name: "Arbeit".to_string(),
-            component: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:busycal-test-1\r\nSUMMARY:Altes Meeting\r\nLOCATION:Alter Raum\r\nDTSTART:20261015T090000\r\nDTEND:20261015T103000\r\nDESCRIPTION:Alte Notizen\r\nSTATUS:CONFIRMED\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string(),
-            summary: "Altes Meeting".to_string(),
+            component: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:busycal-test-1\r\nSUMMARY:Old Meeting\r\nLOCATION:Old Room\r\nDTSTART:20261015T090000\r\nDTEND:20261015T103000\r\nDESCRIPTION:Old Notes\r\nSTATUS:CONFIRMED\r\nEND:VEVENT\r\nEND:VCALENDAR".to_string(),
+            summary: "Old Meeting".to_string(),
             start: "2026-10-15T09:00:00".to_string(),
             end: "2026-10-15T10:30:00".to_string(),
-            location: "Alter Raum".to_string(),
-            description: "Alte Notizen".to_string(),
+            location: "Old Room".to_string(),
+            description: "Old Notes".to_string(),
             all_day: false,
         };
 
@@ -39548,17 +39713,17 @@ mod tests {
         let updated = update_event_record_inline(
             &event.component,
             &event.uid,
-            "Neuer Titel",
-            "Neuer Raum",
+            "New Title",
+            "New Room",
             false,
             "2026-10-15 14:00",
             "2026-10-15 15:30",
-            "Neue wichtige Notizen",
+            "New Important Notes",
         ).expect("inline update succeeds");
 
-        assert!(updated.contains("SUMMARY:Neuer Titel"));
-        assert!(updated.contains("LOCATION:Neuer Raum"));
-        assert!(updated.contains("DESCRIPTION:Neue wichtige Notizen"));
+        assert!(updated.contains("SUMMARY:New Title"));
+        assert!(updated.contains("LOCATION:New Room"));
+        assert!(updated.contains("DESCRIPTION:New Important Notes"));
         assert!(updated.contains("DTSTART:20261015T140000"));
         assert!(updated.contains("DTEND:20261015T153000"));
         assert!(updated.contains("STATUS:CONFIRMED"));
@@ -39567,15 +39732,15 @@ mod tests {
         let all_day_updated = update_event_record_inline(
             &event.component,
             &event.uid,
-            "Ganztägiger Workshop",
+            "All-Day Workshop",
             "Offsite",
             true,
             "2026-10-16",
             "2026-10-17",
-            "Ganztägig Notizen",
+            "All-Day Notes",
         ).expect("all-day update succeeds");
 
-        assert!(all_day_updated.contains("SUMMARY:Ganztägiger Workshop"));
+        assert!(all_day_updated.contains("SUMMARY:All-Day Workshop"));
         assert!(all_day_updated.contains("DTSTART;VALUE=DATE:20261016"));
         assert!(all_day_updated.contains("DTEND;VALUE=DATE:20261017"));
     }
@@ -39590,10 +39755,10 @@ mod tests {
         assert!(format_recurrence_end_summary(rrule_count).contains("10"));
 
         let rrule_forever = "BEGIN:VEVENT\r\nRRULE:FREQ=YEARLY\r\nEND:VEVENT";
-        assert_eq!(format_recurrence_end_summary(rrule_forever), crate::i18n::gettext("Never"));
+        assert_eq!(format_recurrence_end_summary(rrule_forever), gettext("Never"));
 
         let rrule_none = "BEGIN:VEVENT\r\nSUMMARY:Simple\r\nEND:VEVENT";
-        assert_eq!(format_recurrence_end_summary(rrule_none), crate::i18n::gettext("Never"));
+        assert_eq!(format_recurrence_end_summary(rrule_none), gettext("Never"));
 
         // 2. Recurrence day description
         let desc = format_rrule_detail_description("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR");
@@ -39625,6 +39790,49 @@ mod tests {
         let dummy = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let inspector_box = build_calendar_event_inspector_sidebar(&page, &dummy, &ev, None);
         assert!(inspector_box.first_child().is_some());
+    }
+
+    #[test]
+    fn disabled_calendar_sources_are_filtered_and_pruned_from_views() {
+        // A 40-char hex EDS source UID without an active .source file on disk is treated as disabled
+        let disabled_hex_uid = "00000000000000000000000000000000deadbeef";
+        let enabled_uid = "local-calendar";
+
+        let mut disabled_ev = event_with_start("2026-10-15T09:00:00");
+        disabled_ev.uid = "disabled-ev-1".to_string();
+        disabled_ev.source_uid = disabled_hex_uid.to_string();
+        disabled_ev.summary = "Disabled Gmail Event".to_string();
+
+        let mut enabled_ev = event_with_start("2026-10-15T11:00:00");
+        enabled_ev.uid = "enabled-ev-1".to_string();
+        enabled_ev.source_uid = enabled_uid.to_string();
+        enabled_ev.summary = "Local Event".to_string();
+
+        let empty_hidden = HashSet::new();
+        assert!(!event_matches_calendar_filter_with_options(
+            &disabled_ev,
+            "",
+            None,
+            &empty_hidden,
+            false,
+        ));
+        assert!(event_matches_calendar_filter_with_options(
+            &enabled_ev,
+            "",
+            None,
+            &empty_hidden,
+            false,
+        ));
+
+        let snapshot = CalendarSnapshot {
+            events: vec![disabled_ev.clone(), enabled_ev.clone()],
+            tasks: Vec::new(),
+            memos: Vec::new(),
+        };
+        let index = CalendarSnapshotIndex::new(Arc::new(snapshot));
+        let indices = filtered_sorted_event_indices(&index, "", None, &empty_hidden);
+        assert_eq!(indices.len(), 1);
+        assert_eq!(index.snapshot.events[indices[0]].uid, "enabled-ev-1");
     }
 }
 

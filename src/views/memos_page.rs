@@ -1,3 +1,5 @@
+use crate::i18n::gettext;
+use crate::i18n::ngettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // MemosPage — Dedicated Memos and Notes (VJOURNAL) manager view.
@@ -5,7 +7,7 @@
 // Features:
 // - Color-coded note entries
 // - Memo list sidebar & detail text viewer
-// - "+ Neue Notiz" memo creation button
+// - "+ New Memo" memo creation button
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -298,7 +300,7 @@ pub(crate) fn prepare_memo_table_layout(
 
     for memo in memos {
         let summary = if memo.summary.trim().is_empty() {
-            crate::i18n::gettext("(Untitled)")
+            gettext("(Untitled)")
         } else {
             memo.summary.clone()
         };
@@ -403,10 +405,10 @@ pub(crate) fn draw_memo_table_header(
     cr.line_to(width, height - 0.5);
     cr.stroke().ok();
 
-    let col_title = crate::i18n::gettext("Title");
-    let col_source = crate::i18n::gettext("Notebook");
-    let col_updated = crate::i18n::gettext("Updated");
-    let col_categories = crate::i18n::gettext("Categories");
+    let col_title = gettext("Title");
+    let col_source = gettext("Notebook");
+    let col_updated = gettext("Updated");
+    let col_categories = gettext("Categories");
     let columns = [
         (MemoTableColumn::Title, col_title.as_str(), layout.col_color_w, layout.col_title_w),
         (MemoTableColumn::Source, col_source.as_str(), layout.col_color_w + layout.col_title_w, layout.col_source_w),
@@ -647,11 +649,11 @@ fn memo_source_projection_label(source: &MemoSourceProjection) -> String {
         .then_some(source.display_name.as_str())
         .unwrap_or(source.uid.as_str());
     if !source.connected {
-        format!("{} · {name}", crate::i18n::gettext("Unreachable"))
+        format!("{} · {name}", gettext("Unreachable"))
     } else if !source.available {
-        format!("{} · {name}", crate::i18n::gettext("Unavailable"))
+        format!("{} · {name}", gettext("Unavailable"))
     } else if !source.writable {
-        format!("{} · {name}", crate::i18n::gettext("Read-Only"))
+        format!("{} · {name}", gettext("Read-Only"))
     } else {
         name.to_string()
     }
@@ -776,8 +778,8 @@ impl MemosPage {
 
     pub(crate) fn apply_toolbar_button_modes(&self, is_compact: bool) {
         let imp = self.imp();
-        let save_text = crate::i18n::gettext("Save");
-        let delete_text = crate::i18n::gettext("Delete");
+        let save_text = gettext("Save");
+        let delete_text = gettext("Delete");
         let buttons: [(&RefCell<Option<gtk::Button>>, &str, &str); 2] = [
             (&imp.save_memo_button, &save_text, "document-save-symbolic"),
             (&imp.delete_memo_button, &delete_text, "user-trash-symbolic"),
@@ -817,7 +819,7 @@ impl MemosPage {
             if memo.uid == first_sel.uid && memo.source_uid == first_sel.source_uid {
                 let summary = memo.summary.trim().to_string();
                 return if summary.is_empty() {
-                    Some(crate::i18n::gettext("Memo"))
+                    Some(gettext("Memo"))
                 } else {
                     Some(summary)
                 };
@@ -1095,6 +1097,20 @@ impl MemosPage {
             }
         }
         self.render_memo_sidebar();
+        if let (Some(memo_list), Some(memo_records), Some(empty_state)) = (
+            self.imp().memo_list.borrow().as_ref().cloned(),
+            self.imp().memo_records.borrow().as_ref().cloned(),
+            self.imp().memo_empty_state.borrow().as_ref().cloned(),
+        ) {
+            memo_records.borrow_mut().retain(|memo| {
+                memo.source_uid.is_empty()
+                    || crate::services::eds_service::is_source_enabled_for_service(
+                        &memo.source_uid,
+                        crate::services::eds_service::EdsSourceKind::Calendar,
+                    )
+            });
+            refresh_memo_filter_view(self, &memo_list, &memo_records, &empty_state);
+        }
     }
 
     pub(crate) fn present_memo_source_context_menu(
@@ -1147,7 +1163,7 @@ impl MemosPage {
             let page_weak = page_weak.clone();
             move || {
                 if let Some(page) = page_weak.upgrade() {
-                    let notebook_label = crate::i18n::gettext("Notebook");
+                    let notebook_label = gettext("Notebook");
                     let dialog = crate::dialogs::SourcePropertiesDialog::new(
                         &uid_props,
                         &name_props,
@@ -1189,7 +1205,7 @@ impl MemosPage {
                     let root_window = page.root().and_downcast::<gtk::Window>();
                     let current_sel = page.imp().memo_source_selector.borrow().clone();
                     let page_weak_save = page.downgrade();
-                    let notebook_label = crate::i18n::gettext("Notebook");
+                    let notebook_label = gettext("Notebook");
                     let dialog = crate::dialogs::ManageGroupsDialog::new(
                         root_window.as_ref(),
                         &notebook_label,
@@ -1215,7 +1231,7 @@ impl MemosPage {
             }
         });
 
-        let notebook_label = crate::i18n::gettext("Notebook");
+        let notebook_label = gettext("Notebook");
         let popover = crate::models::source_selector::create_source_context_popover(
             is_primary,
             &notebook_label,
@@ -1312,7 +1328,7 @@ impl MemosPage {
                 .margin_start(0)
                 .margin_end(6)
                 .valign(gtk::Align::Center)
-                .css_classes(vec![
+                .css_classes([
                     "calendar-sidebar-row",
                     "calendar-sidebar-group-row",
                     "sidebar-account-row",
@@ -1336,7 +1352,7 @@ impl MemosPage {
                 .halign(gtk::Align::Start)
                 .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
-                .css_classes(vec!["account-heading"])
+                .css_classes(["account-heading"])
                 .build();
             group_box.append(&group_label);
 
@@ -1344,7 +1360,7 @@ impl MemosPage {
                 .child(&group_box)
                 .activatable(true)
                 .selectable(false)
-                .css_classes(vec![
+                .css_classes([
                     "calendar-sidebar-group-row",
                     "account-root-row",
                     "sidebar-account-row",
@@ -1389,7 +1405,7 @@ impl MemosPage {
                     .spacing(6)
                     .margin_start(14)
                     .margin_end(6)
-                    .css_classes(vec!["calendar-sidebar-row", "calendar-sidebar-child-row"])
+                    .css_classes(["calendar-sidebar-row", "calendar-sidebar-child-row"])
                     .build();
 
                 let clean_color: String = color_hex
@@ -1403,8 +1419,8 @@ impl MemosPage {
                     .active(item.enabled && selector.is_selected(&source_uid))
                     .sensitive(item.enabled)
                     .valign(gtk::Align::Center)
-                    .tooltip_text(&crate::i18n::gettext("Show/hide memo list in views"))
-                    .css_classes(vec![color_class.as_str()])
+                    .tooltip_text(gettext("Show/hide memo list in views"))
+                    .css_classes([color_class.as_str()])
                     .build();
 
                 let page_weak_for_toggle = self.downgrade();
@@ -1445,7 +1461,7 @@ impl MemosPage {
                     let sync_error_icon =
                         gtk::Image::from_icon_name("dialog-warning-symbolic");
                     sync_error_icon.add_css_class("warning");
-                    sync_error_icon.set_tooltip_text(Some(&crate::i18n::gettext("Memo list not synchronized or offline")));
+                    sync_error_icon.set_tooltip_text(Some(&gettext("Memo list not synchronized or offline")));
                     sync_error_icon.set_valign(gtk::Align::Center);
                     child_box.append(&sync_error_icon);
                 }
@@ -1454,7 +1470,7 @@ impl MemosPage {
                     .child(&child_box)
                     .activatable(true)
                     .selectable(true)
-                    .css_classes(vec!["calendar-sidebar-child-row"])
+                    .css_classes(["calendar-sidebar-child-row"])
                     .build();
 
                 let page_weak_for_menu = self.downgrade();
@@ -1538,7 +1554,7 @@ impl MemosPage {
                 let color = calendar_source_color(&collection.uid, &account_name);
                 available_sources.insert(memo_uid.clone());
                 writable_sources.insert(memo_uid.clone());
-                let memos_name = crate::i18n::gettext("Memos");
+                let memos_name = gettext("Memos");
                 items.push(
                     crate::models::source_selector::SourceSelectorItem::new(
                         &memo_uid,
@@ -1554,8 +1570,8 @@ impl MemosPage {
         }
 
         if CalendarStoreService::new().is_writable() && !items.iter().any(|i| i.uid == "local-calendar") {
-            let local_memos_name = crate::i18n::gettext("Local Memo List");
-            let on_this_computer = crate::i18n::gettext("On This Computer");
+            let local_memos_name = gettext("Local Memo List");
+            let on_this_computer = gettext("On This Computer");
             let color = calendar_source_color("local-calendar", &local_memos_name);
             available_sources.insert("local-calendar".to_string());
             writable_sources.insert("local-calendar".to_string());
@@ -1587,6 +1603,20 @@ impl MemosPage {
         }
 
         self.render_memo_sidebar();
+        if let (Some(memo_list), Some(memo_records), Some(empty_state)) = (
+            self.imp().memo_list.borrow().as_ref().cloned(),
+            self.imp().memo_records.borrow().as_ref().cloned(),
+            self.imp().memo_empty_state.borrow().as_ref().cloned(),
+        ) {
+            memo_records.borrow_mut().retain(|memo| {
+                memo.source_uid.is_empty()
+                    || crate::services::eds_service::is_source_enabled_for_service(
+                        &memo.source_uid,
+                        crate::services::eds_service::EdsSourceKind::Calendar,
+                    )
+            });
+            refresh_memo_filter_view(self, &memo_list, &memo_records, &empty_state);
+        }
     }
 
     pub(crate) fn reload_memo_sources(&self) {
@@ -1667,28 +1697,28 @@ impl MemosPage {
             match result {
                 Ok(0) => {
                     let message = if is_undo {
-                        crate::i18n::gettext("No memo action to undo")
+                        gettext("No memo action to undo")
                     } else {
-                        crate::i18n::gettext("No memo action to redo")
+                        gettext("No memo action to redo")
                     };
                     page.show_toast(&message);
                 }
                 Ok(_count) => {
                     reload_memo_snapshot_async(&page, &memo_list, &memo_records, &empty_state);
                     let message = if is_undo {
-                        crate::i18n::gettext("Undid last memo action")
+                        gettext("Undid last memo action")
                     } else {
-                        crate::i18n::gettext("Redid last memo action")
+                        gettext("Redid last memo action")
                     };
                     page.show_toast(&message);
                 }
                 Err(error) => {
                     reload_memo_snapshot_async(&page, &memo_list, &memo_records, &empty_state);
                     let message = if is_undo {
-                        crate::i18n::gettext("Undo not possible: {error}")
+                        gettext("Undo not possible: {error}")
                             .replace("{error}", &error.to_string())
                     } else {
-                        crate::i18n::gettext("Redo not possible: {error}")
+                        gettext("Redo not possible: {error}")
                             .replace("{error}", &error.to_string())
                     };
                     page.show_toast(&message);
@@ -1797,17 +1827,17 @@ impl MemosPage {
             .margin_end(0)
             .margin_top(4)
             .margin_bottom(4)
-            .css_classes(vec!["calendar-sidebar"])
+            .css_classes(["calendar-sidebar"])
             .build();
 
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text(&crate::i18n::gettext("Search memos…"))
+            .placeholder_text(gettext("Search memos…"))
             .build();
         self.imp().search_entry.replace(Some(search_entry.clone()));
-        let search_all = crate::i18n::gettext("All Fields");
-        let search_summary = crate::i18n::gettext("Summary");
-        let search_desc = crate::i18n::gettext("Description");
-        let search_adv = crate::i18n::gettext("Advanced");
+        let search_all = gettext("All Fields");
+        let search_summary = gettext("Summary");
+        let search_desc = gettext("Description");
+        let search_adv = gettext("Advanced");
         let search_mode_model = gtk::StringList::new(&[
             &search_all,
             &search_summary,
@@ -1817,15 +1847,15 @@ impl MemosPage {
         let search_mode_selector =
             gtk::DropDown::new(Some(search_mode_model), None::<&gtk::Expression>);
         search_mode_selector.set_selected(memo_search_mode_index(initial_memo_search_mode));
-        search_mode_selector.set_tooltip_text(Some(&crate::i18n::gettext(
+        search_mode_selector.set_tooltip_text(Some(&gettext(
             "Memo search field: summary, description, all fields, or summary:value AND description:value",
         )));
-        let sort_updated = crate::i18n::gettext("Last Modified");
-        let sort_title = crate::i18n::gettext("Title");
-        let sort_source = crate::i18n::gettext("Source");
+        let sort_updated = gettext("Last Modified");
+        let sort_title = gettext("Title");
+        let sort_source = gettext("Source");
         let sort_model = gtk::StringList::new(&[&sort_updated, &sort_title, &sort_source]);
         let sort_selector = gtk::DropDown::new(Some(sort_model), None::<&gtk::Expression>);
-        sort_selector.set_tooltip_text(Some(&crate::i18n::gettext("Sort memos")));
+        sort_selector.set_tooltip_text(Some(&gettext("Sort memos")));
         sort_selector.set_selected(match memo_sort.get() {
             MemoSort::Updated => 0,
             MemoSort::Title => 1,
@@ -1833,7 +1863,7 @@ impl MemosPage {
         });
 
         let direction_button = gtk::Button::builder()
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         let set_direction_button = |button: &gtk::Button, descending: bool| {
@@ -1843,15 +1873,15 @@ impl MemosPage {
                 "view-sort-ascending-symbolic"
             });
             let tt = if descending {
-                crate::i18n::gettext("Sorted descending")
+                gettext("Sorted descending")
             } else {
-                crate::i18n::gettext("Sorted ascending")
+                gettext("Sorted ascending")
             };
             button.set_tooltip_text(Some(&tt));
             let acc = if descending {
-                crate::i18n::gettext("Change sort to ascending")
+                gettext("Change sort to ascending")
             } else {
-                crate::i18n::gettext("Change sort to descending")
+                gettext("Change sort to descending")
             };
             set_accessible_label(
                 button,
@@ -1859,17 +1889,17 @@ impl MemosPage {
             );
         };
         set_direction_button(&direction_button, memo_sort_descending.get());
-        let all_memo_lists = crate::i18n::gettext("All Memo Lists");
+        let all_memo_lists = gettext("All Memo Lists");
         let source_model = gtk::StringList::new(&[&all_memo_lists]);
         let source_selector =
             gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
-        source_selector.set_tooltip_text(Some(&crate::i18n::gettext("Select memo list")));
-        let all_categories = crate::i18n::gettext("All Categories");
-        let uncategorized = crate::i18n::gettext("Uncategorized");
+        source_selector.set_tooltip_text(Some(&gettext("Select memo list")));
+        let all_categories = gettext("All Categories");
+        let uncategorized = gettext("Uncategorized");
         let category_model = gtk::StringList::new(&[&all_categories, &uncategorized]);
         let category_selector =
             gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
-        category_selector.set_tooltip_text(Some(&crate::i18n::gettext("Select memo category")));
+        category_selector.set_tooltip_text(Some(&gettext("Select memo category")));
         self.imp()
             .memo_category_model
             .replace(Some(category_model.clone()));
@@ -1880,7 +1910,7 @@ impl MemosPage {
 
         let memo_source_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["navigation-sidebar", "calendar-sidebar-list"])
+            .css_classes(["navigation-sidebar", "calendar-sidebar-list"])
             .build();
         self.imp()
             .memo_source_list
@@ -1889,7 +1919,7 @@ impl MemosPage {
 
         let memo_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Multiple)
-            .css_classes(vec!["navigation-sidebar", "memo-list"])
+            .css_classes(["navigation-sidebar", "memo-list"])
             .build();
 
         let memo_sort_for_list = Rc::clone(&memo_sort);
@@ -1937,8 +1967,8 @@ impl MemosPage {
         let memo_mutation_generation = Rc::new(Cell::new(0u64));
 
         let empty_state = gtk::Label::builder()
-            .label(&crate::i18n::gettext("No synchronized memos loaded"))
-            .css_classes(vec!["dim-label"])
+            .label(gettext("No synchronized memos loaded"))
+            .css_classes(["dim-label"])
             .wrap(false)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .margin_start(12)
@@ -2064,15 +2094,15 @@ impl MemosPage {
                     "view-sort-ascending-symbolic"
                 });
                 let tt = if descending {
-                    crate::i18n::gettext("Sorted descending")
+                    gettext("Sorted descending")
                 } else {
-                    crate::i18n::gettext("Sorted ascending")
+                    gettext("Sorted ascending")
                 };
                 direction_button_for_settings.set_tooltip_text(Some(&tt));
                 let acc = if descending {
-                    crate::i18n::gettext("Change sort to ascending")
+                    gettext("Change sort to ascending")
                 } else {
-                    crate::i18n::gettext("Change sort to descending")
+                    gettext("Change sort to descending")
                 };
                 set_accessible_label(
                     &direction_button_for_settings,
@@ -2174,11 +2204,11 @@ impl MemosPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .visible(false)
-            .css_classes(vec!["sidebar-drawer-header"])
+            .css_classes(["sidebar-drawer-header"])
             .build();
         let drawer_icon = gtk::Image::from_icon_name("accessories-text-editor-symbolic");
         let drawer_title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Memos"))
+            .label(gettext("Memos"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -2188,7 +2218,7 @@ impl MemosPage {
 
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["meridian-sidebar-drawer"])
+            .css_classes(["meridian-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
         sidebar_outer_box.append(&sidebar_scroll);
@@ -2213,13 +2243,13 @@ impl MemosPage {
             .build();
 
         let memo_title = gtk::Entry::builder()
-            .placeholder_text(&crate::i18n::gettext("No memo selected"))
-            .css_classes(vec!["title-1"])
+            .placeholder_text(gettext("No memo selected"))
+            .css_classes(["title-1"])
             .build();
 
         let memo_meta = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Memos will be loaded after synchronization"))
-            .css_classes(vec!["dim-label"])
+            .label(gettext("Memos will be loaded after synchronization"))
+            .css_classes(["dim-label"])
             .halign(gtk::Align::Start)
             .build();
 
@@ -2230,7 +2260,7 @@ impl MemosPage {
             .build();
         memo_text
             .buffer()
-            .set_text(&crate::i18n::gettext("No memo data available yet."));
+            .set_text(&gettext("No memo data available yet."));
 
         let memo_title_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -2243,64 +2273,64 @@ impl MemosPage {
 
         let save_memo_btn = gtk::Button::builder()
             .icon_name("document-save-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Save memo (Ctrl+S)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Save memo (Ctrl+S)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&save_memo_btn, &crate::i18n::gettext("Save memo"));
+        set_accessible_label(&save_memo_btn, &gettext("Save memo"));
         let delete_memo_btn = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Delete memo (Delete)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Delete memo (Delete)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&delete_memo_btn, &crate::i18n::gettext("Delete memo"));
+        set_accessible_label(&delete_memo_btn, &gettext("Delete memo"));
         let export_memo_btn = gtk::Button::builder()
             .icon_name("document-save-as-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Export memo"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Export memo"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&export_memo_btn, &crate::i18n::gettext("Export memo"));
+        set_accessible_label(&export_memo_btn, &gettext("Export memo"));
 
         let open_memo_btn = gtk::Button::builder()
             .icon_name("document-open-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Open memo"))
+            .tooltip_text(gettext("Open memo"))
             .build();
         let forward_memo_btn = gtk::Button::builder()
             .icon_name("mail-forward-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Forward memo"))
+            .tooltip_text(gettext("Forward memo"))
             .build();
         let open_url_memo_btn = gtk::Button::builder()
             .icon_name("external-link-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Open memo URL"))
+            .tooltip_text(gettext("Open memo URL"))
             .build();
         let print_memo_btn = gtk::Button::builder()
             .icon_name("document-print-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Print memo"))
+            .tooltip_text(gettext("Print memo"))
             .build();
         let save_as_memo_btn = gtk::Button::builder()
             .icon_name("document-save-as-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Save memo as"))
+            .tooltip_text(gettext("Save memo as"))
             .build();
         let copy_memo_btn = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Copy memo"))
+            .tooltip_text(gettext("Copy memo"))
             .build();
         let cut_memo_btn = gtk::Button::builder()
             .icon_name("edit-cut-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Cut memo"))
+            .tooltip_text(gettext("Cut memo"))
             .build();
         let paste_memo_btn = gtk::Button::builder()
             .icon_name("edit-paste-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Paste memo"))
+            .tooltip_text(gettext("Paste memo"))
             .build();
         let select_all_memo_btn = gtk::Button::builder()
             .icon_name("edit-select-all-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Select all memos"))
+            .tooltip_text(gettext("Select all memos"))
             .build();
-        let classic_text = crate::i18n::gettext("Classic");
-        let vertical_text = crate::i18n::gettext("Vertical");
+        let classic_text = gettext("Classic");
+        let vertical_text = gettext("Vertical");
         let preview_orientation_model = gtk::StringList::new(&[&classic_text, &vertical_text]);
         let preview_orientation_selector =
             gtk::DropDown::new(Some(preview_orientation_model), None::<&gtk::Expression>);
@@ -2308,7 +2338,7 @@ impl MemosPage {
             MemoPreviewOrientation::Classic => 0,
             MemoPreviewOrientation::Vertical => 1,
         });
-        preview_orientation_selector.set_tooltip_text(Some(&crate::i18n::gettext("Memo preview orientation")));
+        preview_orientation_selector.set_tooltip_text(Some(&gettext("Memo preview orientation")));
         preview_orientation_selector.set_valign(gtk::Align::Center);
 
         let more_popover = gtk::Popover::builder().build();
@@ -2341,16 +2371,16 @@ impl MemosPage {
                 });
             };
 
-        configure_menu_button(&open_memo_btn, "document-open-symbolic", &crate::i18n::gettext("Open"), &more_popover);
-        configure_menu_button(&forward_memo_btn, "mail-forward-symbolic", &crate::i18n::gettext("Forward"), &more_popover);
-        configure_menu_button(&open_url_memo_btn, "external-link-symbolic", &crate::i18n::gettext("Open URL"), &more_popover);
-        configure_menu_button(&export_memo_btn, "document-save-as-symbolic", &crate::i18n::gettext("Export…"), &more_popover);
-        configure_menu_button(&save_as_memo_btn, "document-save-as-symbolic", &crate::i18n::gettext("Save As…"), &more_popover);
-        configure_menu_button(&print_memo_btn, "document-print-symbolic", &crate::i18n::gettext("Print Note… (Ctrl+P)"), &more_popover);
-        configure_menu_button(&cut_memo_btn, "edit-cut-symbolic", &crate::i18n::gettext("Cut"), &more_popover);
-        configure_menu_button(&copy_memo_btn, "edit-copy-symbolic", &crate::i18n::gettext("Copy"), &more_popover);
-        configure_menu_button(&paste_memo_btn, "edit-paste-symbolic", &crate::i18n::gettext("Paste"), &more_popover);
-        configure_menu_button(&select_all_memo_btn, "edit-select-all-symbolic", &crate::i18n::gettext("Select All"), &more_popover);
+        configure_menu_button(&open_memo_btn, "document-open-symbolic", &gettext("Open"), &more_popover);
+        configure_menu_button(&forward_memo_btn, "mail-forward-symbolic", &gettext("Forward"), &more_popover);
+        configure_menu_button(&open_url_memo_btn, "external-link-symbolic", &gettext("Open URL"), &more_popover);
+        configure_menu_button(&export_memo_btn, "document-save-as-symbolic", &gettext("Export…"), &more_popover);
+        configure_menu_button(&save_as_memo_btn, "document-save-as-symbolic", &gettext("Save As…"), &more_popover);
+        configure_menu_button(&print_memo_btn, "document-print-symbolic", &gettext("Print Note… (Ctrl+P)"), &more_popover);
+        configure_menu_button(&cut_memo_btn, "edit-cut-symbolic", &gettext("Cut"), &more_popover);
+        configure_menu_button(&copy_memo_btn, "edit-copy-symbolic", &gettext("Copy"), &more_popover);
+        configure_menu_button(&paste_memo_btn, "edit-paste-symbolic", &gettext("Paste"), &more_popover);
+        configure_menu_button(&select_all_memo_btn, "edit-select-all-symbolic", &gettext("Select All"), &more_popover);
 
         more_box.append(&open_memo_btn);
         more_box.append(&forward_memo_btn);
@@ -2372,7 +2402,7 @@ impl MemosPage {
         orient_box.set_margin_top(4);
         orient_box.set_margin_bottom(4);
         let orient_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Preview"))
+            .label(gettext("Preview"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
@@ -2385,11 +2415,11 @@ impl MemosPage {
         let more_button = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
             .popover(&more_popover)
-            .tooltip_text(&crate::i18n::gettext("More Actions"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("More Actions"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&more_button, &crate::i18n::gettext("More Actions"));
+        set_accessible_label(&more_button, &gettext("More Actions"));
 
         self.imp().memo_surface_buttons.replace(Some(vec![
             save_memo_btn.clone(),
@@ -2451,12 +2481,12 @@ impl MemosPage {
 
         let preview_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Toggle memo preview (Ctrl+M)"))
+            .tooltip_text(gettext("Toggle memo preview (Ctrl+M)"))
             .active(initial_memo_preview_state.visible)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&preview_toggle, &crate::i18n::gettext("Toggle memo preview"));
+        set_accessible_label(&preview_toggle, &gettext("Toggle memo preview"));
         self.imp().memo_preview_toggle.replace(Some(preview_toggle.clone()));
 
         let sidebar_visible = AppSettings::try_new()
@@ -2465,12 +2495,12 @@ impl MemosPage {
         sidebar_outer_box.set_visible(sidebar_visible);
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Toggle sidebar (F9)"))
+            .tooltip_text(gettext("Toggle sidebar (F9)"))
             .active(sidebar_visible)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&sidebar_toggle, &crate::i18n::gettext("Toggle sidebar"));
+        set_accessible_label(&sidebar_toggle, &gettext("Toggle sidebar"));
 
         let sidebar_for_toggle = sidebar_outer_box.clone();
         let page_weak_for_sidebar = self.downgrade();
@@ -2495,12 +2525,12 @@ impl MemosPage {
 
         let btn_add_memo = gtk::Button::builder()
             .icon_name("document-new-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Create new note (Ctrl+N)"))
-            .css_classes(vec!["suggested-action"])
+            .tooltip_text(gettext("Create new note (Ctrl+N)"))
+            .css_classes(["suggested-action"])
             .valign(gtk::Align::Center)
             .build();
         set_button_icon_with_fallback(&btn_add_memo, "document-new-symbolic", "list-add-symbolic");
-        set_accessible_label(&btn_add_memo, &crate::i18n::gettext("New Memo"));
+        set_accessible_label(&btn_add_memo, &gettext("New Memo"));
         self.imp().new_memo_button.replace(Some(btn_add_memo.clone()));
 
         let memo_list_for_new = memo_list.clone();
@@ -2526,7 +2556,7 @@ impl MemosPage {
             .margin_top(4)
             .margin_bottom(4)
             .hexpand(true)
-            .css_classes(vec!["unified-view-toolbar", "toolbar"])
+            .css_classes(["unified-view-toolbar", "toolbar"])
             .build();
 
         let left_box = gtk::Box::builder()
@@ -2537,7 +2567,7 @@ impl MemosPage {
             .build();
         let action_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .valign(gtk::Align::Center)
             .build();
         action_group.append(&save_memo_btn);
@@ -2560,7 +2590,7 @@ impl MemosPage {
         let sort_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(2)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .build();
         sort_selector.set_valign(gtk::Align::Center);
         direction_button.set_valign(gtk::Align::Center);
@@ -2592,7 +2622,7 @@ impl MemosPage {
             .replace(Some(memos_toolbar_scroll.clone().upcast()));
 
         let memo_preview_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("No unique memo selection"))
+            .label(gettext("No unique memo selection"))
             .use_markup(true)
             .wrap(true)
             .selectable(true)
@@ -2610,9 +2640,9 @@ impl MemosPage {
         content_box.append(&memo_preview_label);
 
         let memo_categories = adw::EntryRow::builder()
-            .title(&crate::i18n::gettext("Categories (comma separated)"))
+            .title(gettext("Categories (comma separated)"))
             .build();
-        memo_categories.set_tooltip_text(Some(&crate::i18n::gettext("e.g. Work, Personal")));
+        memo_categories.set_tooltip_text(Some(&gettext("e.g. Work, Personal")));
         content_box.append(&memo_categories);
         let memo_alarm_editor = AlarmEditor::new(None, "");
         content_box.append(memo_alarm_editor.widget());
@@ -2625,7 +2655,7 @@ impl MemosPage {
             .orientation(gtk::Orientation::Vertical)
             .vexpand(true)
             .hexpand(true)
-            .css_classes(vec!["memo-list-pane"])
+            .css_classes(["memo-list-pane"])
             .build();
 
         let quick_add_box = gtk::Box::builder()
@@ -2635,20 +2665,20 @@ impl MemosPage {
             .margin_end(8)
             .margin_top(6)
             .margin_bottom(6)
-            .css_classes(vec!["memo-quick-add-box", "task-quick-add-box"])
+            .css_classes(["memo-quick-add-box", "task-quick-add-box"])
             .build();
         let quick_add_icon = gtk::Image::builder()
             .icon_name("list-add-symbolic")
             .pixel_size(16)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .valign(gtk::Align::Center)
             .build();
         let quick_add_entry = gtk::Entry::builder()
-            .placeholder_text(&crate::i18n::gettext("Add new note… (press Enter)"))
+            .placeholder_text(gettext("Add new note… (press Enter)"))
             .hexpand(true)
-            .css_classes(vec!["memo-quick-add-entry", "task-quick-add-entry"])
+            .css_classes(["memo-quick-add-entry", "task-quick-add-entry"])
             .build();
-        set_accessible_label(&quick_add_entry, &crate::i18n::gettext("Quickly add new note"));
+        set_accessible_label(&quick_add_entry, &gettext("Quickly add new note"));
         quick_add_box.append(&quick_add_icon);
         quick_add_box.append(&quick_add_entry);
         memo_list_container.append(&quick_add_box);
@@ -2665,9 +2695,9 @@ impl MemosPage {
         let memo_table_header = gtk::DrawingArea::builder()
             .content_height(28)
             .hexpand(true)
-            .css_classes(vec!["memos-table-header"])
+            .css_classes(["memos-table-header"])
             .build();
-        set_accessible_label(&memo_table_header, &crate::i18n::gettext("Memo Table Header"));
+        set_accessible_label(&memo_table_header, &gettext("Memo Table Header"));
 
         let memo_table_canvas = gtk::DrawingArea::builder()
             .content_height(100)
@@ -2675,10 +2705,10 @@ impl MemosPage {
             .focusable(true)
             .can_focus(true)
             .focus_on_click(true)
-            .css_classes(vec!["memos-table-canvas"])
+            .css_classes(["memos-table-canvas"])
             .build();
         set_accessible_role(&memo_table_canvas, gtk::AccessibleRole::List);
-        set_accessible_label(&memo_table_canvas, &crate::i18n::gettext("Memos List"));
+        set_accessible_label(&memo_table_canvas, &gettext("Memos List"));
 
         self.imp()
             .memo_table_header
@@ -2797,14 +2827,14 @@ impl MemosPage {
                             memo_text_for_done.grab_focus();
                             show_toast_for_widget(
                                 &entry_for_done,
-                                &crate::i18n::gettext("Memo »{}« added").replace("{}", &text_for_toast),
+                                &gettext("Memo »{}« added").replace("{}", &text_for_toast),
                             );
                         }
                     }
                     Ok(Err(err)) => {
                         show_toast_for_widget(
                             &entry_for_done,
-                            &crate::i18n::gettext("Error creating memo: {}").replace("{}", &err.to_string()),
+                            &gettext("Error creating memo: {}").replace("{}", &err.to_string()),
                         );
                         entry_for_done.grab_focus();
                     }
@@ -2821,7 +2851,7 @@ impl MemosPage {
             .vexpand(true)
             .hexpand(true)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["memo-preview-pane"])
+            .css_classes(["memo-preview-pane"])
             .build();
         memo_preview_box.set_size_request(220, -1);
         let preview_box = memo_preview_box.clone();
@@ -2834,8 +2864,8 @@ impl MemosPage {
 
         let memo_empty_page = adw::StatusPage::builder()
             .icon_name("accessories-text-editor-symbolic")
-            .title(&crate::i18n::gettext("No memo selected"))
-            .description(&crate::i18n::gettext("Select a memo from the list or create a new one."))
+            .title(gettext("No memo selected"))
+            .description(gettext("Select a memo from the list or create a new one."))
             .vexpand(true)
             .hexpand(true)
             .build();
@@ -3030,7 +3060,7 @@ impl MemosPage {
                     Ok(_) => {
                         show_toast_for_widget(
                             &memo_title_for_save,
-                            &crate::i18n::gettext("Saving is only available for exactly one memo"),
+                            &gettext("Saving is only available for exactly one memo"),
                         );
                         return;
                     }
@@ -3040,13 +3070,13 @@ impl MemosPage {
                     }
                 };
             let Some(memo) = selected.pop() else {
-                show_toast_for_widget(&memo_title_for_save, &crate::i18n::gettext("No memo selected"));
+                show_toast_for_widget(&memo_title_for_save, &gettext("No memo selected"));
                 return;
             };
             if !memo_source_is_writable_for_page(&page, &memo.source_uid) {
                 show_toast_for_widget(
                     &memo_title_for_save,
-                    &crate::i18n::gettext("This memo is from a read-only imported source"),
+                    &gettext("This memo is from a read-only imported source"),
                 );
                 return;
             }
@@ -3132,12 +3162,12 @@ impl MemosPage {
                         if let Some(page) = page_weak_for_save_done.upgrade() {
                             refresh_memo_category_model(&page, &memo_list_for_save_done);
                         }
-                        show_toast_for_widget(&memo_title_for_toast, &crate::i18n::gettext("Memo saved"));
+                        show_toast_for_widget(&memo_title_for_toast, &gettext("Memo saved"));
                     }
                     Ok(Err(err)) => {
                         show_toast_for_widget(
                             &memo_title_for_toast,
-                            &crate::i18n::gettext("Error saving: {}").replace("{}", &err.to_string()),
+                            &gettext("Error saving: {}").replace("{}", &err.to_string()),
                         );
                     }
                     Err(_) => {}
@@ -3173,7 +3203,7 @@ impl MemosPage {
                 return;
             };
             let file_dialog = gtk::FileDialog::builder()
-                .title(&crate::i18n::gettext("Save memo as iCalendar"))
+                .title(gettext("Save memo as iCalendar"))
                 .initial_name("memo.ics")
                 .modal(true)
                 .build();
@@ -3186,7 +3216,7 @@ impl MemosPage {
                     &button_for_result,
                     file,
                     payload,
-                    crate::i18n::gettext("Memo(s) exported as iCalendar"),
+                    gettext("Memo(s) exported as iCalendar"),
                 );
             });
         });
@@ -3205,7 +3235,7 @@ impl MemosPage {
                     }
                 };
             if selected.len() != 1 {
-                show_toast_for_widget(button, &crate::i18n::gettext("Opening is only available for exactly one memo"));
+                show_toast_for_widget(button, &gettext("Opening is only available for exactly one memo"));
                 return;
             }
             let memo = selected
@@ -3235,7 +3265,7 @@ impl MemosPage {
                     }
                 };
             if selected.len() != 1 {
-                show_toast_for_widget(button, &crate::i18n::gettext("Forwarding is only available for exactly one memo"));
+                show_toast_for_widget(button, &gettext("Forwarding is only available for exactly one memo"));
                 return;
             }
             let memo = selected
@@ -3247,7 +3277,7 @@ impl MemosPage {
                     button.display().clipboard().set_text(&payload);
                     show_toast_for_widget(
                         button,
-                        &crate::i18n::gettext("METHOD:PUBLISH provided; real iTIP forwarding is Linux handoff"),
+                        &gettext("METHOD:PUBLISH provided; real iTIP forwarding is Linux handoff"),
                     );
                 }
                 Err(error) => show_toast_for_widget(button, &error),
@@ -3266,7 +3296,7 @@ impl MemosPage {
                 }
             };
             if selected.len() != 1 {
-                show_toast_for_widget(button, &crate::i18n::gettext("Open URL is only available for exactly one memo"));
+                show_toast_for_widget(button, &gettext("Open URL is only available for exactly one memo"));
                 return;
             }
             let memo = selected
@@ -3281,10 +3311,10 @@ impl MemosPage {
                         None::<&gio::AppLaunchContext>,
                         None::<&gio::Cancellable>,
                         move |result| match result {
-                            Ok(()) => show_toast_for_widget(&button_for_result, &crate::i18n::gettext("URL opened")),
+                            Ok(()) => show_toast_for_widget(&button_for_result, &gettext("URL opened")),
                             Err(error) => show_toast_for_widget(
                                 &button_for_result,
-                                &crate::i18n::gettext("Could not open URL: {}").replace("{}", &error.to_string()),
+                                &gettext("Could not open URL: {}").replace("{}", &error.to_string()),
                             ),
                         },
                     );
@@ -3305,14 +3335,14 @@ impl MemosPage {
                 }
             };
             if selected.len() != 1 {
-                show_toast_for_widget(button, &crate::i18n::gettext("Printing is only available for exactly one memo"));
+                show_toast_for_widget(button, &gettext("Printing is only available for exactly one memo"));
                 return;
             }
             let memo = selected.into_iter().next().expect("selection length checked");
             match build_print_document(&memo) {
                 Ok(document) => show_toast_for_widget(
                     button,
-                    &crate::i18n::gettext("Portable print document prepared ({} characters); Print portal is Linux handoff")
+                    &gettext("Portable print document prepared ({} characters); Print portal is Linux handoff")
                         .replace("{}", &document.html.len().to_string()),
                 ),
                 Err(error) => show_toast_for_widget(button, &error),
@@ -3333,7 +3363,7 @@ impl MemosPage {
             if selected.len() != 1 {
                 show_toast_for_widget(
                     button,
-                    &crate::i18n::gettext("Save as is only available for exactly one memo"),
+                    &gettext("Save as is only available for exactly one memo"),
                 );
                 return;
             }
@@ -3352,7 +3382,7 @@ impl MemosPage {
                 return;
             };
             let file_dialog = gtk::FileDialog::builder()
-                .title(&crate::i18n::gettext("Save memo as iCalendar"))
+                .title(gettext("Save memo as iCalendar"))
                 .initial_name("memos.ics")
                 .modal(true)
                 .build();
@@ -3365,7 +3395,7 @@ impl MemosPage {
                     &button_for_result,
                     file,
                     payload,
-                    crate::i18n::gettext("Memo(s) saved"),
+                    gettext("Memo(s) saved"),
                 );
             });
         });
@@ -3385,7 +3415,7 @@ impl MemosPage {
             match build_clipboard_payload(&selected, &identities) {
                 Ok(payload) => {
                     button.display().clipboard().set_text(&payload);
-                    show_toast_for_widget(button, &crate::i18n::gettext("Memo(s) copied to clipboard"));
+                    show_toast_for_widget(button, &gettext("Memo(s) copied to clipboard"));
                 }
                 Err(error) => show_toast_for_widget(button, &error),
             }
@@ -3399,7 +3429,7 @@ impl MemosPage {
         let cut_payload_for_cut = Rc::clone(&cut_payload);
         cut_memo_btn.connect_clicked(move |button| {
             if !copy_for_cut.is_sensitive() || !delete_for_cut.is_sensitive() {
-                show_toast_for_widget(button, &crate::i18n::gettext("Cut is not available for this selection"));
+                show_toast_for_widget(button, &gettext("Cut is not available for this selection"));
                 return;
             }
             let selected = match selected_memo_records_checked(&memo_list_for_cut, &records_for_cut)
@@ -3461,7 +3491,7 @@ impl MemosPage {
                 .clone()
                 .unwrap_or_else(|| "local-calendar".to_string());
             if !memo_source_is_writable_for_page(&page, &destination) {
-                show_toast_for_widget(button, &crate::i18n::gettext("No writable destination source selected"));
+                show_toast_for_widget(button, &gettext("No writable destination source selected"));
                 return;
             }
             let clipboard = button.display().clipboard();
@@ -3478,14 +3508,14 @@ impl MemosPage {
                     Ok(None) => {
                         show_toast_for_widget(
                             &button_for_result,
-                            &crate::i18n::gettext("The clipboard contains no text"),
+                            &gettext("The clipboard contains no text"),
                         );
                         return;
                     }
                     Err(error) => {
                         show_toast_for_widget(
                             &button_for_result,
-                            &crate::i18n::gettext("Clipboard not readable: {}").replace("{}", &error.to_string()),
+                            &gettext("Clipboard not readable: {}").replace("{}", &error.to_string()),
                         );
                         return;
                     }
@@ -3504,7 +3534,7 @@ impl MemosPage {
                 {
                     show_toast_for_widget(
                         &button_for_result,
-                        &crate::i18n::gettext("The target source has changed or is no longer writable"),
+                        &gettext("The target source has changed or is no longer writable"),
                     );
                     return;
                 }
@@ -3548,7 +3578,7 @@ impl MemosPage {
                                     &empty_state_for_result,
                                 );
                             }
-                            show_toast_for_widget(&button_for_result, &crate::i18n::gettext("Memo(s) pasted"));
+                            show_toast_for_widget(&button_for_result, &gettext("Memo(s) pasted"));
                         }
                         Err(error) => {
                             if let Some(page) = page_weak_for_result.upgrade() {
@@ -3599,13 +3629,13 @@ impl MemosPage {
                 }
             };
             if planned.is_empty() {
-                show_toast_for_widget(button, &crate::i18n::gettext("No memo selected"));
+                show_toast_for_widget(button, &gettext("No memo selected"));
                 return;
             }
             let confirmation_message = if planned.len() == 1 {
-                crate::i18n::gettext("The selected memo will be permanently deleted.")
+                gettext("The selected memo will be permanently deleted.")
             } else {
-                crate::i18n::gettext("The selected memos will be permanently deleted.")
+                gettext("The selected memos will be permanently deleted.")
             };
             let delete_generation = memo_mutation_generation_for_delete.get();
             let delete_refresh_generation = page.imp().memo_refresh_generation.get();
@@ -3619,14 +3649,14 @@ impl MemosPage {
             let button_for_action = button.clone();
             crate::dialogs::run_destructive_action(
                 &memo_title_for_delete,
-                &crate::i18n::gettext("Delete memos?"),
+                &gettext("Delete memos?"),
                 &confirmation_message,
-                &crate::i18n::gettext("Delete"),
+                &gettext("Delete"),
                 move || {
                     if memo_mutation_generation_for_action.get() != delete_generation {
                         show_toast_for_widget(
                             &button_for_action,
-                            &crate::i18n::gettext("The memo selection is now obsolete"),
+                            &gettext("The memo selection is now obsolete"),
                         );
                         return;
                     }
@@ -3636,7 +3666,7 @@ impl MemosPage {
                     if page.imp().memo_refresh_generation.get() != delete_refresh_generation {
                         show_toast_for_widget(
                             &button_for_action,
-                            &crate::i18n::gettext("Memo data has been updated in the meantime"),
+                            &gettext("Memo data has been updated in the meantime"),
                         );
                         return;
                     }
@@ -3711,7 +3741,7 @@ impl MemosPage {
                                         }
                                     }
                                 }
-                                show_toast_for_widget(&button_for_result, &crate::i18n::gettext("Memo(s) deleted"));
+                                show_toast_for_widget(&button_for_result, &gettext("Memo(s) deleted"));
                             }
                             Err(error) => {
                                 if let Some(page) = page_weak_for_result.upgrade() {
@@ -3751,7 +3781,7 @@ impl MemosPage {
 
             let save = crate::views::create_context_menu_button(
                 None,
-                &crate::i18n::gettext("Save Note"),
+                &gettext("Save Note"),
                 false,
             );
             let popover_for_save = popover.clone();
@@ -3764,7 +3794,7 @@ impl MemosPage {
 
             let export = crate::views::create_context_menu_button(
                 None,
-                &crate::i18n::gettext("Export as iCalendar"),
+                &gettext("Export as iCalendar"),
                 false,
             );
             let popover_for_export = popover.clone();
@@ -3779,7 +3809,7 @@ impl MemosPage {
 
             let delete = crate::views::create_context_menu_button(
                 None,
-                &crate::i18n::gettext("Delete Note"),
+                &gettext("Delete Note"),
                 true,
             );
             let popover_for_delete = popover.clone();
@@ -4200,7 +4230,7 @@ impl MemosPage {
 
                 let save = crate::views::create_context_menu_button(
                     None,
-                    &crate::i18n::gettext("Save Note"),
+                    &gettext("Save Note"),
                     false,
                 );
                 let pop_save = popover.clone();
@@ -4213,7 +4243,7 @@ impl MemosPage {
 
                 let export = crate::views::create_context_menu_button(
                     None,
-                    &crate::i18n::gettext("Export as iCalendar"),
+                    &gettext("Export as iCalendar"),
                     false,
                 );
                 let pop_exp = popover.clone();
@@ -4228,7 +4258,7 @@ impl MemosPage {
 
                 let delete = crate::views::create_context_menu_button(
                     None,
-                    &crate::i18n::gettext("Delete Note"),
+                    &gettext("Delete Note"),
                     true,
                 );
                 let pop_del = popover.clone();
@@ -4636,22 +4666,22 @@ impl MemosPage {
                     );
                     if memo_count == 0 {
                         let empty_text = match result.origin {
-                            CalendarDataOrigin::Eds => crate::i18n::gettext("No synchronized memos found"),
+                            CalendarDataOrigin::Eds => gettext("No synchronized memos found"),
                             CalendarDataOrigin::Graph => {
-                                crate::i18n::gettext("No VJOURNAL data found from Microsoft Graph")
+                                gettext("No VJOURNAL data found from Microsoft Graph")
                             }
-                            CalendarDataOrigin::Local => crate::i18n::gettext("No local VJOURNAL data found"),
+                            CalendarDataOrigin::Local => gettext("No local VJOURNAL data found"),
                         };
                         empty_state_for_load.set_label(&empty_text);
                     } else {
                         empty_state_for_load.set_visible(false);
                         let origin = match result.origin {
-                            CalendarDataOrigin::Eds => crate::i18n::gettext("synchronized memo store"),
+                            CalendarDataOrigin::Eds => gettext("synchronized memo store"),
                             CalendarDataOrigin::Graph => "Microsoft Graph".to_string(),
-                            CalendarDataOrigin::Local => crate::i18n::gettext("local iCalendar"),
+                            CalendarDataOrigin::Local => gettext("local iCalendar"),
                         };
                         memo_meta_for_load
-                            .set_label(&crate::i18n::ngettext(
+                            .set_label(&ngettext(
                                 "{} memo loaded from {origin}",
                                 "{} memos loaded from {origin}",
                                 memo_count as u32,
@@ -4721,10 +4751,10 @@ impl MemosPage {
                                     *selected_memo_for_monitor.borrow_mut() = None;
                                     memo_title_for_monitor.set_text("");
                                     memo_categories_for_monitor.set_text("");
-                                    memo_meta_for_monitor.set_label(&crate::i18n::gettext("No memo selected"));
+                                    memo_meta_for_monitor.set_label(&gettext("No memo selected"));
                                     memo_text_for_monitor
                                         .buffer()
-                                        .set_text(&crate::i18n::gettext("No memo data available yet."));
+                                        .set_text(&gettext("No memo data available yet."));
                                     memo_alarm_editor_for_monitor.set_component(None, "");
                                     if let Some(page) = page_weak_for_monitor.upgrade() {
                                         if let Some(stack) = page.imp().memo_detail_stack.borrow().as_ref() {
@@ -4857,7 +4887,7 @@ impl MemosPage {
             .as_ref()
             .map(|memo| memo.component.clone())
             .unwrap_or_else(|| {
-                build_memo_component(&crate::i18n::gettext("New Note"), "", "", &[])
+                build_memo_component(&gettext("New Note"), "", "", &[])
                     .expect("the default memo component is valid")
             });
         let initial_draft = match MemoEditorDraft::parse(&initial_component) {
@@ -4875,8 +4905,8 @@ impl MemosPage {
         let close_prompt_open = Rc::new(Cell::new(false));
         let attachment_loading = Rc::new(Cell::new(false));
 
-        let title_edit = crate::i18n::gettext("Edit Note");
-        let title_new = crate::i18n::gettext("New Note");
+        let title_edit = gettext("Edit Note");
+        let title_new = gettext("New Note");
         let dialog = adw::Window::builder()
             .title(if editing {
                 &title_edit
@@ -4897,11 +4927,11 @@ impl MemosPage {
         let header_bar = adw::HeaderBar::new();
         header_bar.set_show_start_title_buttons(false);
         header_bar.set_show_end_title_buttons(false);
-        let cancel_button = gtk::Button::with_label(&crate::i18n::gettext("Cancel"));
+        let cancel_button = gtk::Button::with_label(&gettext("Cancel"));
         header_bar.pack_start(&cancel_button);
         let save_button = gtk::Button::builder()
-            .label(&crate::i18n::gettext("Save"))
-            .css_classes(vec!["suggested-action"])
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
             .build();
         header_bar.pack_end(&save_button);
         toolbar_view.add_top_bar(&header_bar);
@@ -4915,11 +4945,11 @@ impl MemosPage {
             .margin_bottom(12)
             .build();
 
-        let loading_memo_lists = crate::i18n::gettext("Loading memo lists…");
+        let loading_memo_lists = gettext("Loading memo lists…");
         let source_model = gtk::StringList::new(&[&loading_memo_lists]);
         let source_uids = Rc::new(RefCell::new(Vec::<String>::new()));
         let source_row = adw::ComboRow::builder()
-            .title(&crate::i18n::gettext("Memo List"))
+            .title(gettext("Memo List"))
             .model(&source_model)
             .build();
         let settings_for_default_memo = AppSettings::try_new();
@@ -4938,27 +4968,27 @@ impl MemosPage {
             settings.set_default_memo_source_uid(&source_uid);
         });
 
-        let details = adw::PreferencesGroup::builder().title(&crate::i18n::gettext("Details")).build();
+        let details = adw::PreferencesGroup::builder().title(gettext("Details")).build();
         details.add(&source_row);
-        let title_entry = adw::EntryRow::builder().title(&crate::i18n::gettext("Summary")).build();
+        let title_entry = adw::EntryRow::builder().title(gettext("Summary")).build();
         details.add(&title_entry);
         let dtstart_entry = adw::EntryRow::builder()
-            .title(&crate::i18n::gettext("DTSTART (iCalendar value)"))
+            .title(gettext("DTSTART (iCalendar value)"))
             .build();
-        dtstart_entry.set_tooltip_text(Some(&crate::i18n::gettext("e.g. 20260822 or 20260822T120000Z")));
+        dtstart_entry.set_tooltip_text(Some(&gettext("e.g. 20260822 or 20260822T120000Z")));
         details.add(&dtstart_entry);
-        let class_entry = adw::EntryRow::builder().title(&crate::i18n::gettext("Class")).build();
-        class_entry.set_tooltip_text(Some(&crate::i18n::gettext("e.g. PUBLIC, PRIVATE, or CONFIDENTIAL")));
+        let class_entry = adw::EntryRow::builder().title(gettext("Class")).build();
+        class_entry.set_tooltip_text(Some(&gettext("e.g. PUBLIC, PRIVATE, or CONFIDENTIAL")));
         details.add(&class_entry);
-        let status_entry = adw::EntryRow::builder().title(&crate::i18n::gettext("Status")).build();
-        status_entry.set_tooltip_text(Some(&crate::i18n::gettext("RFC5545 STATUS, e.g. DRAFT or FINAL")));
+        let status_entry = adw::EntryRow::builder().title(gettext("Status")).build();
+        status_entry.set_tooltip_text(Some(&gettext("RFC5545 STATUS, e.g. DRAFT or FINAL")));
         details.add(&status_entry);
-        let url_entry = adw::EntryRow::builder().title(&crate::i18n::gettext("URL")).build();
+        let url_entry = adw::EntryRow::builder().title(gettext("URL")).build();
         details.add(&url_entry);
         let categories_entry = adw::EntryRow::builder()
-            .title(&crate::i18n::gettext("Categories (comma-separated)"))
+            .title(gettext("Categories (comma-separated)"))
             .build();
-        categories_entry.set_tooltip_text(Some(&crate::i18n::gettext("e.g. Work, Personal")));
+        categories_entry.set_tooltip_text(Some(&gettext("e.g. Work, Personal")));
         details.add(&categories_entry);
         let alarm_editor = AlarmEditor::new(Some(&initial_component), &initial_draft.summary);
         let alarm_dirty_gesture = gtk::GestureClick::new();
@@ -4976,7 +5006,7 @@ impl MemosPage {
         categories_entry.set_text(&serialize_categories_vec(&initial_draft.categories));
 
         let description_group = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Description"))
+            .title(gettext("Description"))
             .build();
         let description_view = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
@@ -4992,7 +5022,7 @@ impl MemosPage {
         description_group.add(&description_view);
         content_box.append(&description_group);
 
-        let attachment_group = adw::PreferencesGroup::builder().title(&crate::i18n::gettext("Attachments")).build();
+        let attachment_group = adw::PreferencesGroup::builder().title(gettext("Attachments")).build();
         let attachment_buffer = gtk::TextBuffer::new(None);
         attachment_buffer.set_text(&memo_attachments_editor_text(&initial_draft.attachments));
         let attachment_view = gtk::TextView::builder()
@@ -5005,10 +5035,10 @@ impl MemosPage {
             .margin_bottom(4)
             .build();
         attachment_view.set_monospace(true);
-        attachment_view.set_tooltip_text(Some(&crate::i18n::gettext(
+        attachment_view.set_tooltip_text(Some(&gettext(
             "One URI or INLINE:<content> per line; contents are not executed",
         )));
-        let attachment_picker = gtk::Button::with_label(&crate::i18n::gettext("Add URI/File"));
+        let attachment_picker = gtk::Button::with_label(&gettext("Add URI/File"));
         let attachment_controls = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -5017,10 +5047,10 @@ impl MemosPage {
             .margin_bottom(8)
             .build();
         let attachment_hint = gtk::Label::builder()
-            .label(&crate::i18n::gettext("URI:… or INLINE:… (one line per attachment)"))
+            .label(gettext("URI:… or INLINE:… (one line per attachment)"))
             .halign(gtk::Align::Start)
             .hexpand(true)
-            .css_classes(vec!["dim-label"])
+            .css_classes(["dim-label"])
             .build();
         attachment_controls.append(&attachment_hint);
         attachment_controls.append(&attachment_picker);
@@ -5066,7 +5096,7 @@ impl MemosPage {
             };
             attachment_loading_for_picker.set(true);
             let file_dialog = gtk::FileDialog::builder()
-                .title(&crate::i18n::gettext("Select memo attachments"))
+                .title(gettext("Select memo attachments"))
                 .modal(true)
                 .build();
             let buffer_for_result = attachment_buffer_for_picker.clone();
@@ -5118,22 +5148,22 @@ impl MemosPage {
                 MemoCloseDecision::Allow => return glib::Propagation::Proceed,
                 MemoCloseDecision::BlockSave => {
                     if let Some(dialog) = dialog_weak_for_close.upgrade() {
-                        show_toast_for_widget(&dialog, &crate::i18n::gettext("Save in progress; please wait"));
+                        show_toast_for_widget(&dialog, &gettext("Save in progress; please wait"));
                     }
                     return glib::Propagation::Stop;
                 }
                 MemoCloseDecision::KeepPrompt => return glib::Propagation::Stop,
                 MemoCloseDecision::Prompt => close_prompt_open_for_close.set(true),
             }
-            let unsaved_title = crate::i18n::gettext("Unsaved Memo Changes");
-            let unsaved_desc = crate::i18n::gettext("The memo has changed since the last confirmed save.");
+            let unsaved_title = gettext("Unsaved Memo Changes");
+            let unsaved_desc = gettext("The memo has changed since the last confirmed save.");
             let confirmation = adw::AlertDialog::new(
                 Some(&unsaved_title),
                 Some(&unsaved_desc),
             );
-            let cancel_lbl = crate::i18n::gettext("Cancel");
-            let save_lbl = crate::i18n::gettext("Save");
-            let discard_lbl = crate::i18n::gettext("Discard");
+            let cancel_lbl = gettext("Cancel");
+            let save_lbl = gettext("Save");
+            let discard_lbl = gettext("Discard");
             confirmation.add_responses(&[
                 ("cancel", &cancel_lbl),
                 ("save", &save_lbl),
@@ -5249,21 +5279,21 @@ impl MemosPage {
                     *uid != "local-calendar" && !uids.iter().any(|candidate| candidate == uid)
                 });
             if let Some(uid) = preserved_source_uid {
-                names.push(format!("{} · {uid}", crate::i18n::gettext("Unavailable source")));
+                names.push(format!("{} · {uid}", gettext("Unavailable source")));
                 uids.push(uid.to_string());
                 unavailable_sources.insert(uid.to_string());
             }
             if local_calendar_available {
-                names.push(crate::i18n::gettext("Local Memo List"));
+                names.push(gettext("Local Memo List"));
                 uids.push("local-calendar".to_string());
                 available_sources.insert("local-calendar".to_string());
                 writable_sources.insert("local-calendar".to_string());
             }
             if names.is_empty() {
                 names.push(if discovery_failed {
-                    crate::i18n::gettext("Memo lists are unreachable")
+                    gettext("Memo lists are unreachable")
                 } else {
-                    crate::i18n::gettext("No active memo list available")
+                    gettext("No active memo list available")
                 });
             }
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -5323,11 +5353,11 @@ impl MemosPage {
             } else if let Some(source_uid) = source_uids_for_save.borrow().get(selected).cloned() {
                 source_uid
             } else {
-                show_toast_for_widget(&dialog, &crate::i18n::gettext("No active memo list is selected"));
+                show_toast_for_widget(&dialog, &gettext("No active memo list is selected"));
                 return;
             };
             if source_uid.trim().is_empty() {
-                show_toast_for_widget(&dialog, &crate::i18n::gettext("The selected memo list is invalid"));
+                show_toast_for_widget(&dialog, &gettext("The selected memo list is invalid"));
                 return;
             }
             let Some(page) = page_weak.upgrade() else {
@@ -5336,7 +5366,7 @@ impl MemosPage {
             if !memo_source_is_writable_for_page(&page, &source_uid) {
                 show_toast_for_widget(
                     &dialog,
-                    &crate::i18n::gettext("The selected memo list is not writable or not available"),
+                    &gettext("The selected memo list is not writable or not available"),
                 );
                 return;
             }
@@ -5454,7 +5484,7 @@ impl MemosPage {
                             Err(error) => {
                                 show_toast_for_widget(
                                     &dialog,
-                                    &crate::i18n::gettext("Confirmed memo component is missing or invalid: {}").replace("{}", &error),
+                                    &gettext("Confirmed memo component is missing or invalid: {}").replace("{}", &error),
                                 );
                                 return;
                             }
@@ -5468,7 +5498,7 @@ impl MemosPage {
                             Err(error) => {
                                 show_toast_for_widget(
                                     &dialog,
-                                    &format!("{}: {error}", crate::i18n::gettext("Confirmed memo identity is invalid")),
+                                    &format!("{}: {error}", gettext("Confirmed memo identity is invalid")),
                                 );
                                 return;
                             }
@@ -5476,9 +5506,9 @@ impl MemosPage {
                         let source_display_name =
                             source_display_name_for_result.unwrap_or_else(|| {
                                 if source_uid_for_model == "local-calendar" {
-                                    crate::i18n::gettext("Local Memo List")
+                                    gettext("Local Memo List")
                                 } else {
-                                    crate::i18n::gettext("Synchronized memo store")
+                                    gettext("Synchronized memo store")
                                 }
                             });
                         let memo = MemoRecord {
@@ -5506,9 +5536,9 @@ impl MemosPage {
                         if let Some(page) = page_weak_for_result.upgrade() {
                             refresh_memo_category_model(&page, &memo_list_for_result);
                             let message = if editing {
-                                format!("{} ({uid})", crate::i18n::gettext("Note updated"))
+                                format!("{} ({uid})", gettext("Note updated"))
                             } else {
-                                format!("{} ({uid})", crate::i18n::gettext("Note saved"))
+                                format!("{} ({uid})", gettext("Note saved"))
                             };
                             page.show_toast(&message);
                         }
@@ -5517,11 +5547,11 @@ impl MemosPage {
                     }
                     Ok(Err(error)) => show_toast_for_widget(
                         &dialog,
-                        &format!("{}: {error}", crate::i18n::gettext("Could not save note")),
+                        &format!("{}: {error}", gettext("Could not save note")),
                     ),
                     Err(error) => show_toast_for_widget(
                         &dialog,
-                        &format!("{}: {error}", crate::i18n::gettext("Note save result missing")),
+                        &format!("{}: {error}", gettext("Note save result missing")),
                     ),
                 }
             });
@@ -5626,7 +5656,7 @@ fn append_memo_row(memo_list: &gtk::ListBox, memo: &MemoRecord) {
     if let Some(color) = CalendarCategoryStore::default().color_for_component(&memo.component) {
         let category_dot = gtk::Label::new(None);
         category_dot.set_markup(&format!("<span foreground=\"{color}\">●</span>"));
-        category_dot.set_tooltip_text(Some(&crate::i18n::gettext("Memo category")));
+        category_dot.set_tooltip_text(Some(&gettext("Memo category")));
         action_row.add_prefix(&category_dot);
     }
     row.set_child(Some(&action_row));
@@ -5688,8 +5718,8 @@ fn refresh_memo_category_model(page: &MemosPage, memo_list: &gtk::ListBox) {
     }
 
     let mut names = vec![
-        crate::i18n::gettext("All Categories"),
-        crate::i18n::gettext("Uncategorized"),
+        gettext("All Categories"),
+        gettext("Uncategorized"),
     ];
     names.extend(categories);
     let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
@@ -5774,6 +5804,14 @@ fn apply_memo_list_filter_with_mode(
         let Some(memo) = memo_record_from_row(row) else {
             return false;
         };
+        if !memo.source_uid.is_empty()
+            && !crate::services::eds_service::is_source_enabled_for_service(
+                &memo.source_uid,
+                crate::services::eds_service::EdsSourceKind::Calendar,
+            )
+        {
+            return false;
+        }
         if hidden_sources.contains(&memo.source_uid) {
             return false;
         }
@@ -5886,7 +5924,7 @@ fn refresh_memo_filter_view(
 
     let filtered_memos: Vec<MemoRecord> = match filter {
         Err(error) => {
-            empty_state.set_label(&crate::i18n::gettext("Invalid advanced search: {}").replace("{}", &error));
+            empty_state.set_label(&gettext("Invalid advanced search: {}").replace("{}", &error));
             empty_state.set_visible(true);
             Vec::new()
         }
@@ -5894,14 +5932,21 @@ fn refresh_memo_filter_view(
             let matches: Vec<MemoRecord> = filter
                 .filter(&memo_records.borrow())
                 .into_iter()
-                .filter(|memo| !hidden_sources.contains(&memo.source_uid))
+                .filter(|memo| {
+                    !hidden_sources.contains(&memo.source_uid)
+                        && (memo.source_uid.is_empty()
+                            || crate::services::eds_service::is_source_enabled_for_service(
+                                &memo.source_uid,
+                                crate::services::eds_service::EdsSourceKind::Calendar,
+                            ))
+                })
                 .cloned()
                 .collect();
             let has_records = !matches.is_empty();
             let empty_text = if query.is_empty() && source_filter.is_none() && category_filter.is_none() {
-                crate::i18n::gettext("No synchronized memos loaded")
+                gettext("No synchronized memos loaded")
             } else {
-                crate::i18n::gettext("No matching memos")
+                gettext("No matching memos")
             };
             empty_state.set_label(&empty_text);
             empty_state.set_visible(!has_records);
@@ -6038,17 +6083,17 @@ fn selected_memo_records_checked(
             .count()
             != 1
     }) {
-        return Err(crate::i18n::gettext("The memo data does not contain a unique identity {source} / {uid}")
+        return Err(gettext("The memo data does not contain a unique identity {source} / {uid}")
             .replace("{source}", &identity.source_uid)
             .replace("{uid}", &identity.uid));
     }
     drop(records);
     let selected = selected_memo_records(memo_list, memo_records);
     if selected.len() != identities.len() {
-        return Err(crate::i18n::gettext("The memo selection is no longer up to date; please select again"));
+        return Err(gettext("The memo selection is no longer up to date; please select again"));
     }
     if selected.is_empty() {
-        return Err(crate::i18n::gettext("No memo selected"));
+        return Err(gettext("No memo selected"));
     }
     Ok(selected)
 }
@@ -6143,16 +6188,16 @@ fn refresh_memo_preview(
     let state = page.imp().memo_preview_state.borrow().clone();
     let identities = memo_selection_identities(memo_list);
     if !state.visible || identities.len() != 1 {
-        label.set_markup(&format!("<i>{}</i>", &crate::i18n::gettext("No unique memo selection")));
+        label.set_markup(&format!("<i>{}</i>", &gettext("No unique memo selection")));
         return;
     }
     let selected = memo_records.borrow();
     match preview_for_selection(&selected, &identities) {
         Ok(Some(preview)) => label.set_markup(&preview.markup),
-        Ok(None) => label.set_markup(&format!("<i>{}</i>", &crate::i18n::gettext("No unique memo selection"))),
+        Ok(None) => label.set_markup(&format!("<i>{}</i>", &gettext("No unique memo selection"))),
         Err(error) => label.set_markup(&format!(
             "<i>{}: {}</i>",
-            &crate::i18n::gettext("Memo preview unavailable"),
+            &gettext("Memo preview unavailable"),
             glib::markup_escape_text(&error)
         )),
     }
@@ -6247,10 +6292,10 @@ fn memo_record_from_component(
 ) -> Result<MemoRecord, String> {
     let draft = MemoEditorDraft::parse(component)?;
     if draft.uid.trim().is_empty() {
-        return Err(crate::i18n::gettext("Confirmed VJOURNAL component has no UID"));
+        return Err(gettext("Confirmed VJOURNAL component has no UID"));
     }
     if expected_uid.is_some_and(|expected_uid| draft.uid != expected_uid) {
-        return Err(crate::i18n::gettext("Confirmed VJOURNAL component does not have the requested UID"));
+        return Err(gettext("Confirmed VJOURNAL component does not have the requested UID"));
     }
     Ok(MemoRecord {
         uid: draft.uid,
@@ -6289,7 +6334,7 @@ fn execute_memo_paste_batch(
                         "{} / {}: {}",
                         source_uid,
                         expected_uid,
-                        crate::i18n::gettext("Backend UID does not match")
+                        gettext("Backend UID does not match")
                     ));
                     break;
                 }
@@ -6298,7 +6343,7 @@ fn execute_memo_paste_batch(
                         "{} / {}: {}",
                         source_uid,
                         expected_uid,
-                        crate::i18n::gettext("Backend returned no confirmed VJOURNAL component")
+                        gettext("Backend returned no confirmed VJOURNAL component")
                     ));
                     break;
                 };
@@ -6331,9 +6376,9 @@ fn execute_memo_paste_batch(
     };
     batch.discard(ECalComponentType::Memo);
     if rollback_errors.is_empty() {
-        Err(crate::i18n::gettext("Paste aborted atomically: {}").replace("{}", &failure))
+        Err(gettext("Paste aborted atomically: {}").replace("{}", &failure))
     } else {
-        Err(crate::i18n::gettext("Paste failed; rollback incomplete: {failure}; {errors}")
+        Err(gettext("Paste failed; rollback incomplete: {failure}; {errors}")
             .replace("{failure}", &failure)
             .replace("{errors}", &rollback_errors.join("; ")))
     }
@@ -6380,7 +6425,7 @@ fn execute_memo_delete_batch(planned: Vec<MemoRecord>) -> Result<Vec<MemoIdentit
                     "{} / {}: {}",
                     identity.source_uid,
                     identity.uid,
-                    crate::i18n::gettext("Backend UID does not match")
+                    gettext("Backend UID does not match")
                 ));
                 break;
             }
@@ -6417,9 +6462,9 @@ fn execute_memo_delete_batch(planned: Vec<MemoRecord>) -> Result<Vec<MemoIdentit
     }
     batch.discard(ECalComponentType::Memo);
     if rollback_errors.is_empty() {
-        Err(crate::i18n::gettext("Delete aborted atomically: {}").replace("{}", &failure))
+        Err(gettext("Delete aborted atomically: {}").replace("{}", &failure))
     } else {
-        Err(crate::i18n::gettext("Delete failed; rollback incomplete: {failure}; {errors}")
+        Err(gettext("Delete failed; rollback incomplete: {failure}; {errors}")
             .replace("{failure}", &failure)
             .replace("{errors}", &rollback_errors.join("; ")))
     }
@@ -6461,7 +6506,7 @@ fn reload_memo_snapshot_async(
         replace_memo_snapshot(&memo_list, Rc::clone(&memo_records), result.snapshot.memos);
         empty_state.set_visible(memo_count == 0);
         let empty_text = if memo_count == 0 {
-            crate::i18n::gettext("No synchronized memos found")
+            gettext("No synchronized memos found")
         } else {
             String::new()
         };
@@ -6609,7 +6654,7 @@ fn save_memo_file_async(
             Ok(_) => show_toast_for_widget(&button, &success_message),
             Err((_, error)) => show_toast_for_widget(
                 &button,
-                &crate::i18n::gettext("Could not save iCalendar: {}").replace("{}", &error.to_string()),
+                &gettext("Could not save iCalendar: {}").replace("{}", &error.to_string()),
             ),
         },
     );
@@ -6648,7 +6693,7 @@ fn confirmed_memo_component(
 ) -> Result<(String, MemoEditorDraft), String> {
     let component = component
         .filter(|component| !component.trim().is_empty())
-        .ok_or_else(|| crate::i18n::gettext("ECal returned no complete component"))?;
+        .ok_or_else(|| gettext("ECal returned no complete component"))?;
     let draft = MemoEditorDraft::from_component(&component).map_err(|error| format!("{error}"))?;
     Ok((component, draft))
 }
@@ -6660,12 +6705,12 @@ fn confirmed_memo_uid(
 ) -> Result<String, String> {
     if let Some(expected_uid) = expected_uid {
         if component_uid != expected_uid {
-            return Err(crate::i18n::gettext("Component UID does not match the request"));
+            return Err(gettext("Component UID does not match the request"));
         }
         return Ok(expected_uid.to_string());
     }
     if !result_uid.trim().is_empty() && result_uid != component_uid {
-        return Err(crate::i18n::gettext("ECal result and confirmed component have different UIDs"));
+        return Err(gettext("ECal result and confirmed component have different UIDs"));
     }
     let uid = if result_uid.trim().is_empty() {
         component_uid
@@ -6674,7 +6719,7 @@ fn confirmed_memo_uid(
     };
     (!uid.trim().is_empty())
         .then(|| uid.to_string())
-        .ok_or_else(|| crate::i18n::gettext("The confirmed memo component has no UID"))
+        .ok_or_else(|| gettext("The confirmed memo component has no UID"))
 }
 
 #[cfg(test)]
@@ -6683,7 +6728,7 @@ fn memo_delete_confirmed(response: &str) -> bool {
 }
 
 fn memo_attachment_save_error(loading: bool) -> Option<String> {
-    loading.then(|| crate::i18n::gettext("Attachments are still loading; please wait"))
+    loading.then(|| gettext("Attachments are still loading; please wait"))
 }
 
 fn optional_text(value: &str) -> Option<String> {
@@ -6784,7 +6829,7 @@ fn parse_memo_attachment_editor_text(
             continue;
         }
         if line.contains('\r') || line.contains('\n') {
-            return Err(crate::i18n::gettext("The attachment list contains invalid line breaks"));
+            return Err(gettext("The attachment list contains invalid line breaks"));
         }
         if let Some((index, attachment)) =
             existing.iter().enumerate().find(|(index, attachment)| {
@@ -6809,7 +6854,7 @@ fn parse_memo_attachment_editor_text(
         if let Some(uri) = line.strip_prefix("URI:") {
             let uri = uri.trim();
             if uri.is_empty() {
-                return Err(crate::i18n::gettext("A URI attachment cannot be empty"));
+                return Err(gettext("A URI attachment cannot be empty"));
             }
             attachments.push(MemoAttachment::uri(uri.to_string()));
         } else if let Some(content) = line.strip_prefix("INLINE:") {
@@ -6832,7 +6877,7 @@ fn build_memo_component(
 ) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {
-        return Err(crate::i18n::gettext("A memo requires a title"));
+        return Err(gettext("A memo requires a title"));
     }
     let stamp = Utc::now().format("%Y%m%dT%H%M%SZ");
     let mut component = vec![
@@ -7019,14 +7064,14 @@ mod tests {
         assert!(!sources[0].writable);
         assert_eq!(
             memo_source_projection_label(&sources[0]),
-            format!("{} · Alpha", crate::i18n::gettext("Unreachable"))
+            format!("{} · Alpha", gettext("Unreachable"))
         );
         assert!(sources[1].available);
         assert!(sources[1].writable);
         assert!(!sources[2].writable);
         assert_eq!(
             memo_source_projection_label(&sources[2]),
-            format!("{} · Zulu", crate::i18n::gettext("Read-Only"))
+            format!("{} · Zulu", gettext("Read-Only"))
         );
     }
 

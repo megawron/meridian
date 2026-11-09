@@ -1,3 +1,4 @@
+use crate::i18n::ngettext;
 use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
@@ -123,12 +124,12 @@ impl ContactTableColumn {
 
     pub(crate) fn label(&self) -> String {
         match self {
-            Self::Name => crate::i18n::gettext("Name"),
-            Self::Company => crate::i18n::gettext("Organization"),
-            Self::Title => crate::i18n::gettext("Job Title"),
-            Self::Email => crate::i18n::gettext("Email"),
-            Self::Phone => crate::i18n::gettext("Phone"),
-            Self::Categories => crate::i18n::gettext("Categories"),
+            Self::Name => gettext("Name"),
+            Self::Company => gettext("Organization"),
+            Self::Title => gettext("Job Title"),
+            Self::Email => gettext("Email"),
+            Self::Phone => gettext("Phone"),
+            Self::Categories => gettext("Categories"),
         }
     }
 
@@ -389,12 +390,12 @@ pub(crate) fn draw_contact_table_header(
     }
     let _ = cr.paint();
 
-    let col_name_label = crate::i18n::gettext("Name");
-    let col_company_label = crate::i18n::gettext("Organization");
-    let col_title_label = crate::i18n::gettext("Job Title");
-    let col_email_label = crate::i18n::gettext("Email");
-    let col_phone_label = crate::i18n::gettext("Phone");
-    let col_categories_label = crate::i18n::gettext("Categories");
+    let col_name_label = gettext("Name");
+    let col_company_label = gettext("Organization");
+    let col_title_label = gettext("Job Title");
+    let col_email_label = gettext("Email");
+    let col_phone_label = gettext("Phone");
+    let col_categories_label = gettext("Categories");
     let columns = [
         (ContactTableColumn::Name, col_name_label.as_str(), layout.col_name_w),
         (ContactTableColumn::Company, col_company_label.as_str(), layout.col_company_w),
@@ -1453,7 +1454,7 @@ impl ContactsPage {
             .margin_end(0)
             .margin_top(0)
             .margin_bottom(0)
-            .css_classes(vec!["mail-column-header"])
+            .css_classes(["mail-column-header"])
             .build();
 
         let order = settings
@@ -1490,7 +1491,7 @@ impl ContactsPage {
                 .halign(gtk::Align::Fill)
                 .overflow(gtk::Overflow::Hidden)
                 .visible(visible)
-                .css_classes(vec!["mail-column-header-cell", "contact-cell"])
+                .css_classes(["mail-column-header-cell", "contact-cell"])
                 .build();
             col_box.set_widget_name(&format!("contact-column-{col_id}"));
 
@@ -1502,7 +1503,7 @@ impl ContactsPage {
                 .ellipsize(pango::EllipsizeMode::End)
                 .width_chars(1)
                 .max_width_chars(1)
-                .css_classes(vec!["dim-label"])
+                .css_classes(["dim-label"])
                 .build();
             label.set_widget_name(&format!("contact-column-label-{col_id}"));
             col_box.append(&label);
@@ -1524,7 +1525,7 @@ impl ContactsPage {
                 .halign(gtk::Align::Center)
                 .valign(gtk::Align::Fill)
                 .visible(visible)
-                .css_classes(vec!["mail-column-separator"])
+                .css_classes(["mail-column-separator"])
                 .build();
             sep.set_cursor(gdk::Cursor::from_name("col-resize", None).as_ref());
             sep.set_widget_name(&format!("contact-column-sep-{col_id}"));
@@ -1855,20 +1856,20 @@ impl ContactsPage {
             .build();
 
         let title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Columns"))
+            .label(gettext("Columns"))
             .halign(gtk::Align::Start)
-            .css_classes(vec!["heading"])
+            .css_classes(["heading"])
             .build();
         content.append(&title);
 
         let settings = AppSettings::try_new();
 
         let column_toggles: [(&'static str, String); 5] = [
-            ("company", crate::i18n::gettext("Organization")),
-            ("title", crate::i18n::gettext("Job Title")),
-            ("email", crate::i18n::gettext("Email")),
-            ("phone", crate::i18n::gettext("Phone")),
-            ("categories", crate::i18n::gettext("Categories")),
+            ("company", gettext("Organization")),
+            ("title", gettext("Job Title")),
+            ("email", gettext("Email")),
+            ("phone", gettext("Phone")),
+            ("categories", gettext("Categories")),
         ];
 
         let page_weak = self.downgrade();
@@ -1903,7 +1904,7 @@ impl ContactsPage {
             crate::views::create_context_menu_button(None, label_text, false)
         };
 
-        let reorder_btn = make_popover_action_button("view-column-symbolic", &crate::i18n::gettext("Customize column order…"));
+        let reorder_btn = make_popover_action_button("view-column-symbolic", &gettext("Customize column order…"));
         let page_for_reorder = page_weak.clone();
         let popover_for_reorder = popover.clone();
         reorder_btn.connect_clicked(move |_| {
@@ -1914,7 +1915,7 @@ impl ContactsPage {
         });
         content.append(&reorder_btn);
 
-        let reset_btn = make_popover_action_button("edit-undo-symbolic", &crate::i18n::gettext("Restore default columns"));
+        let reset_btn = make_popover_action_button("edit-undo-symbolic", &gettext("Restore default columns"));
         let page_for_reset = page_weak.clone();
         let popover_for_reset = popover.clone();
         let settings_for_reset = settings.clone();
@@ -1935,7 +1936,7 @@ impl ContactsPage {
     }
 
     pub(crate) fn open_contact_column_order_dialog(&self) {
-        let dialog_title = crate::i18n::gettext("Customize Column Order");
+        let dialog_title = gettext("Customize Column Order");
         let dialog = adw::Window::builder()
             .title(&dialog_title)
             .modal(true)
@@ -1966,16 +1967,16 @@ impl ContactsPage {
             .build();
 
         let desc_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Adjust the order and visibility of columns. Changes take effect immediately."))
+            .label(gettext("Adjust the order and visibility of columns. Changes take effect immediately."))
             .wrap(true)
             .xalign(0.0)
-            .css_classes(vec!["dim-label", "caption"])
+            .css_classes(["dim-label", "caption"])
             .build();
         content.append(&desc_label);
 
         let list_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["boxed-list"])
+            .css_classes(["boxed-list"])
             .build();
 
         let settings = AppSettings::try_new();
@@ -2015,7 +2016,7 @@ impl ContactsPage {
                     let is_vis = settings.as_ref().map(|s| s.contact_col_visible(column_id)).unwrap_or(true);
                     let vis_check = gtk::CheckButton::builder()
                         .active(is_vis)
-                        .tooltip_text(&crate::i18n::gettext("Show column"))
+                        .tooltip_text(gettext("Show column"))
                         .build();
                     let col_id_vis = column_id.clone();
                     let settings_for_vis = settings.clone();
@@ -2033,14 +2034,14 @@ impl ContactsPage {
 
                 let up = gtk::Button::builder()
                     .icon_name("go-up-symbolic")
-                    .tooltip_text(&crate::i18n::gettext("Move column up / left"))
-                    .css_classes(vec!["flat", "circular"])
+                    .tooltip_text(gettext("Move column up / left"))
+                    .css_classes(["flat", "circular"])
                     .sensitive(index > 0)
                     .build();
                 let down = gtk::Button::builder()
                     .icon_name("go-down-symbolic")
-                    .tooltip_text(&crate::i18n::gettext("Move column down / right"))
-                    .css_classes(vec!["flat", "circular"])
+                    .tooltip_text(gettext("Move column down / right"))
+                    .css_classes(["flat", "circular"])
                     .sensitive(index + 1 < columns.len())
                     .build();
                 row.add_suffix(&up);
@@ -2074,8 +2075,8 @@ impl ContactsPage {
         content.append(&list_box);
 
         let reset_btn = gtk::Button::builder()
-            .label(&crate::i18n::gettext("Restore Default Order"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Restore Default Order"))
+            .css_classes(["flat"])
             .halign(gtk::Align::Center)
             .margin_top(8)
             .build();
@@ -2143,28 +2144,28 @@ impl ContactsPage {
             match result {
                 Ok(0) => {
                     let message = if is_undo {
-                        crate::i18n::gettext("No contact action to undo")
+                        gettext("No contact action to undo")
                     } else {
-                        crate::i18n::gettext("No contact action to redo")
+                        gettext("No contact action to redo")
                     };
                     page.show_toast(&message);
                 }
                 Ok(_count) => {
                     page.reload_contacts();
                     let message = if is_undo {
-                        crate::i18n::gettext("Undid last contact action")
+                        gettext("Undid last contact action")
                     } else {
-                        crate::i18n::gettext("Redid last contact action")
+                        gettext("Redid last contact action")
                     };
                     page.show_toast(&message);
                 }
                 Err(error) => {
                     page.reload_contacts();
                     let message = if is_undo {
-                        crate::i18n::gettext("Undo not possible: {error}")
+                        gettext("Undo not possible: {error}")
                             .replace("{error}", &error.to_string())
                     } else {
-                        crate::i18n::gettext("Redo not possible: {error}")
+                        gettext("Redo not possible: {error}")
                             .replace("{error}", &error.to_string())
                     };
                     page.show_toast(&message);
@@ -2192,7 +2193,7 @@ impl ContactsPage {
         if let Some(lbl) = self.imp().drawer_total.borrow().as_ref() {
             if total > 0 {
                 lbl.set_label(&total.to_string());
-                lbl.set_tooltip_text(Some(&crate::i18n::ngettext(
+                lbl.set_tooltip_text(Some(&ngettext(
                     "{n} contact in total",
                     "{n} contacts in total",
                     total as u32,
@@ -2209,6 +2210,7 @@ impl ContactsPage {
         if let Some(reload_fn) = self.imp().reload_address_books_fn.borrow().as_ref() {
             (reload_fn.0)();
         }
+        self.reload_contacts();
     }
 
     pub fn outer_paned(&self) -> Option<gtk::Paned> {
@@ -2292,9 +2294,9 @@ impl ContactsPage {
 
     pub(crate) fn apply_toolbar_button_modes(&self, _is_compact: bool) {
         let imp = self.imp();
-        let edit_label = crate::i18n::gettext("Edit");
-        let email_label = crate::i18n::gettext("Email");
-        let delete_label = crate::i18n::gettext("Delete");
+        let edit_label = gettext("Edit");
+        let email_label = gettext("Email");
+        let delete_label = gettext("Delete");
         if let Some(btn) = imp.edit_button.borrow().as_ref() {
             btn.set_child(Some(&gtk::Image::from_icon_name("document-edit-symbolic")));
             set_accessible_label(btn, &edit_label);
@@ -2331,7 +2333,7 @@ impl ContactsPage {
             if !record.contact.email.trim().is_empty() {
                 Some(record.contact.email.trim().to_string())
             } else {
-                Some(crate::i18n::gettext("Contact"))
+                Some(gettext("Contact"))
             }
         } else {
             Some(name.to_string())
@@ -2543,8 +2545,8 @@ impl ContactsPage {
         };
         let mode = self.imp().current_view_mode.get();
         let (icon_name, tooltip_text) = match mode {
-            ContactViewMode::Simple => ("view-list-symbolic", crate::i18n::gettext("List View")),
-            ContactViewMode::Table => (contact_table_view_icon_name(), crate::i18n::gettext("Table View")),
+            ContactViewMode::Simple => ("view-list-symbolic", gettext("List View")),
+            ContactViewMode::Table => (contact_table_view_icon_name(), gettext("Table View")),
         };
         split_btn.set_icon_name(icon_name);
         split_btn.set_tooltip_text(Some(&tooltip_text));
@@ -2643,39 +2645,39 @@ impl ContactsPage {
             .margin_end(0)
             .margin_top(0)
             .margin_bottom(0)
-            .css_classes(vec!["contacts-sidebar", "mail-sidebar"])
+            .css_classes(["contacts-sidebar", "mail-sidebar"])
             .build();
 
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text(&crate::i18n::gettext("Search contacts…"))
+            .placeholder_text(gettext("Search contacts…"))
             .build();
         self.imp().search_entry.replace(Some(search_entry.clone()));
 
         let quick_mode_items = [
-            crate::i18n::gettext("All Fields"),
-            crate::i18n::gettext("Name"),
-            crate::i18n::gettext("Email"),
-            crate::i18n::gettext("Phone"),
-            crate::i18n::gettext("Category"),
+            gettext("All Fields"),
+            gettext("Name"),
+            gettext("Email"),
+            gettext("Phone"),
+            gettext("Category"),
         ];
         let quick_mode_refs: Vec<&str> = quick_mode_items.iter().map(|s| s.as_str()).collect();
         let quick_mode = gtk::DropDown::new(
             Some(gtk::StringList::new(&quick_mode_refs)),
             None::<&gtk::Expression>,
         );
-        quick_mode.set_tooltip_text(Some(&crate::i18n::gettext("Select quick search field")));
+        quick_mode.set_tooltip_text(Some(&gettext("Select quick search field")));
 
         let advanced_search_button = gtk::Button::builder()
             .icon_name("system-search-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Advanced Search…"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Advanced Search…"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
 
-        let all_contacts_text = crate::i18n::gettext("All Contacts");
+        let all_contacts_text = gettext("All Contacts");
         let book_model = gtk::StringList::new(&[&all_contacts_text]);
         let book_selector = gtk::DropDown::new(Some(book_model.clone()), None::<&gtk::Expression>);
-        book_selector.set_tooltip_text(Some(&crate::i18n::gettext(
+        book_selector.set_tooltip_text(Some(&gettext(
             "The selection will be saved as the default address book for the next launch",
         )));
         book_selector.set_margin_start(8);
@@ -2690,7 +2692,7 @@ impl ContactsPage {
 
         let book_source_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(vec!["navigation-sidebar"])
+            .css_classes(["navigation-sidebar"])
             .build();
         sidebar_box.append(&book_source_list);
         let book_selector_for_sidebar = book_selector.clone();
@@ -2702,11 +2704,11 @@ impl ContactsPage {
             }
         });
 
-        let all_categories_text = crate::i18n::gettext("All Categories");
+        let all_categories_text = gettext("All Categories");
         let category_model = gtk::StringList::new(&[&all_categories_text]);
         let category_selector =
             gtk::DropDown::new(Some(category_model.clone()), None::<&gtk::Expression>);
-        category_selector.set_tooltip_text(Some(&crate::i18n::gettext("Select contact category")));
+        category_selector.set_tooltip_text(Some(&gettext("Select contact category")));
         category_selector.set_margin_bottom(6);
 
         let selected_book = Rc::new(RefCell::new(String::new()));
@@ -2716,22 +2718,22 @@ impl ContactsPage {
         let unmatched_category = Rc::new(Cell::new(false));
 
         let duplicate_filter_row = gtk::CheckButton::builder()
-            .label(&crate::i18n::gettext("Duplicates only"))
-            .tooltip_text(&crate::i18n::gettext("Show same email, phone number, or name without contact path"))
+            .label(gettext("Duplicates only"))
+            .tooltip_text(gettext("Show same email, phone number, or name without contact path"))
             .halign(gtk::Align::Start)
             .margin_bottom(4)
             .build();
 
         let unmatched_category_row = gtk::CheckButton::builder()
-            .label(&crate::i18n::gettext("Uncategorized only"))
-            .tooltip_text(&crate::i18n::gettext("Show contacts without any category"))
+            .label(gettext("Uncategorized only"))
+            .tooltip_text(gettext("Show contacts without any category"))
             .halign(gtk::Align::Start)
             .margin_bottom(4)
             .build();
 
         let empty_state = gtk::Label::builder()
-            .label(&crate::i18n::gettext("No synchronized address book loaded yet"))
-            .css_classes(vec!["dim-label"])
+            .label(gettext("No synchronized address book loaded yet"))
+            .css_classes(["dim-label"])
             .wrap(true)
             .margin_start(8)
             .margin_end(8)
@@ -2856,7 +2858,7 @@ impl ContactsPage {
                         LOCAL_ADDRESS_BOOK_SOURCE_UID.to_string(),
                         on_this_computer.clone(),
                     );
-                    let mut names = vec![crate::i18n::gettext("All Contacts")];
+                    let mut names = vec![gettext("All Contacts")];
                     let mut uids = vec![String::new()];
                     for source in sources {
                         names.push(contact_source_label(&source.display_name, &source.uid));
@@ -2865,7 +2867,7 @@ impl ContactsPage {
                     if crate::services::contact_store_service::ContactStoreService::new().is_writable()
                         && !uids.iter().any(|uid| uid == LOCAL_ADDRESS_BOOK_SOURCE_UID)
                     {
-                        names.push(crate::i18n::gettext("Local Address Book"));
+                        names.push(gettext("Local Address Book"));
                         uids.push(LOCAL_ADDRESS_BOOK_SOURCE_UID.to_string());
                     }
 
@@ -2949,7 +2951,7 @@ impl ContactsPage {
                                 .margin_start(4)
                                 .margin_end(6)
                                 .valign(gtk::Align::Center)
-                                .css_classes(vec![
+                                .css_classes([
                                     "calendar-sidebar-row",
                                     "mail-sidebar-row",
                                     "sidebar-child-row",
@@ -2960,7 +2962,7 @@ impl ContactsPage {
                             root_icon.add_css_class("dim-label");
                             root_box.append(&root_icon);
                             let root_label = gtk::Label::builder()
-                                .label(&crate::i18n::gettext("All Contacts"))
+                                .label(gettext("All Contacts"))
                                 .halign(gtk::Align::Start)
                                 .hexpand(true)
                                 .ellipsize(pango::EllipsizeMode::End)
@@ -2969,7 +2971,7 @@ impl ContactsPage {
 
                             let root_row = gtk::ListBoxRow::builder()
                                 .child(&root_box)
-                                .css_classes(vec![
+                                .css_classes([
                                     "calendar-sidebar-row",
                                     "mail-sidebar-row",
                                     "sidebar-child-row",
@@ -2992,7 +2994,7 @@ impl ContactsPage {
                                     .margin_start(0)
                                     .margin_end(6)
                                     .valign(gtk::Align::Center)
-                                    .css_classes(vec![
+                                    .css_classes([
                                         "mail-sidebar-row",
                                         "calendar-sidebar-row",
                                         "calendar-sidebar-group-row",
@@ -3018,20 +3020,20 @@ impl ContactsPage {
                                     .halign(gtk::Align::Start)
                                     .hexpand(true)
                                     .ellipsize(pango::EllipsizeMode::End)
-                                    .css_classes(vec!["account-heading"])
+                                    .css_classes(["account-heading"])
                                     .build();
                                 group_box.append(&group_label);
 
                                 let group_tooltip = if is_collapsed {
-                                    crate::i18n::gettext("Expand group")
+                                    gettext("Expand group")
                                 } else {
-                                    crate::i18n::gettext("Collapse group")
+                                    gettext("Collapse group")
                                 };
                                 let group_row = gtk::ListBoxRow::builder()
                                     .child(&group_box)
                                     .activatable(true)
                                     .selectable(false)
-                                    .css_classes(vec![
+                                    .css_classes([
                                         "calendar-sidebar-group-row",
                                         "account-root-row",
                                         "sidebar-account-row",
@@ -3084,7 +3086,7 @@ impl ContactsPage {
                                         .margin_start(14)
                                         .margin_end(4)
                                         .valign(gtk::Align::Center)
-                                        .css_classes(vec![
+                                        .css_classes([
                                             "calendar-sidebar-row",
                                             "mail-sidebar-row",
                                             "calendar-sidebar-child-row",
@@ -3124,7 +3126,7 @@ impl ContactsPage {
                                     let render_holder_menu = Rc::clone(&render_holder_for_toggle);
                                     let menu_btn = crate::models::source_selector::create_source_row_menu_full(
                                         is_primary,
-                                        &crate::i18n::gettext("Address Book"),
+                                        &gettext("Address Book"),
                                         {
                                             let book_selector = book_selector.clone();
                                             let book_source_list = book_source_list_menu.clone();
@@ -3162,7 +3164,7 @@ impl ContactsPage {
                                                 let dialog = crate::dialogs::SourcePropertiesDialog::new(
                                                     &uid,
                                                     &name,
-                                                    &crate::i18n::gettext("Address Book"),
+                                                    &gettext("Address Book"),
                                                     "#3584e4",
                                                     true,
                                                     is_primary,
@@ -3234,7 +3236,7 @@ impl ContactsPage {
 
                                     let row = gtk::ListBoxRow::builder()
                                         .child(&child_box)
-                                        .css_classes(vec![
+                                        .css_classes([
                                             "calendar-sidebar-row",
                                             "mail-sidebar-row",
                                             "calendar-sidebar-child-row",
@@ -3290,7 +3292,7 @@ impl ContactsPage {
             .margin_end(0)
             .margin_top(0)
             .margin_bottom(0)
-            .css_classes(vec!["contact-list-view"])
+            .css_classes(["contact-list-view"])
             .build();
         contact_list.set_sort_func(|left, right| unsafe {
             let value = |row: &gtk::ListBoxRow, key: &str| {
@@ -3603,7 +3605,7 @@ impl ContactsPage {
             .child(&contact_table_header)
             .propagate_natural_width(false)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["contacts-header-scroll"])
+            .css_classes(["contacts-header-scroll"])
             .build();
 
         let contact_table_canvas = gtk::DrawingArea::builder()
@@ -3612,10 +3614,10 @@ impl ContactsPage {
             .focusable(true)
             .can_focus(true)
             .focus_on_click(true)
-            .css_classes(vec!["contacts-table-canvas"])
+            .css_classes(["contacts-table-canvas"])
             .build();
         set_accessible_role(&contact_table_canvas, gtk::AccessibleRole::List);
-        set_accessible_label(&contact_table_canvas, &crate::i18n::gettext("Contacts List"));
+        set_accessible_label(&contact_table_canvas, &gettext("Contacts List"));
 
         let simple_list_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
@@ -3626,7 +3628,7 @@ impl ContactsPage {
             .vexpand(true)
             .hexpand(true)
             .margin_end(0)
-            .css_classes(vec!["contact-simple-list-scroll", "contacts-header-scroll"])
+            .css_classes(["contact-simple-list-scroll", "contacts-header-scroll"])
             .build();
         self.imp().simple_list_scroll.replace(Some(simple_list_scroll.clone()));
 
@@ -3953,7 +3955,7 @@ impl ContactsPage {
 
         let alphabet_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(vec!["contacts-alphabet-pane"])
+            .css_classes(["contacts-alphabet-pane"])
             .halign(gtk::Align::End)
             .width_request(30)
             .build();
@@ -4053,12 +4055,12 @@ impl ContactsPage {
 
         let new_contact_btn = gtk::Button::builder()
             .icon_name("contact-new-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Create new contact (Ctrl+N)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Create new contact (Ctrl+N)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_button_icon_with_fallback(&new_contact_btn, "contact-new-symbolic", "document-new-symbolic");
-        set_accessible_label(&new_contact_btn, &crate::i18n::gettext("New Contact"));
+        set_accessible_label(&new_contact_btn, &gettext("New Contact"));
 
         let contact_list_for_new = contact_list.clone();
         let stored_contacts_for_new = Rc::clone(&stored_contacts);
@@ -4108,12 +4110,12 @@ impl ContactsPage {
 
         let new_list_btn = gtk::Button::builder()
             .icon_name("contact-group-symbolic")
-            .tooltip_text(&crate::i18n::gettext("New Contact List"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("New Contact List"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_button_icon_with_fallback(&new_list_btn, "contact-group-symbolic", "view-list-symbolic");
-        set_accessible_label(&new_list_btn, &crate::i18n::gettext("Create new contact list"));
+        set_accessible_label(&new_list_btn, &gettext("Create new contact list"));
         let contact_list_for_new_list = contact_list.clone();
         let stored_contacts_for_new_list = Rc::clone(&stored_contacts);
         let empty_state_for_new_list = empty_state.clone();
@@ -4156,17 +4158,17 @@ impl ContactsPage {
                 dialog.present(page.root().as_ref());
             }
         ));
-        set_accessible_label(&new_list_btn, &crate::i18n::gettext("Create new contact list"));
+        set_accessible_label(&new_list_btn, &gettext("Create new contact list"));
         self.imp()
             .new_list_button
             .replace(Some(new_list_btn.clone()));
 
         let print_list_btn = gtk::Button::builder()
-            .tooltip_text(&crate::i18n::gettext("Print visible contacts"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Print visible contacts"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&print_list_btn, &crate::i18n::gettext("Print visible contacts"));
+        set_accessible_label(&print_list_btn, &gettext("Print visible contacts"));
         self.imp()
             .print_list_button
             .replace(Some(print_list_btn.clone()));
@@ -4192,7 +4194,7 @@ impl ContactsPage {
                     Ok(doc) => {
                         let count = doc.contact_count;
                         let len = doc.html.len();
-                        let msg = crate::i18n::ngettext(
+                        let msg = ngettext(
                             "Portable list print document prepared ({len} characters, {count} contact); print portal is Linux handoff",
                             "Portable list print document prepared ({len} characters, {count} contacts); print portal is Linux handoff",
                             count as u32,
@@ -4218,11 +4220,11 @@ impl ContactsPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .visible(false)
-            .css_classes(vec!["sidebar-drawer-header"])
+            .css_classes(["sidebar-drawer-header"])
             .build();
         let drawer_icon = gtk::Image::from_icon_name("x-office-address-book-symbolic");
         let drawer_title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Contacts"))
+            .label(gettext("Contacts"))
             .halign(gtk::Align::Start)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -4230,7 +4232,7 @@ impl ContactsPage {
         let drawer_total = gtk::Label::builder()
             .label("")
             .halign(gtk::Align::End)
-            .css_classes(vec!["sidebar-drawer-total", "dim-label"])
+            .css_classes(["sidebar-drawer-total", "dim-label"])
             .build();
         drawer_header.append(&drawer_icon);
         drawer_header.append(&drawer_title);
@@ -4239,7 +4241,7 @@ impl ContactsPage {
 
         let sidebar_outer_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(vec!["meridian-sidebar-drawer"])
+            .css_classes(["meridian-sidebar-drawer"])
             .build();
         sidebar_outer_box.append(&drawer_header);
         sidebar_outer_box.append(&sidebar_scroll);
@@ -4258,7 +4260,7 @@ impl ContactsPage {
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
             .overflow(gtk::Overflow::Hidden)
-            .css_classes(vec!["contact-detail-pane"])
+            .css_classes(["contact-detail-pane"])
             .build();
 
         let header_box = gtk::Box::builder()
@@ -4281,8 +4283,8 @@ impl ContactsPage {
             .build();
 
         let detail_name = gtk::Label::builder()
-            .label(&crate::i18n::gettext("No contact selected"))
-            .css_classes(vec!["title-1"])
+            .label(gettext("No contact selected"))
+            .css_classes(["title-1"])
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .justify(gtk::Justification::Center)
@@ -4291,8 +4293,8 @@ impl ContactsPage {
             .build();
 
         let detail_title = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Address book data will be displayed after synchronization"))
-            .css_classes(vec!["dim-label"])
+            .label(gettext("Address book data will be displayed after synchronization"))
+            .css_classes(["dim-label"])
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .justify(gtk::Justification::Center)
@@ -4312,13 +4314,13 @@ impl ContactsPage {
             .replace(Some(detail_categories_box.clone()));
 
         let detail_extra = gtk::Label::builder()
-            .label(&crate::i18n::gettext("No further contact details"))
+            .label(gettext("No further contact details"))
             .halign(gtk::Align::Start)
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .selectable(true)
             .visible(false)
-            .css_classes(vec!["body", "dim-label"])
+            .css_classes(["body", "dim-label"])
             .build();
 
         header_box.append(&detail_avatar);
@@ -4329,7 +4331,7 @@ impl ContactsPage {
         let contact_actions_pill = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
-            .css_classes(vec!["linked", "mail-action-pill", "contact-header-actions"])
+            .css_classes(["linked", "mail-action-pill", "contact-header-actions"])
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .margin_top(4)
@@ -4341,16 +4343,16 @@ impl ContactsPage {
             .replace(Some(contact_actions_pill.clone()));
 
         let email_row1 = adw::ActionRow::builder()
-            .title(&crate::i18n::gettext("No email address"))
-            .subtitle(&crate::i18n::gettext("No contact selected"))
+            .title(gettext("No email address"))
+            .subtitle(gettext("No contact selected"))
             .build();
 
         let email_btn = gtk::Button::builder()
-            .tooltip_text(&crate::i18n::gettext("Send email"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Send email"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&email_btn, &crate::i18n::gettext("Send email to contact"));
+        set_accessible_label(&email_btn, &gettext("Send email to contact"));
         self.imp()
             .email_button
             .replace(Some(email_btn.clone()));
@@ -4374,7 +4376,7 @@ impl ContactsPage {
                 let recipient =
                     selected_contact_recipients(&selected, &stored_contacts_for_email.borrow());
                 if recipient.trim().is_empty() {
-                    page.show_toast(&crate::i18n::gettext("The selected contacts have no email address"));
+                    page.show_toast(&gettext("The selected contacts have no email address"));
                     return;
                 }
                 let dialog = crate::dialogs::ComposeDialog::to_recipient(&recipient);
@@ -4386,11 +4388,11 @@ impl ContactsPage {
         ));
 
         let edit_btn = gtk::Button::builder()
-            .tooltip_text(&crate::i18n::gettext("Edit contact (Ctrl+E)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Edit contact (Ctrl+E)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&edit_btn, &crate::i18n::gettext("Edit contact"));
+        set_accessible_label(&edit_btn, &gettext("Edit contact"));
         self.imp()
             .edit_button
             .replace(Some(edit_btn.clone()));
@@ -4411,12 +4413,12 @@ impl ContactsPage {
             self,
             move |_| {
                 let Some(record) = selected_contact_for_edit.borrow().clone() else {
-                    page.show_toast(&crate::i18n::gettext("No contact selected"));
+                    page.show_toast(&gettext("No contact selected"));
                     return;
                 };
                 if !contact_source_is_writable(&record.source_uid) {
                     page.show_toast(
-                        &crate::i18n::gettext("This contact is from a read-only imported source"),
+                        &gettext("This contact is from a read-only imported source"),
                     );
                     return;
                 }
@@ -4450,12 +4452,12 @@ impl ContactsPage {
         ));
 
         let merge_btn = gtk::Button::builder()
-            .tooltip_text(&crate::i18n::gettext("Merge duplicates from same source"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Merge duplicates from same source"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .sensitive(false)
             .build();
-        set_accessible_label(&merge_btn, &crate::i18n::gettext("Merge duplicates of contact"));
+        set_accessible_label(&merge_btn, &gettext("Merge duplicates of contact"));
         self.imp()
             .merge_button
             .replace(Some(merge_btn.clone()));
@@ -4478,12 +4480,12 @@ impl ContactsPage {
             self,
             move |_| {
                 let Some(primary) = selected_contact_for_merge.borrow().clone() else {
-                    page.show_toast(&crate::i18n::gettext("No contact selected"));
+                    page.show_toast(&gettext("No contact selected"));
                     return;
                 };
                 if !contact_source_is_writable(&primary.source_uid) {
                     page.show_toast(
-                        &crate::i18n::gettext("This contact is from a read-only imported source"),
+                        &gettext("This contact is from a read-only imported source"),
                     );
                     return;
                 }
@@ -4495,7 +4497,7 @@ impl ContactsPage {
                     .cloned()
                     .collect::<Vec<_>>();
                 if duplicates.is_empty() {
-                    page.show_toast(&crate::i18n::gettext("No duplicates found for this contact"));
+                    page.show_toast(&gettext("No duplicates found for this contact"));
                     merge_btn_for_result.set_sensitive(false);
                     return;
                 }
@@ -4503,19 +4505,19 @@ impl ContactsPage {
                 let count = duplicates.len();
                 let confirmation_message = if count == 1 {
                     format!(
-                        "{} „{}“ {}. {}",
-                        crate::i18n::gettext("1 duplicate will be merged into"),
+                        "{} “{}” {}. {}",
+                        gettext("1 duplicate will be merged into"),
                         primary.contact.fn_name,
-                        crate::i18n::gettext("The primary contact will be kept"),
-                        crate::i18n::gettext("The duplicate will then be permanently removed from this address book.")
+                        gettext("The primary contact will be kept"),
+                        gettext("The duplicate will then be permanently removed from this address book.")
                     )
                 } else {
                     format!(
-                        "{count} {} „{}“ {}. {}",
-                        crate::i18n::gettext("duplicates will be merged into"),
+                        "{count} {} “{}” {}. {}",
+                        gettext("duplicates will be merged into"),
                         primary.contact.fn_name,
-                        crate::i18n::gettext("The primary contact will be kept"),
-                        crate::i18n::gettext("The duplicates will then be permanently removed from this address book.")
+                        gettext("The primary contact will be kept"),
+                        gettext("The duplicates will then be permanently removed from this address book.")
                     )
                 };
                 let primary_for_action = primary.clone();
@@ -4536,9 +4538,9 @@ impl ContactsPage {
                 let search_state_for_action = Rc::clone(&search_state_for_merge);
                 crate::dialogs::run_destructive_action(
                     &detail_name_for_merge,
-                    &crate::i18n::gettext("Merge duplicates?"),
+                    &gettext("Merge duplicates?"),
                     &confirmation_message,
-                    &crate::i18n::gettext("Merge"),
+                    &gettext("Merge"),
                     move || {
                         let primary_for_worker = primary_for_action.clone();
                         let duplicates_for_worker = duplicates_for_action.clone();
@@ -4675,21 +4677,21 @@ impl ContactsPage {
         ));
 
         let delete_btn = gtk::Button::builder()
-            .tooltip_text(&crate::i18n::gettext("Delete contact (Delete)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Delete contact (Delete)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&delete_btn, &crate::i18n::gettext("Delete contact"));
+        set_accessible_label(&delete_btn, &gettext("Delete contact"));
         self.imp()
             .delete_button
             .replace(Some(delete_btn.clone()));
 
         let export_btn = gtk::Button::builder()
-            .tooltip_text(&crate::i18n::gettext("Export selected contacts (vCard, CSV, LDIF)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Export selected contacts (vCard, CSV, LDIF)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&export_btn, &crate::i18n::gettext("Export selected contacts"));
+        set_accessible_label(&export_btn, &gettext("Export selected contacts"));
         self.imp()
             .export_button
             .replace(Some(export_btn.clone()));
@@ -4711,11 +4713,11 @@ impl ContactsPage {
                     }
                 };
                 if selected.is_empty() {
-                    page.show_toast(&crate::i18n::gettext("No contacts selected for export"));
+                    page.show_toast(&gettext("No contacts selected for export"));
                     return;
                 }
                 let Some(root) = page.root().and_downcast::<gtk::Window>() else {
-                    page.show_toast(&crate::i18n::gettext("No window available for export"));
+                    page.show_toast(&gettext("No window available for export"));
                     return;
                 };
 
@@ -4754,7 +4756,7 @@ impl ContactsPage {
                 };
 
                 let file_dialog = gtk::FileDialog::builder()
-                    .title(&crate::i18n::gettext("Export Contacts"))
+                    .title(gettext("Export Contacts"))
                     .filters(&filters)
                     .default_filter(&filter_vcf)
                     .initial_name(&initial_name)
@@ -4789,11 +4791,11 @@ impl ContactsPage {
         ));
 
         let print_btn = gtk::Button::builder()
-            .tooltip_text(&crate::i18n::gettext("Print selected contacts (Ctrl+P)"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Print selected contacts (Ctrl+P)"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&print_btn, &crate::i18n::gettext("Print selected contacts"));
+        set_accessible_label(&print_btn, &gettext("Print selected contacts"));
         self.imp()
             .print_button
             .replace(Some(print_btn.clone()));
@@ -4817,7 +4819,7 @@ impl ContactsPage {
                     Ok(doc) => {
                         let count = doc.contact_count;
                         let len = doc.html.len();
-                        let label = crate::i18n::ngettext(
+                        let label = ngettext(
                             "Portable print document prepared ({len} characters, {count} contact); print portal is Linux handoff",
                             "Portable print document prepared ({len} characters, {count} contacts); print portal is Linux handoff",
                             count as u32,
@@ -4832,21 +4834,21 @@ impl ContactsPage {
         ));
 
         let copy_to_book_btn = gtk::Button::builder()
-            .tooltip_text(&crate::i18n::gettext("Copy to address book…"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Copy to address book…"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&copy_to_book_btn, &crate::i18n::gettext("Copy to Address Book"));
+        set_accessible_label(&copy_to_book_btn, &gettext("Copy to Address Book"));
         self.imp()
             .copy_to_book_button
             .replace(Some(copy_to_book_btn.clone()));
 
         let move_to_book_btn = gtk::Button::builder()
-            .tooltip_text(&crate::i18n::gettext("Move to address book…"))
-            .css_classes(vec!["flat"])
+            .tooltip_text(gettext("Move to address book…"))
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&move_to_book_btn, &crate::i18n::gettext("Move to Address Book"));
+        set_accessible_label(&move_to_book_btn, &gettext("Move to Address Book"));
         self.imp()
             .move_to_book_button
             .replace(Some(move_to_book_btn.clone()));
@@ -4894,7 +4896,7 @@ impl ContactsPage {
                         if let Some(contact) = selected_contact_for_copy_book.borrow().clone() {
                             vec![contact]
                         } else {
-                            page.show_toast(&crate::i18n::gettext("No contact selected"));
+                            page.show_toast(&gettext("No contact selected"));
                             return;
                         }
                     }
@@ -4931,7 +4933,7 @@ impl ContactsPage {
                         if let Some(contact) = selected_contact_for_move_book.borrow().clone() {
                             vec![contact]
                         } else {
-                            page.show_toast(&crate::i18n::gettext("No contact selected"));
+                            page.show_toast(&gettext("No contact selected"));
                             return;
                         }
                     }
@@ -4981,7 +4983,7 @@ impl ContactsPage {
                         if let Some(contact) = selected_contact_for_delete.borrow().clone() {
                             vec![contact]
                         } else {
-                            page.show_toast(&crate::i18n::gettext("No contact selected"));
+                            page.show_toast(&gettext("No contact selected"));
                             return;
                         }
                     }
@@ -5022,7 +5024,7 @@ impl ContactsPage {
                     &detail_name_for_delete,
                     &plan.confirmation.title,
                     &plan.confirmation.description,
-                    &crate::i18n::gettext("Delete"),
+                    &gettext("Delete"),
                     move || {
                         let plan_for_worker = plan_for_action.clone();
                         let (sender, receiver) = async_channel::bounded(1);
@@ -5123,12 +5125,12 @@ impl ContactsPage {
                                             detail_avatar_for_result
                                                 .set_custom_image(None::<&gdk::Texture>);
                                             detail_name_for_result
-                                                .set_label(&crate::i18n::gettext("No contact selected"));
+                                                .set_label(&gettext("No contact selected"));
                                             detail_title_for_result.set_label(
-                                                &crate::i18n::gettext("Address book data will be displayed after synchronization"),
+                                                &gettext("Address book data will be displayed after synchronization"),
                                             );
                                             detail_extra_for_result
-                                                .set_label(&crate::i18n::gettext("No further contact details"));
+                                                .set_label(&gettext("No further contact details"));
                                         }
 
                                         mark_duplicate_rows(
@@ -5140,7 +5142,7 @@ impl ContactsPage {
                                         );
                                         if stored_contacts_for_result.borrow().is_empty() {
                                             empty_state_for_result
-                                                .set_label(&crate::i18n::gettext("No contacts loaded in address book"));
+                                                .set_label(&gettext("No contacts loaded in address book"));
                                         }
                                         refresh_contact_category_model(
                                             &category_model_for_result,
@@ -5234,7 +5236,7 @@ impl ContactsPage {
 
             let email = crate::views::create_context_menu_button(
                 None,
-                &crate::i18n::gettext("Send email"),
+                &gettext("Send email"),
                 false,
             );
             let popover_for_email = popover.clone();
@@ -5247,7 +5249,7 @@ impl ContactsPage {
 
             let edit = crate::views::create_context_menu_button(
                 None,
-                &crate::i18n::gettext("Edit contact"),
+                &gettext("Edit contact"),
                 false,
             );
             let popover_for_edit = popover.clone();
@@ -5260,7 +5262,7 @@ impl ContactsPage {
 
             let export = crate::views::create_context_menu_button(
                 None,
-                &crate::i18n::gettext("Export (vCard, CSV, LDIF)…"),
+                &gettext("Export (vCard, CSV, LDIF)…"),
                 false,
             );
             let popover_for_export = popover.clone();
@@ -5273,7 +5275,7 @@ impl ContactsPage {
 
             let print = crate::views::create_context_menu_button(
                 None,
-                &crate::i18n::gettext("Print…"),
+                &gettext("Print…"),
                 false,
             );
             let popover_for_print = popover.clone();
@@ -5288,7 +5290,7 @@ impl ContactsPage {
 
             let copy_to_book = crate::views::create_context_menu_button(
                 None,
-                &crate::i18n::gettext("Copy to address book…"),
+                &gettext("Copy to address book…"),
                 false,
             );
             let popover_for_copy_to_book = popover.clone();
@@ -5301,7 +5303,7 @@ impl ContactsPage {
 
             let move_to_book = crate::views::create_context_menu_button(
                 None,
-                &crate::i18n::gettext("Move to address book…"),
+                &gettext("Move to address book…"),
                 false,
             );
             let popover_for_move_to_book = popover.clone();
@@ -5314,7 +5316,7 @@ impl ContactsPage {
 
             let merge = crate::views::create_context_menu_button(
                 None,
-                &crate::i18n::gettext("Merge duplicates"),
+                &gettext("Merge duplicates"),
                 false,
             );
             let popover_for_merge = popover.clone();
@@ -5329,7 +5331,7 @@ impl ContactsPage {
 
             let delete = crate::views::create_context_menu_button(
                 None,
-                &crate::i18n::gettext("Delete contact"),
+                &gettext("Delete contact"),
                 true,
             );
             let popover_for_delete = popover.clone();
@@ -5378,12 +5380,12 @@ impl ContactsPage {
         sidebar_outer_box.set_visible(sidebar_visible);
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
-            .tooltip_text(&crate::i18n::gettext("Toggle sidebar (F9)"))
+            .tooltip_text(gettext("Toggle sidebar (F9)"))
             .active(sidebar_visible)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&sidebar_toggle, &crate::i18n::gettext("Toggle sidebar"));
+        set_accessible_label(&sidebar_toggle, &gettext("Toggle sidebar"));
         self.imp()
             .contacts_sidebar_toggle
             .replace(Some(sidebar_toggle.clone()));
@@ -5525,7 +5527,7 @@ impl ContactsPage {
         let more_edit_btn = gtk::Button::builder().visible(false).build();
         let more_delete_btn = gtk::Button::builder()
             .visible(false)
-            .css_classes(vec!["destructive-action"])
+            .css_classes(["destructive-action"])
             .build();
         let more_compact_sep = gtk::Separator::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -5535,24 +5537,24 @@ impl ContactsPage {
         make_popover_item(
             &more_email_btn,
             "mail-message-new-symbolic",
-            &crate::i18n::gettext("Send Email"),
+            &gettext("Send Email"),
         );
         make_popover_item(
             &more_edit_btn,
             "document-edit-symbolic",
-            &crate::i18n::gettext("Edit Contact…"),
+            &gettext("Edit Contact…"),
         );
         make_popover_item(
             &more_delete_btn,
             "user-trash-symbolic",
-            &crate::i18n::gettext("Delete Contact"),
+            &gettext("Delete Contact"),
         );
-        make_popover_item(&print_btn, "document-print-symbolic", &crate::i18n::gettext("Print Contact…"));
-        make_popover_item(&export_btn, "document-save-symbolic", &crate::i18n::gettext("Export Contact…"));
-        make_popover_item(&merge_btn, "object-select-symbolic", &crate::i18n::gettext("Merge Duplicates…"));
-        make_popover_item(&copy_to_book_btn, "edit-copy-symbolic", &crate::i18n::gettext("Copy to Address Book…"));
-        make_popover_item(&move_to_book_btn, "folder-move-symbolic", &crate::i18n::gettext("Move to Address Book…"));
-        make_popover_item(&print_list_btn, "document-print-preview-symbolic", &crate::i18n::gettext("Print Contact List…"));
+        make_popover_item(&print_btn, "document-print-symbolic", &gettext("Print Contact…"));
+        make_popover_item(&export_btn, "document-save-symbolic", &gettext("Export Contact…"));
+        make_popover_item(&merge_btn, "object-select-symbolic", &gettext("Merge Duplicates…"));
+        make_popover_item(&copy_to_book_btn, "edit-copy-symbolic", &gettext("Copy to Address Book…"));
+        make_popover_item(&move_to_book_btn, "folder-move-symbolic", &gettext("Move to Address Book…"));
+        make_popover_item(&print_list_btn, "document-print-preview-symbolic", &gettext("Print Contact List…"));
 
         let _ = email_btn
             .bind_property("sensitive", &more_email_btn, "sensitive")
@@ -5623,12 +5625,12 @@ impl ContactsPage {
 
         more_popover.set_child(Some(&more_box));
 
-        let str_more_actions = crate::i18n::gettext("More actions for this contact");
+        let str_more_actions = gettext("More actions for this contact");
         let more_btn = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
             .popover(&more_popover)
             .tooltip_text(&str_more_actions)
-            .css_classes(vec!["flat", "mail-header-action-btn"])
+            .css_classes(["flat", "mail-header-action-btn"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&more_btn, &str_more_actions);
@@ -5711,9 +5713,9 @@ impl ContactsPage {
             .spacing(6)
             .build();
         sec_view_box.append(&gtk::Label::builder()
-            .label(&crate::i18n::gettext("View"))
+            .label(gettext("View"))
             .halign(gtk::Align::Start)
-            .css_classes(vec!["dim-label", "caption"])
+            .css_classes(["dim-label", "caption"])
             .build()
         );
 
@@ -5721,22 +5723,22 @@ impl ContactsPage {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
             .homogeneous(true)
-            .css_classes(vec!["linked"])
+            .css_classes(["linked"])
             .build();
 
         let btn_simple = gtk::ToggleButton::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text(&crate::i18n::gettext("List View"))
+            .tooltip_text(gettext("List View"))
             .active(true)
             .build();
-        set_accessible_label(&btn_simple, &crate::i18n::gettext("List View"));
+        set_accessible_label(&btn_simple, &gettext("List View"));
 
         let btn_table = gtk::ToggleButton::builder()
             .icon_name(contact_table_view_icon_name())
-            .tooltip_text(&crate::i18n::gettext("Table View"))
+            .tooltip_text(gettext("Table View"))
             .group(&btn_simple)
             .build();
-        set_accessible_label(&btn_table, &crate::i18n::gettext("Table View"));
+        set_accessible_label(&btn_table, &gettext("Table View"));
 
         view_mode_box.append(&btn_simple);
         view_mode_box.append(&btn_table);
@@ -5765,11 +5767,11 @@ impl ContactsPage {
         popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let btn_cols = gtk::Button::builder()
             .icon_name("view-column-symbolic")
-            .label(&crate::i18n::gettext("Customize Column Order…"))
-            .css_classes(vec!["flat"])
+            .label(gettext("Customize Column Order…"))
+            .css_classes(["flat"])
             .halign(gtk::Align::Fill)
             .build();
-        set_accessible_label(&btn_cols, &crate::i18n::gettext("Customize Column Order"));
+        set_accessible_label(&btn_cols, &gettext("Customize Column Order"));
 
         let options_popover = gtk::Popover::builder().child(&popover_box).build();
         options_popover.add_css_class("view-options-popover");
@@ -5798,13 +5800,13 @@ impl ContactsPage {
         });
 
         // Build SplitButton
-        let str_view_opts = crate::i18n::gettext("View options");
+        let str_view_opts = gettext("View options");
         let split_btn = adw::SplitButton::builder()
             .icon_name("view-list-symbolic")
-            .tooltip_text(&crate::i18n::gettext("List View"))
+            .tooltip_text(gettext("List View"))
             .dropdown_tooltip(&str_view_opts)
             .popover(&options_popover)
-            .css_classes(vec!["flat"])
+            .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();
         set_accessible_label(&split_btn, &str_view_opts);
@@ -5841,7 +5843,7 @@ impl ContactsPage {
             .min_content_width(0)
             .propagate_natural_width(false)
             .vexpand(true)
-            .css_classes(vec!["contacts-header-scroll"])
+            .css_classes(["contacts-header-scroll"])
             .build();
 
         let info_box = gtk::Box::builder()
@@ -5854,15 +5856,15 @@ impl ContactsPage {
             .overflow(gtk::Overflow::Hidden)
             .build();
 
-        let email_group = adw::PreferencesGroup::builder().title(&crate::i18n::gettext("Email")).build();
+        let email_group = adw::PreferencesGroup::builder().title(gettext("Email")).build();
 
         let copy_btn1 = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
             .valign(gtk::Align::Center)
-            .css_classes(vec!["flat"])
-            .tooltip_text(&crate::i18n::gettext("Copy"))
+            .css_classes(["flat"])
+            .tooltip_text(gettext("Copy"))
             .build();
-        set_accessible_label(&copy_btn1, &crate::i18n::gettext("Copy email address"));
+        set_accessible_label(&copy_btn1, &gettext("Copy email address"));
         let selected_contact_for_copy = Rc::clone(&selected_contact);
         let stored_contacts_for_copy = Rc::clone(&stored_contacts);
         copy_btn1.connect_clicked(glib::clone!(
@@ -5870,7 +5872,7 @@ impl ContactsPage {
             self,
             move |button| {
                 let Some(record) = selected_contact_for_copy.borrow().clone() else {
-                    page.show_toast(&crate::i18n::gettext("No contact selected"));
+                    page.show_toast(&gettext("No contact selected"));
                     return;
                 };
                 let email = if record.contact.is_list {
@@ -5886,11 +5888,11 @@ impl ContactsPage {
                     contact_email_text(&record.contact)
                 };
                 if email.trim().is_empty() {
-                    page.show_toast(&crate::i18n::gettext("No email address to copy"));
+                    page.show_toast(&gettext("No email address to copy"));
                     return;
                 }
                 button.display().clipboard().set_text(&email);
-                page.show_toast(&crate::i18n::gettext("Email address copied"));
+                page.show_toast(&gettext("Email address copied"));
             }
         ));
         email_row1.add_prefix(&gtk::Image::from_icon_name("mail-unread-symbolic"));
@@ -5898,7 +5900,7 @@ impl ContactsPage {
         email_group.add(&email_row1);
 
         let phone_group = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Phone"))
+            .title(gettext("Phone"))
             .visible(false)
             .build();
         let phone_box = gtk::Box::builder()
@@ -5910,7 +5912,7 @@ impl ContactsPage {
         self.imp().phone_box.replace(Some(phone_box.clone()));
 
         let address_group = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Address"))
+            .title(gettext("Address"))
             .visible(false)
             .build();
 
@@ -5933,7 +5935,7 @@ impl ContactsPage {
         self.imp().map_box.replace(Some(map_box.clone()));
 
         let details_group = adw::PreferencesGroup::builder()
-            .title(&crate::i18n::gettext("Details"))
+            .title(gettext("Details"))
             .visible(false)
             .build();
         let details_box = gtk::Box::builder()
@@ -6125,14 +6127,14 @@ impl ContactsPage {
                                     detail_avatar_for_monitor.set_text(Some(""));
                                     detail_avatar_for_monitor
                                         .set_custom_image(None::<&gdk::Texture>);
-                                     detail_name_for_monitor.set_label(&crate::i18n::gettext("No contact selected"));
+                                     detail_name_for_monitor.set_label(&gettext("No contact selected"));
                                      detail_title_for_monitor.set_label(
-                                         &crate::i18n::gettext("Address book data will be displayed after synchronization"),
+                                         &gettext("Address book data will be displayed after synchronization"),
                                      );
                                      detail_extra_for_monitor
-                                         .set_label(&crate::i18n::gettext("No further contact details"));
-                                     email_row_for_monitor.set_title(&crate::i18n::gettext("No email address"));
-                                     email_row_for_monitor.set_subtitle(&crate::i18n::gettext("No contact selected"));
+                                         .set_label(&gettext("No further contact details"));
+                                     email_row_for_monitor.set_title(&gettext("No email address"));
+                                     email_row_for_monitor.set_subtitle(&gettext("No contact selected"));
                                     page.imp().selected_identity.replace(None);
                                     contact_list_for_monitor.unselect_all();
                                 }
@@ -6562,7 +6564,7 @@ impl ContactsPage {
             let row = adw::ActionRow::builder()
                 .title(addr)
                 .selectable(false)
-                .css_classes(vec!["property"])
+                .css_classes(["property"])
                 .build();
             let prefix_icon = gtk::Image::from_icon_name("mark-location-symbolic");
             row.add_prefix(&prefix_icon);
@@ -6570,15 +6572,15 @@ impl ContactsPage {
             let copy_btn = gtk::Button::builder()
                 .icon_name("edit-copy-symbolic")
                 .valign(gtk::Align::Center)
-                .css_classes(vec!["flat"])
-                .tooltip_text(&crate::i18n::gettext("Copy address"))
+                .css_classes(["flat"])
+                .tooltip_text(gettext("Copy address"))
                 .build();
             let addr_for_copy = addr.clone();
             let page_weak = self.downgrade();
             copy_btn.connect_clicked(move |btn| {
                 btn.display().clipboard().set_text(&addr_for_copy);
                 if let Some(p) = page_weak.upgrade() {
-                    p.show_toast(&crate::i18n::gettext("Address copied"));
+                    p.show_toast(&gettext("Address copied"));
                 }
             });
             row.add_suffix(&copy_btn);
@@ -6586,8 +6588,8 @@ impl ContactsPage {
             let open_map_btn = gtk::Button::builder()
                 .icon_name("web-browser-symbolic")
                 .valign(gtk::Align::Center)
-                .css_classes(vec!["flat"])
-                .tooltip_text(&crate::i18n::gettext("Open in Map"))
+                .css_classes(["flat"])
+                .tooltip_text(gettext("Open in Map"))
                 .build();
             let addr_for_map = addr.clone();
             let target_clone = target.clone();
@@ -6616,10 +6618,10 @@ impl ContactsPage {
                         .hexpand(true)
                         .vexpand(false)
                         .height_request(220)
-                        .css_classes(vec!["contact-map-webview"])
+                        .css_classes(["contact-map-webview"])
                         .build();
                     let frame = gtk::Frame::builder()
-                        .css_classes(vec!["contact-map-frame"])
+                        .css_classes(["contact-map-frame"])
                         .child(&view)
                         .build();
                     map_box.append(&frame);
@@ -6647,7 +6649,7 @@ impl ContactsPage {
                 for cat in rec.contact.categories.iter().filter(|c| !c.trim().is_empty()) {
                     let chip = gtk::Label::builder()
                         .label(cat.trim())
-                        .css_classes(vec!["caption", "contact-category-chip"])
+                        .css_classes(["caption", "contact-category-chip"])
                         .build();
                     cat_box.append(&chip);
                     count += 1;
@@ -6655,7 +6657,7 @@ impl ContactsPage {
                 if !rec.source_display_name.trim().is_empty() {
                     let book_chip = gtk::Label::builder()
                         .label(rec.source_display_name.trim())
-                        .css_classes(vec!["caption", "contact-row-badge"])
+                        .css_classes(["caption", "contact-row-badge"])
                         .build();
                     cat_box.append(&book_chip);
                     count += 1;
@@ -6683,26 +6685,26 @@ impl ContactsPage {
                     }
                     let prop_upper = prop.property.to_ascii_uppercase();
                     let kind_label = if prop_upper.contains("CELL") || prop_upper.contains("MOBILE") {
-                        crate::i18n::gettext("Mobile")
+                        gettext("Mobile")
                     } else if prop_upper.contains("WORK") {
-                        crate::i18n::gettext("Work")
+                        gettext("Work")
                     } else if prop_upper.contains("HOME") {
-                        crate::i18n::gettext("Home")
+                        gettext("Home")
                     } else {
-                        crate::i18n::gettext("Phone")
+                        gettext("Phone")
                     };
                     phones.push((num.to_string(), kind_label));
                 }
                 for num in &c.phones {
                     let trimmed = num.trim();
                     if !trimmed.is_empty() && !phones.iter().any(|(existing, _)| existing == trimmed) {
-                        phones.push((trimmed.to_string(), crate::i18n::gettext("Phone")));
+                        phones.push((trimmed.to_string(), gettext("Phone")));
                     }
                 }
                 if !c.tel.trim().is_empty()
                     && !phones.iter().any(|(num, _)| num == c.tel.trim())
                 {
-                    phones.push((c.tel.trim().to_string(), crate::i18n::gettext("Primary")));
+                    phones.push((c.tel.trim().to_string(), gettext("Primary")));
                 }
 
                 if phones.is_empty() {
@@ -6714,22 +6716,22 @@ impl ContactsPage {
                             .title(&num)
                             .subtitle(&kind_label)
                             .selectable(false)
-                            .css_classes(vec!["property"])
+                            .css_classes(["property"])
                             .build();
                         row.add_prefix(&gtk::Image::from_icon_name("call-start-symbolic"));
 
                         let copy_btn = gtk::Button::builder()
                             .icon_name("edit-copy-symbolic")
                             .valign(gtk::Align::Center)
-                            .css_classes(vec!["flat"])
-                            .tooltip_text(&crate::i18n::gettext("Copy"))
+                            .css_classes(["flat"])
+                            .tooltip_text(gettext("Copy"))
                             .build();
                         let num_copy = num.clone();
                         let page_weak = self.downgrade();
                         copy_btn.connect_clicked(move |btn| {
                             btn.display().clipboard().set_text(&num_copy);
                             if let Some(p) = page_weak.upgrade() {
-                                p.show_toast(&crate::i18n::gettext("Copied to clipboard"));
+                                p.show_toast(&gettext("Copied to clipboard"));
                             }
                         });
                         row.add_suffix(&copy_btn);
@@ -6761,22 +6763,22 @@ impl ContactsPage {
                         .title(label)
                         .subtitle(trimmed)
                         .selectable(false)
-                        .css_classes(vec!["property"])
+                        .css_classes(["property"])
                         .build();
                     row.add_prefix(&gtk::Image::from_icon_name(icon));
 
                     let copy_btn = gtk::Button::builder()
                         .icon_name("edit-copy-symbolic")
                         .valign(gtk::Align::Center)
-                        .css_classes(vec!["flat"])
-                        .tooltip_text(&crate::i18n::gettext("Copy"))
+                        .css_classes(["flat"])
+                        .tooltip_text(gettext("Copy"))
                         .build();
                     let val_copy = trimmed.to_string();
                     let page_weak = self.downgrade();
                     copy_btn.connect_clicked(move |btn| {
                         btn.display().clipboard().set_text(&val_copy);
                         if let Some(p) = page_weak.upgrade() {
-                            p.show_toast(&crate::i18n::gettext("Copied to clipboard"));
+                            p.show_toast(&gettext("Copied to clipboard"));
                         }
                     });
                     row.add_suffix(&copy_btn);
@@ -6784,19 +6786,19 @@ impl ContactsPage {
                 };
 
                 let clean_org = clean_contact_org(&c.org);
-                add_detail_row("x-office-address-book-symbolic", &crate::i18n::gettext("Organization"), &clean_org);
-                add_detail_row("avatar-default-symbolic", &crate::i18n::gettext("Job Title"), &c.title);
-                add_detail_row("avatar-default-symbolic", &crate::i18n::gettext("Role"), &c.role);
-                add_detail_row("avatar-default-symbolic", &crate::i18n::gettext("Nickname"), &c.nickname);
+                add_detail_row("x-office-address-book-symbolic", &gettext("Organization"), &clean_org);
+                add_detail_row("avatar-default-symbolic", &gettext("Job Title"), &c.title);
+                add_detail_row("avatar-default-symbolic", &gettext("Role"), &c.role);
+                add_detail_row("avatar-default-symbolic", &gettext("Nickname"), &c.nickname);
                 if !c.urls.is_empty() {
-                    add_detail_row("web-browser-symbolic", &crate::i18n::gettext("Website"), &c.urls.join(", "));
+                    add_detail_row("web-browser-symbolic", &gettext("Website"), &c.urls.join(", "));
                 }
-                add_detail_row("x-office-calendar-symbolic", &crate::i18n::gettext("Birthday"), &c.birthday);
-                add_detail_row("x-office-calendar-symbolic", &crate::i18n::gettext("Anniversary"), &c.anniversary);
+                add_detail_row("x-office-calendar-symbolic", &gettext("Birthday"), &c.birthday);
+                add_detail_row("x-office-calendar-symbolic", &gettext("Anniversary"), &c.anniversary);
                 if !c.impps.is_empty() {
-                    add_detail_row("user-available-symbolic", &crate::i18n::gettext("Chat"), &c.impps.join(", "));
+                    add_detail_row("user-available-symbolic", &gettext("Chat"), &c.impps.join(", "));
                 }
-                add_detail_row("document-edit-symbolic", &crate::i18n::gettext("Notes"), &c.note);
+                add_detail_row("document-edit-symbolic", &gettext("Notes"), &c.note);
 
                 if c.is_list && !c.list_members.is_empty() {
                     let members_str = c
@@ -6807,7 +6809,7 @@ impl ContactsPage {
                         .join(", ");
                     add_detail_row(
                         "system-users-symbolic",
-                        &crate::i18n::gettext("Members"),
+                        &gettext("Members"),
                         &members_str,
                     );
                 }
@@ -7089,7 +7091,7 @@ fn contact_load_status_message(
             }
         }
     } else {
-        crate::i18n::ngettext(
+        ngettext(
             "{n} contact loaded from {source}.",
             "{n} contacts loaded from {source}.",
             contact_count as u32,
@@ -7425,7 +7427,7 @@ fn run_contact_transfer_dialog(
         .collect();
 
     if eligible.is_empty() {
-        page.show_toast(&crate::i18n::gettext("No other writable destination address book available"));
+        page.show_toast(&gettext("No other writable destination address book available"));
         return;
     }
 
@@ -7436,37 +7438,37 @@ fn run_contact_transfer_dialog(
     let (title, description, confirm_label, appearance) = match kind {
         ContactTransferKind::Copy => {
             let title = if count == 1 {
-                crate::i18n::gettext("Copy Contact")
+                gettext("Copy Contact")
             } else {
-                format!("{count} {}", crate::i18n::gettext("Copy Contacts"))
+                format!("{count} {}", gettext("Copy Contacts"))
             };
             let description = if count == 1 {
-                crate::i18n::gettext("Select the destination address book to copy the contact to:")
+                gettext("Select the destination address book to copy the contact to:")
             } else {
-                crate::i18n::gettext("Select the destination address book to copy the contacts to:")
+                gettext("Select the destination address book to copy the contacts to:")
             };
             (
                 title,
                 description,
-                crate::i18n::gettext("Copy"),
+                gettext("Copy"),
                 adw::ResponseAppearance::Suggested,
             )
         }
         ContactTransferKind::Move => {
             let title = if count == 1 {
-                crate::i18n::gettext("Move Contact")
+                gettext("Move Contact")
             } else {
-                format!("{count} {}", crate::i18n::gettext("Move Contacts"))
+                format!("{count} {}", gettext("Move Contacts"))
             };
             let description = if count == 1 {
-                crate::i18n::gettext("The contact will be created in the destination address book and then removed from the current address book.")
+                gettext("The contact will be created in the destination address book and then removed from the current address book.")
             } else {
-                crate::i18n::gettext("The selected contacts will be created in the destination address book and then removed from their current address books.")
+                gettext("The selected contacts will be created in the destination address book and then removed from their current address books.")
             };
             (
                 title,
                 description,
-                crate::i18n::gettext("Move"),
+                gettext("Move"),
                 adw::ResponseAppearance::Suggested,
             )
         }
@@ -7485,7 +7487,7 @@ fn run_contact_transfer_dialog(
 
     let dialog = adw::AlertDialog::new(Some(&title), Some(&description));
     dialog.set_extra_child(Some(&content_box));
-    dialog.add_response("cancel", &crate::i18n::gettext("Cancel"));
+    dialog.add_response("cancel", &gettext("Cancel"));
     dialog.add_response("confirm", &confirm_label);
     dialog.set_response_appearance("confirm", appearance);
     dialog.set_default_response(Some("confirm"));
@@ -7501,7 +7503,7 @@ fn run_contact_transfer_dialog(
         };
         let selected_idx = dropdown.selected() as usize;
         let Some((dest_uid, dest_display_name)) = eligible.get(selected_idx).cloned() else {
-            page.show_toast(&crate::i18n::gettext("Invalid address book selection"));
+            page.show_toast(&gettext("Invalid address book selection"));
             return;
         };
 
@@ -7709,7 +7711,7 @@ fn execute_contact_transfer_worker(
             let dest = &result.destination_display_name;
             let message = match result.kind {
                 ContactTransferKind::Copy => {
-                    crate::i18n::ngettext(
+                    ngettext(
                         "1 contact copied to “{dest}”",
                         "{n} contacts copied to “{dest}”",
                         created_count as u32,
@@ -7718,7 +7720,7 @@ fn execute_contact_transfer_worker(
                     .replace("{dest}", dest)
                 }
                 ContactTransferKind::Move => {
-                    crate::i18n::ngettext(
+                    ngettext(
                         "1 contact moved to “{dest}”",
                         "{n} contacts moved to “{dest}”",
                         created_count as u32,
@@ -7844,7 +7846,7 @@ fn plan_contact_delete_batch(selected: &[EBookContactRecord]) -> Result<ContactD
     } else {
         ContactDeleteConfirmation {
             title: gettext("Delete contacts?"),
-            description: crate::i18n::ngettext(
+            description: ngettext(
                 "Are you sure you want to permanently remove {n} selected contact from the address books?",
                 "Are you sure you want to permanently remove {n} selected contacts from the address books?",
                 items.len() as u32,
@@ -8111,6 +8113,14 @@ fn set_contact_filter(contact_list: &gtk::ListBox, search_state: Rc<ContactPageS
             .data::<String>("contact-source-uid")
             .map(|value| value.as_ref().clone())
             .unwrap_or_default();
+        if !source_uid.is_empty()
+            && !crate::services::eds_service::is_source_enabled_for_service(
+                &source_uid,
+                crate::services::eds_service::EdsSourceKind::AddressBook,
+            )
+        {
+            return false;
+        }
         let uid = row
             .data::<String>("contact-id")
             .map(|value| value.as_ref().clone())
@@ -8418,7 +8428,7 @@ fn save_contact_export_async(button: &gtk::Button, file: gio::File, plan: Contac
         None::<&gio::Cancellable>,
         move |result| match result {
             Ok(_) => {
-                let msg = crate::i18n::ngettext(
+                let msg = ngettext(
                     "Contact exported as {format}",
                     "{n} contacts exported as {format}",
                     contact_count as u32,
@@ -8445,11 +8455,11 @@ fn reset_contact_detail(
 ) {
     detail_avatar.set_text(Some(""));
     detail_avatar.set_custom_image(None::<&gdk::Texture>);
-    detail_name.set_label(&crate::i18n::gettext("No contact selected"));
-    detail_title.set_label(&crate::i18n::gettext("Address book data will be displayed after synchronization"));
-    detail_extra.set_label(&crate::i18n::gettext("No further contact details"));
-    email_row.set_title(&crate::i18n::gettext("No email address"));
-    email_row.set_subtitle(&crate::i18n::gettext("No contact selected"));
+    detail_name.set_label(&gettext("No contact selected"));
+    detail_title.set_label(&gettext("Address book data will be displayed after synchronization"));
+    detail_extra.set_label(&gettext("No further contact details"));
+    email_row.set_title(&gettext("No email address"));
+    email_row.set_subtitle(&gettext("No contact selected"));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8563,24 +8573,24 @@ fn sync_contact_selection(
             detail_avatar.set_custom_image(None::<&gdk::Texture>);
             let count = records.len();
             let count_label = if count == 1 {
-                crate::i18n::gettext("1 contact selected")
+                gettext("1 contact selected")
             } else {
-                format!("{count} {}", crate::i18n::gettext("contacts selected"))
+                format!("{count} {}", gettext("contacts selected"))
             };
             detail_name.set_label(&count_label);
-            detail_title.set_label(&crate::i18n::gettext(
+            detail_title.set_label(&gettext(
                 "Email, Print, Delete, and vCard Export use the full selection; Edit and Merge require exactly one contact.",
             ));
             let email_subtitle = if state.email {
-                crate::i18n::gettext("Email addresses can be used together")
+                gettext("Email addresses can be used together")
             } else {
-                crate::i18n::gettext("No email addresses in selection")
+                gettext("No email addresses in selection")
             };
             email_row.set_subtitle(&email_subtitle);
             let extra_label = if state.delete {
-                crate::i18n::gettext("Multiple selection: Selected contacts can be printed, exported, or deleted together.")
+                gettext("Multiple selection: Selected contacts can be printed, exported, or deleted together.")
             } else {
-                crate::i18n::gettext("Multiple selection: Print and Export write verified vCards. Deletion is disabled for read-only sources.")
+                gettext("Multiple selection: Print and Export write verified vCards. Deletion is disabled for read-only sources.")
             };
             detail_extra.set_label(&extra_label);
             detail_extra.set_visible(true);
@@ -8695,7 +8705,7 @@ fn update_alphabet_pane(
     for (letter, (_, target_row, target_source_uid, target_uid)) in letter_first_row {
         let button = gtk::Button::builder()
             .label(letter.to_string())
-            .css_classes(vec!["contacts-alphabet-btn"])
+            .css_classes(["contacts-alphabet-btn"])
             .tooltip_text(format!("Zu '{letter}' springen"))
             .halign(gtk::Align::End)
             .build();
@@ -8757,7 +8767,7 @@ fn update_alphabet_pane(
             .activatable(false)
             .selectable(false)
             .halign(gtk::Align::End)
-            .css_classes(vec!["contacts-alphabet-row"])
+            .css_classes(["contacts-alphabet-row"])
             .build();
         alphabet_box.append(&list_row);
     }
@@ -9258,7 +9268,7 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
         .label(&contact.fn_name)
         .halign(gtk::Align::Start)
         .hexpand(true)
-        .css_classes(vec!["heading"])
+        .css_classes(["heading"])
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .lines(1)
         .width_chars(1)
@@ -9266,7 +9276,7 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
     line1_box.append(&name);
 
     let badge_text = if contact.is_list {
-        Some(crate::i18n::gettext("List"))
+        Some(gettext("List"))
     } else if let Some(cat) = contact.categories.first().filter(|c| !c.trim().is_empty()) {
         Some(cat.trim().to_string())
     } else {
@@ -9277,7 +9287,7 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
             .label(&text)
             .valign(gtk::Align::Center)
             .halign(gtk::Align::End)
-            .css_classes(vec!["caption", "contact-row-badge"])
+            .css_classes(["caption", "contact-row-badge"])
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(14)
             .build();
@@ -9324,7 +9334,7 @@ fn append_contact_row(contact_list: &gtk::ListBox, record: &EBookContactRecord) 
             .label(&meta_text)
             .halign(gtk::Align::Start)
             .hexpand(true)
-            .css_classes(vec!["dim-label", "caption"])
+            .css_classes(["dim-label", "caption"])
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .lines(1)
             .width_chars(1)
@@ -9470,7 +9480,7 @@ fn contact_email_text(contact: &VCardContact) -> String {
         if contact.list_show_addresses {
             return contact.list_member_emails().join(", ");
         }
-        return crate::i18n::ngettext(
+        return ngettext(
             "Contact list · {n} member · addresses hidden",
             "Contact list · {n} members · addresses hidden",
             contact.list_members.len() as u32,
@@ -9574,7 +9584,10 @@ fn contact_phone_text(contact: &VCardContact) -> String {
 
 fn contact_detail_title(contact: &VCardContact) -> String {
     if contact.is_list {
-        format!("Kontaktliste · {} Mitglied(e)", contact.list_members.len())
+        let count = contact.list_members.len();
+        let members_label = ngettext("{n} member", "{n} members", count as u32)
+            .replace("{n}", &count.to_string());
+        format!("{} · {}", gettext("Contact List"), members_label)
     } else if contact.title.is_empty() {
         clean_contact_org(&contact.org)
     } else {
@@ -9623,7 +9636,7 @@ pub(crate) fn contact_detail_summary_with_options(
     let mut lines = Vec::new();
     if contact.is_list {
         lines.push(
-            crate::i18n::ngettext(
+            ngettext(
                 "Contact list: {n} member",
                 "Contact list: {n} members",
                 contact.list_members.len() as u32,
@@ -9733,6 +9746,7 @@ impl Default for ContactsPage {
 
 #[cfg(test)]
 mod tests {
+    use crate::i18n::{gettext, ngettext};
     use super::{
         ContactsPage, ContactViewMode, append_contact_row,
         ContactActionState, ContactIdentity, ContactPageSearchState, ContactSelectionRestore,
@@ -9807,7 +9821,7 @@ mod tests {
             search_text,
             "  lovelace   ada@example.test "
         ));
-        assert!(!contact_query_matches(search_text, "Ada nicht-vorhanden"));
+        assert!(!contact_query_matches(search_text, "Ada nonexistent"));
         assert!(contact_query_matches(search_text, ""));
     }
 
@@ -10106,11 +10120,11 @@ mod tests {
         );
         assert_eq!(
             contact_source_label("", "local-addressbook"),
-            crate::i18n::gettext("Local Address Book")
+            gettext("Local Address Book")
         );
         assert_eq!(
             contact_source_label("", "uid-only-source"),
-            crate::i18n::gettext("Address Book")
+            gettext("Address Book")
         );
     }
 
@@ -10118,7 +10132,7 @@ mod tests {
     fn load_status_keeps_fallback_and_warning_honest() {
         assert_eq!(
             contact_load_status_message(EBookDataOrigin::Eds, 4, None),
-            crate::i18n::ngettext(
+            ngettext(
                 "{n} contact loaded from {source}.",
                 "{n} contacts loaded from {source}.",
                 4,
@@ -10132,7 +10146,7 @@ mod tests {
             Some("The address book service is unavailable"),
         );
         assert!(fallback.contains(&contact_origin_label(EBookDataOrigin::Local)));
-        assert!(fallback.contains(&crate::i18n::gettext("Note")));
+        assert!(fallback.contains(&gettext("Note")));
         assert!(contact_status_needs_visibility(0, None));
         assert!(!contact_status_needs_visibility(2, None));
         assert!(contact_status_needs_visibility(2, Some("Warning")));
@@ -10188,13 +10202,13 @@ mod tests {
                 Some(0),
             ),
         ];
-        assert!(contact_email_text(&list).contains(&crate::i18n::gettext("addresses hidden")));
+        assert!(contact_email_text(&list).contains(&gettext("addresses hidden")));
         assert!(!contact_email_text(&list).contains("external@example.test"));
         assert_eq!(
             contact_recipient_text(&list),
             "external@example.test, ada@example.test"
         );
-        assert!(contact_detail_summary(&list).contains(&crate::i18n::gettext("Member addresses: hidden")));
+        assert!(contact_detail_summary(&list).contains(&gettext("Member addresses: hidden")));
     }
 
     #[test]
@@ -10203,7 +10217,7 @@ mod tests {
         nested.list_members = vec![
             crate::services::vcard_service::VCardListMember::external_address(
                 "nested@example.test",
-                "Unterteam-Adresse",
+                "Subteam Address",
             ),
         ];
         let mut outer = VCardContact::new_list("Team", false, Some("outer-list"));
@@ -10220,14 +10234,14 @@ mod tests {
             contact_recipient_text_with_records(&outer, &[nested_record]),
             "nested@example.test"
         );
-        assert!(contact_email_text(&outer).contains(&crate::i18n::gettext("addresses hidden")));
+        assert!(contact_email_text(&outer).contains(&gettext("addresses hidden")));
         assert!(!contact_email_text(&outer).contains("nested@example.test"));
     }
 
     #[test]
     fn plan_contact_delete_batch_rejects_empty_selection() {
         let result = plan_contact_delete_batch(&[]);
-        assert_eq!(result, Err(crate::i18n::gettext("No contacts selected")));
+        assert_eq!(result, Err(gettext("No contacts selected")));
     }
 
     #[test]
@@ -10241,7 +10255,7 @@ mod tests {
             ContactIdentity::new("book-a", "ada-uid")
         );
         assert_eq!(plan.items[0].name, "Ada Lovelace");
-        assert_eq!(plan.confirmation.title, crate::i18n::gettext("Delete contact?"));
+        assert_eq!(plan.confirmation.title, gettext("Delete contact?"));
         assert!(plan.confirmation.description.contains("Ada Lovelace"));
         assert!(plan.confirmation.description.contains("Test Address Book"));
     }
@@ -10254,7 +10268,7 @@ mod tests {
         let r2 = record("book-a", "grace-uid", c2);
         let plan = plan_contact_delete_batch(&[r1, r2]).expect("plan succeeds");
         assert_eq!(plan.items.len(), 2);
-        assert_eq!(plan.confirmation.title, crate::i18n::gettext("Delete contacts?"));
+        assert_eq!(plan.confirmation.title, gettext("Delete contacts?"));
         assert!(
             plan.confirmation
                 .description
@@ -10270,7 +10284,7 @@ mod tests {
         let result = plan_contact_delete_batch(&[contact_rec]);
         assert_eq!(
             result,
-            Err(crate::i18n::gettext("At least one selected contact belongs to a read-only source"))
+            Err(gettext("At least one selected contact belongs to a read-only source"))
         );
     }
 
@@ -10282,7 +10296,7 @@ mod tests {
         let result = plan_contact_delete_batch(&[r1, r2]);
         assert_eq!(
             result,
-            Err(crate::i18n::gettext("A selected contact was resolved multiple times"))
+            Err(gettext("A selected contact was resolved multiple times"))
         );
     }
 
@@ -10360,7 +10374,7 @@ mod tests {
             "Target Book",
             true,
         );
-        assert_eq!(result, Err(crate::i18n::gettext("No contacts selected")));
+        assert_eq!(result, Err(gettext("No contacts selected")));
     }
 
     #[test]
@@ -10376,7 +10390,7 @@ mod tests {
         );
         assert_eq!(
             result,
-            Err(crate::i18n::gettext("The target address book is not writable"))
+            Err(gettext("The target address book is not writable"))
         );
     }
 
@@ -10388,7 +10402,7 @@ mod tests {
             plan_contact_transfer(&[r1], ContactTransferKind::Copy, "book-a", "Book A", true);
         assert_eq!(
             result,
-            Err(crate::i18n::gettext("Source and destination are the same address book"))
+            Err(gettext("Source and destination are the same address book"))
         );
     }
 
@@ -10405,7 +10419,7 @@ mod tests {
         );
         assert_eq!(
             result,
-            Err(crate::i18n::gettext("At least one selected contact belongs to a read-only source"))
+            Err(gettext("At least one selected contact belongs to a read-only source"))
         );
     }
 
@@ -10440,7 +10454,7 @@ mod tests {
         );
         assert_eq!(
             result,
-            Err(crate::i18n::gettext("A selected contact was resolved multiple times"))
+            Err(gettext("A selected contact was resolved multiple times"))
         );
     }
 
@@ -10530,16 +10544,16 @@ mod tests {
 
         let summary_osm_map =
             contact_detail_summary_with_options(&contact, false, true, "openstreetmap", false);
-        assert!(summary_osm_map.contains(&crate::i18n::gettext("Address: {address}").replace("{address}", "Hauptstraße 1, 10115 Berlin")));
-        assert!(summary_osm_map.contains(&crate::i18n::gettext("Map: active ({service})").replace("{service}", "OpenStreetMap")));
+        assert!(summary_osm_map.contains(&gettext("Address: {address}").replace("{address}", "Hauptstraße 1, 10115 Berlin")));
+        assert!(summary_osm_map.contains(&gettext("Map: active ({service})").replace("{service}", "OpenStreetMap")));
 
         let summary_google_map =
             contact_detail_summary_with_options(&contact, false, true, "google", false);
-        assert!(summary_google_map.contains(&crate::i18n::gettext("Map: active ({service})").replace("{service}", "Google Maps")));
+        assert!(summary_google_map.contains(&gettext("Map: active ({service})").replace("{service}", "Google Maps")));
 
         let summary_no_map =
             contact_detail_summary_with_options(&contact, false, false, "openstreetmap", false);
-        assert!(!summary_no_map.contains(&crate::i18n::gettext("Map: active ({service})").replace("{service}", "OpenStreetMap")));
+        assert!(!summary_no_map.contains(&gettext("Map: active ({service})").replace("{service}", "OpenStreetMap")));
 
         let mut multi_addr_contact = VCardContact::new("Erika", "erika@example.test", "", "");
         multi_addr_contact.addresses =
@@ -10551,7 +10565,7 @@ mod tests {
             "openstreetmap",
             true,
         );
-        assert!(formatted.contains(&crate::i18n::gettext("Address: {address}").replace("{address}", "Straße 1, Berlin\n         Weg 2, Hamburg")));
+        assert!(formatted.contains(&gettext("Address: {address}").replace("{address}", "Straße 1, Berlin\n         Weg 2, Hamburg")));
     }
 
     #[test]
@@ -10763,7 +10777,7 @@ mod tests {
         let mobile_phones = contact_card_phones(&single_contact);
         assert_eq!(mobile_phones.len(), 1);
         assert_eq!(mobile_phones[0].number, "+49 171 998877");
-        assert_eq!(mobile_phones[0].label, crate::i18n::gettext("Mobile"));
+        assert_eq!(mobile_phones[0].label, gettext("Mobile"));
         assert_eq!(mobile_phones[0].icon, "call-start-symbolic");
 
         // 3. Multiple phones: Work, Home, Cell
@@ -10792,13 +10806,13 @@ mod tests {
         ];
         let multi_phones = contact_card_phones(&multi_contact);
         assert_eq!(multi_phones.len(), 3);
-        assert_eq!(multi_phones[0].label, crate::i18n::gettext("Business"));
+        assert_eq!(multi_phones[0].label, gettext("Business"));
         assert_eq!(multi_phones[0].number, "+49 89 10001");
         assert_eq!(multi_phones[0].icon, "call-start-symbolic");
-        assert_eq!(multi_phones[1].label, crate::i18n::gettext("Home"));
+        assert_eq!(multi_phones[1].label, gettext("Home"));
         assert_eq!(multi_phones[1].number, "+49 89 20002");
         assert_eq!(multi_phones[1].icon, "call-start-symbolic");
-        assert_eq!(multi_phones[2].label, crate::i18n::gettext("Mobile"));
+        assert_eq!(multi_phones[2].label, gettext("Mobile"));
         assert_eq!(multi_phones[2].number, "+49 170 30003");
         assert_eq!(multi_phones[2].icon, "call-start-symbolic");
     }
@@ -10852,7 +10866,10 @@ mod tests {
 
         page.update_drawer_total(42);
         assert_eq!(lbl.text().as_str(), "42");
-        assert_eq!(lbl.tooltip_text().as_deref(), Some("42 Kontakte insgesamt"));
+        assert_eq!(
+            lbl.tooltip_text().as_deref(),
+            Some(ngettext("{n} contact in total", "{n} contacts in total", 42).replace("{n}", "42").as_str())
+        );
 
         page.update_drawer_total(0);
         assert_eq!(lbl.text().as_str(), "");

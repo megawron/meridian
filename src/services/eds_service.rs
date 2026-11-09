@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Platform source discovery — EDS/GOA on Linux.
@@ -47,7 +48,7 @@ pub struct EdsSource {
     /// Whether this source is writable (not read-only)
     #[serde(default = "default_true")]
     pub writable: bool,
-    /// Parent account or group name (e.g. "Auf diesem Computer", "Kontakte", "user@example.com")
+    /// Parent account or group name (e.g. "On This Computer", "Contacts", "user@example.com")
     #[serde(default)]
     pub parent_name: Option<String>,
     /// Color associated with this source (e.g. from Google Calendar / EDS [Calendar] Color)
@@ -463,11 +464,19 @@ pub async fn list_mail_sources() -> Result<Vec<EdsSource>, EdsServiceError> {
 }
 
 fn resolve_host_evolution_config_dir() -> std::path::PathBuf {
+    let host = glib::home_dir().join(".config/evolution/sources");
     let xdg = glib::user_config_dir().join("evolution/sources");
-    if xdg.is_dir() {
+    if xdg.is_dir()
+        && std::fs::read_dir(&xdg)
+            .ok()
+            .is_some_and(|entries| {
+                entries
+                    .flatten()
+                    .any(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("source"))
+            })
+    {
         return xdg;
     }
-    let host = glib::home_dir().join(".config/evolution/sources");
     if host.is_dir() {
         return host;
     }
@@ -475,11 +484,15 @@ fn resolve_host_evolution_config_dir() -> std::path::PathBuf {
 }
 
 fn resolve_host_evolution_cache_dir() -> std::path::PathBuf {
+    let host = glib::home_dir().join(".cache/evolution/sources");
     let xdg = glib::user_cache_dir().join("evolution/sources");
-    if xdg.is_dir() {
+    if xdg.is_dir()
+        && std::fs::read_dir(&xdg)
+            .ok()
+            .is_some_and(|mut entries| entries.next().is_some())
+    {
         return xdg;
     }
-    let host = glib::home_dir().join(".cache/evolution/sources");
     if host.is_dir() {
         return host;
     }
@@ -1199,36 +1212,61 @@ pub fn is_goa_identity_service_enabled(identity: &str, kind: EdsSourceKind) -> O
     if identity.is_empty() {
         return None;
     }
-    let goa_conf = resolve_goa_accounts_conf_path();
-    if !goa_conf.is_file() {
-        return None;
-    }
-    let kf = KeyFile::new();
-    if kf.load_from_file(&goa_conf, KeyFileFlags::NONE).is_err() {
-        return None;
-    }
-    let groups = kf.groups();
-    for group in groups {
-        let g = group.as_str();
-        let Some(account_id) = g.strip_prefix("Account ") else {
-            continue;
-        };
-        let matches_id = kf
-            .string(g, "Identity")
-            .ok()
-            .is_some_and(|v| v.trim().eq_ignore_ascii_case(identity))
-            || kf
-                .string(g, "PresentationIdentity")
-                .ok()
-                .is_some_and(|v| v.trim().eq_ignore_ascii_case(identity));
-        if matches_id {
-            if kf.boolean(g, "IsTemporary").unwrap_or(false) {
-                continue;
+    let cache_key = (format!("identity:{}", identity.to_ascii_lowercase()), kind);
+    if let Ok(guard) = GOA_SERVICE_CACHE.read() {
+        if let Some((instant, map)) = &*guard {
+            if instant.elapsed() < std::time::Duration::from_secs(6) {
+                if let Some(&cached) = map.get(&cache_key) {
+                    return cached;
+                }
             }
-            return is_goa_account_service_enabled(account_id.trim(), kind);
         }
     }
-    None
+    let mut result = None;
+    let goa_conf = resolve_goa_accounts_conf_path();
+    if goa_conf.is_file() {
+        let kf = KeyFile::new();
+        if kf.load_from_file(&goa_conf, KeyFileFlags::NONE).is_ok() {
+            let groups = kf.groups();
+            for group in groups {
+                let g = group.as_str();
+                let Some(account_id) = g.strip_prefix("Account ") else {
+                    continue;
+                };
+                let matches_id = kf
+                    .string(g, "Identity")
+                    .ok()
+                    .is_some_and(|v| v.trim().eq_ignore_ascii_case(identity))
+                    || kf
+                        .string(g, "PresentationIdentity")
+                        .ok()
+                        .is_some_and(|v| v.trim().eq_ignore_ascii_case(identity));
+                if matches_id {
+                    if kf.boolean(g, "IsTemporary").unwrap_or(false) {
+                        continue;
+                    }
+                    result = is_goa_account_service_enabled(account_id.trim(), kind);
+                    break;
+                }
+            }
+        }
+    }
+    if let Ok(mut guard) = GOA_SERVICE_CACHE.write() {
+        if let Some((instant, map)) = guard.as_mut() {
+            if instant.elapsed() < std::time::Duration::from_secs(6) {
+                map.insert(cache_key, result);
+            } else {
+                let mut new_map = std::collections::HashMap::new();
+                new_map.insert(cache_key, result);
+                *guard = Some((std::time::Instant::now(), new_map));
+            }
+        } else {
+            let mut new_map = std::collections::HashMap::new();
+            new_map.insert(cache_key, result);
+            *guard = Some((std::time::Instant::now(), new_map));
+        }
+    }
+    result
 }
 
 /// Check whether a parent source / collection has enabled a specific groupware service (Mail, Calendar, Contacts).
@@ -1389,6 +1427,20 @@ fn is_source_enabled_for_service_uncached(source_uid: &str, kind: EdsSourceKind)
                         return false;
                     }
                 }
+                let profiles = crate::services::account_config_service::AccountConfigStore::default().load_cached();
+                if let Some(profile) = profiles.iter().find(|p| {
+                    !p.is_shared_mailbox
+                        && (p.id == source_uid
+                            || p.id.strip_prefix("eds:") == Some(source_uid)
+                            || p.id == clean
+                            || p.id.strip_prefix("eds:") == Some(clean)
+                            || p.email.eq_ignore_ascii_case(source_uid)
+                            || p.email.eq_ignore_ascii_case(clean))
+                }) {
+                    if !profile.enabled {
+                        return false;
+                    }
+                }
                 return true;
             }
         }
@@ -1415,9 +1467,77 @@ fn is_source_enabled_for_service_uncached(source_uid: &str, kind: EdsSourceKind)
     true
 }
 
+/// Check whether an email address belongs to a known configured account (GOA, EDS, or Meridian)
+/// whose Mail service is currently disabled.
+pub fn is_email_account_disabled_for_mail(email: &str) -> bool {
+    let trimmed = email
+        .trim()
+        .trim_matches('"')
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim();
+    if trimmed.is_empty() || !trimmed.contains('@') || trimmed.ends_with("@meridian.local") {
+        return false;
+    }
+    let cache_key = (format!("email_disabled:{}", trimmed.to_ascii_lowercase()), EdsSourceKind::Mail);
+    if let Ok(guard) = SOURCE_ENABLED_CACHE.read() {
+        if let Some((instant, map)) = &*guard {
+            if instant.elapsed() < std::time::Duration::from_secs(10) {
+                if let Some(&disabled) = map.get(&cache_key) {
+                    return disabled;
+                }
+            }
+        }
+    }
+    let disabled = is_email_account_disabled_for_mail_uncached(trimmed);
+    if let Ok(mut guard) = SOURCE_ENABLED_CACHE.write() {
+        if let Some((instant, map)) = guard.as_mut() {
+            if instant.elapsed() < std::time::Duration::from_secs(10) {
+                map.insert(cache_key, disabled);
+            } else {
+                let mut new_map = std::collections::HashMap::new();
+                new_map.insert(cache_key, disabled);
+                *guard = Some((std::time::Instant::now(), new_map));
+            }
+        } else {
+            let mut new_map = std::collections::HashMap::new();
+            new_map.insert(cache_key, disabled);
+            *guard = Some((std::time::Instant::now(), new_map));
+        }
+    }
+    disabled
+}
+
+fn is_email_account_disabled_for_mail_uncached(trimmed: &str) -> bool {
+    if is_goa_identity_service_enabled(trimmed, EdsSourceKind::Mail) == Some(false) {
+        return true;
+    }
+    let eds_uid = crate::services::account_config_service::eds_source_uid_for_email(trimmed);
+    if !eds_uid.is_empty()
+        && find_source_file_on_disk(&eds_uid).is_some()
+        && !is_source_enabled_for_service(&eds_uid, EdsSourceKind::Mail)
+    {
+        return true;
+    }
+    let profiles = crate::services::account_config_service::AccountConfigStore::default().load_cached();
+    if let Some(profile) = profiles
+        .iter()
+        .find(|p| p.email.trim().eq_ignore_ascii_case(trimmed))
+    {
+        if !profile.enabled {
+            return true;
+        }
+        let canon = profile.id.strip_prefix("eds:").unwrap_or(&profile.id);
+        if !is_source_enabled_for_service(canon, EdsSourceKind::Mail) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Canonical display name for the local computer account group across all sidebars.
 pub fn canonical_local_group_name() -> String {
-    crate::i18n::gettext("On This Computer")
+    gettext("On This Computer")
 }
 
 /// Check if a group name corresponds to the local computer / machine.
@@ -1538,7 +1658,7 @@ fn resolve_source_parent_name_uncached(uid: &str) -> String {
                         if parent == "local-stub" || parent == "local" {
                             return canonical_local_group_name();
                         } else if parent == "contacts-stub" {
-                            return crate::i18n::gettext("Contacts");
+                            return gettext("Contacts");
                         } else if let Some(dn) = resolve_source_name_from_disk(parent) {
                             return dn;
                         } else {
@@ -1656,7 +1776,7 @@ pub async fn list_sources(kind: EdsSourceKind) -> Result<Vec<EdsSource>, EdsServ
                     if p == "local-stub" || p == "local" {
                         Some(canonical_local_group_name())
                     } else if p == "contacts-stub" {
-                        Some(crate::i18n::gettext("Contacts"))
+                        Some(gettext("Contacts"))
                     } else if let Some(dn) = display_name_by_uid.get(&p) {
                         Some(canonical_group_name(dn))
                     } else if let Some(dn) = resolve_source_name_from_disk(&p) {
@@ -2086,7 +2206,7 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
         if !already_represented {
             sources.push(EdsSource {
                 uid: format!("account-contacts-{}", collection.uid),
-                display_name: crate::i18n::gettext("Contacts"),
+                display_name: gettext("Contacts"),
                 backend_name: collection.backend_name.clone(),
                 enabled: collection.enabled,
                 writable: true,
@@ -2112,7 +2232,7 @@ pub async fn list_address_book_sources() -> Result<Vec<EdsSource>, EdsServiceErr
         }
     });
 
-    // Deduplicate any duplicate GAL / Kontakte under the same parent account
+    // Deduplicate any duplicate GAL / Contacts under the same parent account
     let mut deduped: Vec<EdsSource> = Vec::new();
     for s in sources {
         let p_name = s.parent_name.as_deref().unwrap_or("").to_lowercase();
