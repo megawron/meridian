@@ -1,3 +1,4 @@
+use crate::i18n::gettext;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // MailViewer — Secure, sandboxed WebKitGTK 6.0 email HTML renderer.
@@ -63,6 +64,8 @@ mod imp {
         pub fallback_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         #[cfg(target_os = "linux")]
         pub renderer_error_label: RefCell<Option<gtk::Label>>,
+        pub link_preview_pill: RefCell<Option<gtk::Box>>,
+        pub link_preview_label: RefCell<Option<gtk::Label>>,
         pub current_message_id: RefCell<Option<String>>,
         pub current_html: RefCell<Option<String>>,
         pub current_inline_images: RefCell<Vec<InlineImage>>,
@@ -242,7 +245,7 @@ fn disable_banner_animation(banner: &adw::Banner, icon_name: &str) {
                 .icon_name(icon_name)
                 .pixel_size(14)
                 .valign(gtk::Align::Center)
-                .css_classes(vec!["mail-status-banner-icon"])
+                .css_classes(["mail-status-banner-icon"])
                 .build();
             let first = gizmo.first_child();
             icon.insert_before(&gizmo, first.as_ref());
@@ -413,17 +416,17 @@ impl MailViewer {
             .hexpand(true)
             .vexpand(true)
             .valign(gtk::Align::Fill)
-            .css_classes(vec!["card", "mail-preview-card"])
+            .css_classes(["card", "mail-preview-card"])
             .build();
         self.imp().box_container.replace(Some(box_container.clone()));
 
         // ── 1. Privacy Banner for Remote Images ────────────────────────────
         let banner = adw::Banner::builder()
-            .title(&crate::i18n::gettext("Remote images blocked"))
-            .button_label(&crate::i18n::gettext("Load Images"))
+            .title(gettext("Remote images blocked"))
+            .button_label(&gettext("Load Images"))
             .revealed(false)
             .visible(false)
-            .css_classes(vec!["mail-status-banner"])
+            .css_classes(["mail-status-banner"])
             .build();
         disable_banner_animation(&banner, "image-x-generic-symbolic");
 
@@ -444,22 +447,22 @@ impl MailViewer {
 
         // ── 2. Trash Banner ────────────────────────────────────────────────
         let trash_banner = adw::Banner::builder()
-            .title(&crate::i18n::gettext("This message is in the Trash."))
-            .button_label(&crate::i18n::gettext("Restore"))
+            .title(gettext("This message is in the Trash."))
+            .button_label(&gettext("Restore"))
             .revealed(false)
             .visible(false)
-            .css_classes(vec!["mail-status-banner"])
+            .css_classes(["mail-status-banner"])
             .build();
         disable_banner_animation(&trash_banner, "user-trash-symbolic");
         box_container.append(&trash_banner);
 
         // ── 3. Junk Banner ─────────────────────────────────────────────────
         let junk_banner = adw::Banner::builder()
-            .title(&crate::i18n::gettext("This message was marked as junk (spam)."))
-            .button_label(&crate::i18n::gettext("Not Junk"))
+            .title(gettext("This message was marked as junk (spam)."))
+            .button_label(&gettext("Not Junk"))
             .revealed(false)
             .visible(false)
-            .css_classes(vec!["mail-status-banner"])
+            .css_classes(["mail-status-banner"])
             .build();
         disable_banner_animation(&junk_banner, "dialog-warning-symbolic");
         box_container.append(&junk_banner);
@@ -471,7 +474,7 @@ impl MailViewer {
             .editable(false)
             .cursor_visible(caret_mode)
             .wrap_mode(gtk::WrapMode::WordChar)
-            .css_classes(vec!["mail-plain-view"])
+            .css_classes(["mail-plain-view"])
             .top_margin(12)
             .bottom_margin(12)
             .left_margin(16)
@@ -517,7 +520,7 @@ impl MailViewer {
             .replace(Some(fallback_scroll.clone()));
 
         let placeholder = gtk::Label::builder()
-            .label(&crate::i18n::gettext("No message selected"))
+            .label(gettext("No message selected"))
             .wrap(true)
             .xalign(0.0)
             .halign(gtk::Align::Start)
@@ -526,10 +529,10 @@ impl MailViewer {
             .margin_bottom(12)
             .margin_start(16)
             .margin_end(16)
-            .css_classes(vec!["dim-label", "caption", "mail-viewer-status-label"])
+            .css_classes(["dim-label", "caption", "mail-viewer-status-label"])
             .build();
         let loading = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Loading message…"))
+            .label(gettext("Loading message…"))
             .wrap(true)
             .xalign(0.0)
             .halign(gtk::Align::Start)
@@ -538,13 +541,13 @@ impl MailViewer {
             .margin_bottom(12)
             .margin_start(16)
             .margin_end(16)
-            .css_classes(vec!["dim-label", "caption", "mail-viewer-status-label"])
+            .css_classes(["dim-label", "caption", "mail-viewer-status-label"])
             .build();
         let error_label = gtk::Label::builder()
-            .label(&crate::i18n::gettext("HTML rendering failed. A safe plain text view is displayed."))
+            .label(gettext("HTML rendering failed. A safe plain text view is displayed."))
             .wrap(true)
             .xalign(0.0)
-            .css_classes(vec!["dim-label", "caption", "mail-viewer-status-label"])
+            .css_classes(["dim-label", "caption", "mail-viewer-status-label"])
             .margin_top(8)
             .margin_start(16)
             .margin_end(16)
@@ -561,7 +564,7 @@ impl MailViewer {
         error_state.append(&fallback_scroll);
 
         let load_error = gtk::Label::builder()
-            .label(&crate::i18n::gettext("Unable to load message"))
+            .label(gettext("Unable to load message"))
             .wrap(true)
             .xalign(0.0)
             .halign(gtk::Align::Start)
@@ -570,7 +573,7 @@ impl MailViewer {
             .margin_bottom(12)
             .margin_start(16)
             .margin_end(16)
-            .css_classes(vec!["dim-label", "caption", "mail-viewer-status-label"])
+            .css_classes(["dim-label", "caption", "mail-viewer-status-label"])
             .build();
 
         let renderer_stack = gtk::Stack::builder()
@@ -585,14 +588,49 @@ impl MailViewer {
         renderer_stack.add_named(&error_state, Some("error"));
         renderer_stack.add_named(&load_error, Some("load_error"));
         renderer_stack.set_visible_child_name("placeholder");
+        let link_preview_label = gtk::Label::builder()
+            .xalign(0.0)
+            .single_line_mode(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .width_chars(1)
+            .max_width_chars(90)
+            .use_markup(true)
+            .can_target(false)
+            .focusable(false)
+            .build();
+        let link_preview_pill = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::End)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_bottom(6)
+            .can_target(false)
+            .focusable(false)
+            .visible(false)
+            .css_classes(["link-preview-pill"])
+            .build();
+        link_preview_pill.append(&link_preview_label);
+
+        let renderer_overlay = gtk::Overlay::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .child(&renderer_stack)
+            .build();
+        renderer_overlay.add_overlay(&link_preview_pill);
+        renderer_overlay.set_measure_overlay(&link_preview_pill, false);
+
         let stack_clip_box: StackClipBox = glib::Object::builder().build();
         stack_clip_box.set_hexpand(true);
         stack_clip_box.set_vexpand(true);
         stack_clip_box.imp().viewer.set(Some(self));
-        renderer_stack.set_parent(&stack_clip_box);
+        renderer_overlay.set_parent(&stack_clip_box);
         box_container.append(&stack_clip_box);
         self.imp().renderer_stack.replace(Some(renderer_stack));
         self.imp().renderer_error_label.replace(Some(error_label));
+        self.imp().link_preview_pill.replace(Some(link_preview_pill));
+        self.imp().link_preview_label.replace(Some(link_preview_label));
 
 
         self.imp().fallback_view.replace(Some(fallback_view));
@@ -865,6 +903,7 @@ impl MailViewer {
         if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
             view.buffer().set_text("");
         }
+        self.set_hovered_link(None);
         self.notify_scroll_offset(0.0);
         self.set_scroll_continues(false);
     }
@@ -877,6 +916,7 @@ impl MailViewer {
         if !self.imp().suppressed_by_itip.get() {
             self.set_visible(true);
         }
+        self.set_hovered_link(None);
         self.notify_scroll_offset(0.0);
         self.set_scroll_continues(false);
         self.invalidate_message_search_context();
@@ -1366,9 +1406,9 @@ impl MailViewer {
         self.set_fallback_text(&render_plan.visible_text);
         let has_active_banner = self.has_visible_banner();
         let is_empty_fallback = render_plan.used_fallback
-            && (render_plan.visible_text == crate::i18n::gettext("Loading message…")
+            && (render_plan.visible_text == gettext("Loading message…")
                 || render_plan.visible_text == "Loading message…"
-                || render_plan.visible_text == crate::i18n::gettext("(The message has no displayable content.)")
+                || render_plan.visible_text == gettext("(The message has no displayable content.)")
                 || render_plan.visible_text == "(The message has no displayable content.)"
                 || render_plan.visible_text.trim().is_empty());
         if self.imp().suppressed_by_itip.get() {
@@ -2766,6 +2806,28 @@ impl MailViewer {
             false
         });
 
+        let viewer_weak = self.downgrade();
+        webview.connect_mouse_target_changed(move |_, hit_test_result, _| {
+            let Some(viewer) = viewer_weak.upgrade() else {
+                return;
+            };
+            if hit_test_result.context_is_link() {
+                let uri = hit_test_result.link_uri();
+                viewer.set_hovered_link(uri.as_deref());
+            } else {
+                viewer.set_hovered_link(None);
+            }
+        });
+
+        let motion_controller = gtk::EventControllerMotion::new();
+        let viewer_weak_leave = self.downgrade();
+        motion_controller.connect_leave(move |_| {
+            if let Some(viewer) = viewer_weak_leave.upgrade() {
+                viewer.set_hovered_link(None);
+            }
+        });
+        webview.add_controller(motion_controller);
+
         if let Some(find_controller) = webview.find_controller() {
             let viewer_weak = self.downgrade();
             find_controller.connect_found_text(move |controller, count| {
@@ -2818,6 +2880,27 @@ impl MailViewer {
         }
         if let Some(stack) = self.imp().renderer_stack.borrow().as_ref() {
             stack.set_visible_child_name("webkit");
+        }
+    }
+
+    pub(crate) fn set_hovered_link(&self, raw_uri: Option<&str>) {
+        let formatted = raw_uri.and_then(format_hovered_link_preview);
+        if let (Some(pill), Some(label)) = (
+            self.imp().link_preview_pill.borrow().as_ref(),
+            self.imp().link_preview_label.borrow().as_ref(),
+        ) {
+            if let Some((ref plain, ref markup)) = formatted {
+                label.set_markup(markup);
+                label.set_tooltip_text(Some(plain));
+                pill.set_visible(true);
+            } else {
+                pill.set_visible(false);
+                label.set_text("");
+                label.set_tooltip_text(None);
+            }
+        }
+        if let Some(win) = crate::window::find_meridian_window(self) {
+            win.set_hovered_link(formatted.as_ref().map(|(plain, _)| plain.as_str()));
         }
     }
 
@@ -3079,16 +3162,16 @@ impl MailViewer {
         if let Some(view) = self.imp().fallback_view.borrow().as_ref() {
             let buffer = view.buffer();
             let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
-            if text.is_empty() || text.as_str() == crate::i18n::gettext("No message selected.") {
+            if text.is_empty() || text.as_str() == gettext("No message selected.") {
                 let fallback = self.imp().current_fallback_text.borrow();
                 if let Some(ref fb) = *fallback {
                     if !fb.is_empty() {
                         buffer.set_text(fb);
                     } else {
-                        buffer.set_text(&crate::i18n::gettext("No plain text version available for this message."));
+                        buffer.set_text(&gettext("No plain text version available for this message."));
                     }
                 } else {
-                    buffer.set_text(&crate::i18n::gettext("Unable to display message content."));
+                    buffer.set_text(&gettext("Unable to display message content."));
                 }
             }
         }
@@ -3663,6 +3746,67 @@ fn is_internal_renderer_uri(value: &str) -> bool {
         || value.starts_with("about:blank#meridian-mail-render-")
 }
 
+/// Format a hovered link URI into a sanitized `(plain_text, pango_markup)` pair.
+/// Highlights the target domain/host in bold so spoofing or phishing URLs are
+/// immediately recognizable.
+pub(crate) fn format_hovered_link_preview(raw_uri: &str) -> Option<(String, String)> {
+    let cleaned: String = raw_uri
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    if cleaned.is_empty()
+        || cleaned.eq_ignore_ascii_case("about:blank")
+        || cleaned.starts_with("about:blank#")
+        || cleaned.starts_with("cid:")
+        || cleaned.starts_with("data:")
+        || cleaned.starts_with("javascript:")
+    {
+        return None;
+    }
+
+    let lower = cleaned.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        let scheme_len = if lower.starts_with("https://") { 8 } else { 7 };
+        let scheme = &cleaned[..scheme_len];
+        let after_scheme = &cleaned[scheme_len..];
+        let authority_end = after_scheme
+            .find(['/', '?', '#'])
+            .unwrap_or(after_scheme.len());
+        let authority = &after_scheme[..authority_end];
+        let rest = &after_scheme[authority_end..];
+        if authority.is_empty() {
+            return None;
+        }
+        let (userinfo, host_port) = match authority.rfind('@') {
+            Some(at_idx) => (&authority[..=at_idx], &authority[at_idx + 1..]),
+            None => ("", authority),
+        };
+        let escaped_scheme = glib::markup_escape_text(scheme);
+        let escaped_userinfo = glib::markup_escape_text(userinfo);
+        let escaped_host = glib::markup_escape_text(host_port);
+        let escaped_rest = glib::markup_escape_text(rest);
+        let markup = format!(
+            "<span alpha=\"75%\">{escaped_scheme}{escaped_userinfo}</span><b>{escaped_host}</b><span alpha=\"75%\">{escaped_rest}</span>"
+        );
+        return Some((cleaned, markup));
+    }
+
+    if let Some(colon_idx) = cleaned.find(':') {
+        let scheme = &cleaned[..=colon_idx];
+        let target = &cleaned[colon_idx + 1..];
+        let escaped_scheme = glib::markup_escape_text(scheme);
+        let escaped_target = glib::markup_escape_text(target);
+        let markup = format!(
+            "<span alpha=\"75%\">{escaped_scheme}</span><b>{escaped_target}</b>"
+        );
+        return Some((cleaned, markup));
+    }
+
+    let escaped = glib::markup_escape_text(&cleaned).to_string();
+    Some((cleaned, escaped))
+}
+
 pub fn extract_email_address(raw: &str) -> String {
     let trimmed = raw.trim();
     if let Some(start) = trimmed.find('<') {
@@ -3860,10 +4004,10 @@ table, td, th {
 h1, h2, h3, h4, h5, h6 {
   line-height: 1.25 !important;
 }
-p.MsoNormal, li.MsoNormal, div.MsoNormal, blockquote p {
+p, p.MsoNormal, li.MsoNormal, div.MsoNormal, blockquote p {
   margin-top: 0;
   margin-bottom: 0;
-  line-height: 1.15;
+  line-height: 1.35;
 }
 img, video, iframe, canvas, svg {
   max-width: 100%;
@@ -4393,7 +4537,7 @@ fn html_to_fallback_text(value: &str) -> String {
 }
 
 fn readable_fallback_text(value: Option<&str>) -> String {
-    let fallback = crate::i18n::gettext("Loading message…");
+    let fallback = gettext("Loading message…");
     value
         .map(str::trim)
         .filter(|text| !text.is_empty())
@@ -4668,8 +4812,8 @@ mod tests {
     #[test]
     fn fallback_text_is_stable_when_settings_reload_the_reader() {
         assert_eq!(
-            readable_fallback_text(Some("  Vorschau aus dem Nachrichtentext  ")),
-            "Vorschau aus dem Nachrichtentext"
+            readable_fallback_text(Some("  Preview from message text  ")),
+            "Preview from message text"
         );
         let empty = readable_fallback_text(Some("   "));
         assert_eq!(empty, "Loading message…");
@@ -6051,6 +6195,41 @@ Content-Type: text/html; charset=utf-8\r\n\
             css.contains("object-fit: contain;"),
             "USER_MAIL_OVERRIDE_CSS must set object-fit: contain on content images as a safeguard against aspect-ratio distortion"
         );
+    }
+
+    #[test]
+    fn test_hovered_link_preview_pill_and_domain_highlighting() {
+        assert!(super::format_hovered_link_preview("about:blank").is_none());
+        assert!(super::format_hovered_link_preview("about:blank#meridian-mail-render-1").is_none());
+        assert!(super::format_hovered_link_preview("cid:image001@example.com").is_none());
+        assert!(super::format_hovered_link_preview("javascript:alert(1)").is_none());
+
+        let (plain, markup) =
+            super::format_hovered_link_preview("https://login.example.com/auth?next=1").unwrap();
+        assert_eq!(plain, "https://login.example.com/auth?next=1");
+        assert!(markup.contains("<b>login.example.com</b>"));
+
+        // Phishing URL with @ userinfo highlights the actual destination host after @
+        let (_, spoof_markup) =
+            super::format_hovered_link_preview("https://trusted.bank.de@evil-phish.example/login")
+                .unwrap();
+        assert!(spoof_markup.contains("<b>evil-phish.example</b>"));
+
+        let _guard = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let viewer = super::MailViewer::new();
+        let pill = viewer.imp().link_preview_pill.borrow().clone().unwrap();
+        assert!(!pill.is_visible());
+
+        viewer.set_hovered_link(Some("https://meridian.example.org/docs"));
+        assert!(pill.is_visible());
+
+        viewer.set_hovered_link(None);
+        assert!(!pill.is_visible());
     }
 }
 
