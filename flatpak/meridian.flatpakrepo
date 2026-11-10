@@ -1,0 +1,8 @@
+[Flatpak Repo]
+Title=Meridian
+Url=https://meridian.martingawron.com/flatpak
+Homepage=https://github.com/megawron/meridian
+Comment=Official Flatpak repository for Meridian
+Description=Official Flatpak repository for Meridian (Mail, Calendar, Contacts, and Tasks for GNOME)
+DefaultBranch=stable
+GPGKey=mDMEauwjehYJKwYBBAHaRw8BAQdAqFmnMCmKeQkSsmv/AX6XwFq8oQo8eTq1c3gZbMAaoZa0NU1lcmlkaWFuIEZsYXRwYWsgUmVwb3NpdG9yeSA8bWFydGluQG1hcnRpbmdhd3Jvbi5jb20+iJMEExYKADsWIQRfWy2sDfrfuiYnuz4mVMNyelBAeQUCauwjegIbAwULCQgHAgIiAgYVCgkICwIEFgIDAQIeBwIXgAAKCRAmVMNyelBAeUdKAQD649Sp6egRSL6dVUKGISBZFrSvshR4ElPPu5SRU/6FaAEA8A6Lp5Affbzh6bQSOOyIhSxFMwC6Qsp/AFCs4T6OMAY=
