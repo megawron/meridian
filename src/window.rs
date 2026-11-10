@@ -4247,7 +4247,7 @@ impl MeridianWindow {
         header_bar.pack_end(&menu_button);
         header_bar.pack_end(&right_sidebar_toggle);
         header_bar.pack_end(&agenda_preview_toggle);
-        header_bar.pack_end(&offline_header_badge);
+        header_bar.pack_start(&offline_header_badge);
         if let Some(view_btn) = mail_page.view_options_split_button() {
             let is_initially_mail = view_stack.visible_child_name().as_deref() == Some("mail");
             view_btn.set_visible(is_initially_mail);

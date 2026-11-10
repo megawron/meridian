@@ -64,8 +64,14 @@ impl Default for FolderCustomization {
 }
 
 pub const FOLDER_ICON_CHOICES: &[(&str, &str)] = &[
-    ("", "folder-symbolic"),
+    ("folder-symbolic", "folder-symbolic"),
     ("mail-inbox-symbolic", "mail-inbox-symbolic"),
+    ("mail-send-symbolic", "mail-send-symbolic"),
+    ("mail-outbox-symbolic", "mail-outbox-symbolic"),
+    ("mail-drafts-symbolic", "mail-drafts-symbolic"),
+    ("mail-mark-junk-symbolic", "mail-mark-junk-symbolic"),
+    ("user-trash-symbolic", "user-trash-symbolic"),
+    ("mail-unread-symbolic", "mail-unread-symbolic"),
     ("starred-symbolic", "starred-symbolic"),
     ("emblem-important-symbolic", "emblem-important-symbolic"),
     ("package-x-generic-symbolic", "package-x-generic-symbolic"),
@@ -162,7 +168,8 @@ pub fn ensure_folder_customization_css() {
         };
         let provider = gtk::CssProvider::new();
         let mut css = String::from(
-            ".folder-color-swatch { min-width: 22px; min-height: 22px; padding: 0; border-radius: 999px; border: 2px solid transparent; }\n\
+            ".folder-color-swatch { min-width: 22px; max-width: 22px; min-height: 22px; max-height: 22px; padding: 0; margin: 0; border-radius: 999px; border: 2px solid transparent; }\n\
+             .folder-color-swatch > image { -gtk-icon-size: 12px; min-width: 12px; min-height: 12px; }\n\
              .folder-color-swatch.selected-swatch { border-color: @accent_color; box-shadow: 0 0 0 1px @window_bg_color inset; }\n\
              .folder-icon-choice { min-width: 30px; min-height: 30px; padding: 4px; border-radius: 6px; }\n\
              .folder-icon-choice.selected-icon { background-color: alpha(@accent_bg_color, 0.25); color: @accent_color; }\n",
@@ -201,6 +208,8 @@ pub fn apply_folder_icon_customization(icon: &gtk::Image, key: &str, default_ico
     if let Some(color) = custom.accent_color.as_deref().filter(|s| !s.is_empty()) {
         icon.remove_css_class("dim-label");
         icon.add_css_class(&format!("folder-color-{color}"));
+    } else {
+        icon.add_css_class("dim-label");
     }
 }
 
@@ -472,34 +481,61 @@ impl FolderPropertiesDialog {
             .title(gettext("Icon"))
             .use_markup(false)
             .build();
-        let icon_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
+        let icon_grid = gtk::Grid::builder()
+            .column_spacing(4)
+            .row_spacing(4)
+            .margin_top(6)
+            .margin_bottom(6)
             .valign(gtk::Align::Center)
             .build();
         let icon_buttons: Rc<RefCell<Vec<(String, gtk::Button)>>> =
             Rc::new(RefCell::new(Vec::new()));
+        let default_folder_icon = {
+            let raw = crate::views::MailPage::folder_icon_name_for(&folder_path, &folder_name);
+            match raw {
+                "mail-spam-symbolic" => "mail-mark-junk-symbolic",
+                "mail-mark-important-symbolic" => "emblem-important-symbolic",
+                "mail-read-symbolic" => "mail-unread-symbolic",
+                other => other,
+            }
+            .to_string()
+        };
         let active_icon = current_custom
             .borrow()
             .icon_name
             .clone()
-            .unwrap_or_default();
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| default_folder_icon.clone());
 
-        for (value, preview_icon) in FOLDER_ICON_CHOICES {
+        for (idx, (value, preview_icon)) in FOLDER_ICON_CHOICES.iter().enumerate() {
+            let tip = match *value {
+                "folder-symbolic" => gettext("Folder"),
+                "mail-inbox-symbolic" => gettext("Inbox"),
+                "mail-send-symbolic" => gettext("Sent"),
+                "mail-outbox-symbolic" => gettext("Outbox"),
+                "mail-drafts-symbolic" => gettext("Drafts"),
+                "mail-mark-junk-symbolic" => gettext("Junk"),
+                "user-trash-symbolic" => gettext("Trash"),
+                "mail-unread-symbolic" => gettext("Unread"),
+                "starred-symbolic" => gettext("Starred"),
+                "emblem-important-symbolic" => gettext("Important"),
+                "package-x-generic-symbolic" => gettext("Archive"),
+                "emblem-favorite-symbolic" => gettext("Favorite"),
+                "security-high-symbolic" => gettext("Security"),
+                "system-users-symbolic" => gettext("Shared"),
+                other => other.to_string(),
+            };
             let btn = gtk::Button::builder()
                 .icon_name(*preview_icon)
                 .valign(gtk::Align::Center)
                 .css_classes(["flat", "folder-icon-choice"])
-                .tooltip_text(if value.is_empty() {
-                    gettext("Default")
-                } else {
-                    (*value).to_string()
-                })
+                .tooltip_text(tip)
                 .build();
             if *value == active_icon.as_str() {
                 btn.add_css_class("selected-icon");
             }
             let val_str = (*value).to_string();
+            let default_icon_c = default_folder_icon.clone();
             let icon_buttons_c = Rc::clone(&icon_buttons);
             let folder_key_c = Rc::clone(&folder_key);
             let current_custom_c = Rc::clone(&current_custom);
@@ -512,17 +548,17 @@ impl FolderPropertiesDialog {
                     }
                 }
                 let mut guard = current_custom_c.borrow_mut();
-                guard.icon_name = if val_str.is_empty() {
+                guard.icon_name = if val_str == default_icon_c {
                     None
                 } else {
                     Some(val_str.clone())
                 };
                 FolderCustomizationStore::default().set(&folder_key_c.borrow(), guard.clone());
             });
-            icon_box.append(&btn);
+            icon_grid.attach(&btn, (idx % 7) as i32, (idx / 7) as i32, 1, 1);
             icon_buttons.borrow_mut().push(((*value).to_string(), btn));
         }
-        row_icon.add_suffix(&icon_box);
+        row_icon.add_suffix(&icon_grid);
         appearance_group.add(&row_icon);
 
         let row_color = adw::ActionRow::builder()
