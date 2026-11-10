@@ -969,7 +969,7 @@ Enjoy using Meridian!\r\n";
                 .get(&message.id)
                 .map(String::as_str)
                 .unwrap_or(message.folder_id.as_str());
-            if is_local_trash_folder(folder_id) && !already_deleted.contains(&message.id) {
+            if is_local_trash_folder(folder_id) && !is_local_id_deleted(&message.id, &already_deleted) {
                 ids.push(message.id);
             }
         }
@@ -980,7 +980,7 @@ Enjoy using Meridian!\r\n";
                     continue;
                 }
                 let copy_id = local_copy_id(&message_id, &folder_id);
-                if !already_deleted.contains(&copy_id) {
+                if !is_local_id_deleted(&copy_id, &already_deleted) {
                     ids.push(copy_id);
                 }
             }
@@ -1033,7 +1033,7 @@ Enjoy using Meridian!\r\n";
                 .map(String::as_str)
                 .unwrap_or(message.folder_id.as_str());
             if (folder_id == "junk" || folder_id == "spam" || folder_id.starts_with("junk/"))
-                && !already_deleted.contains(&message.id)
+                && !is_local_id_deleted(&message.id, &already_deleted)
                 && message_matches_age(&message.date_str)
             {
                 ids.push(message.id.clone());
@@ -1046,7 +1046,7 @@ Enjoy using Meridian!\r\n";
                     continue;
                 }
                 let copy_id = local_copy_id(message_id, folder_id);
-                if !already_deleted.contains(&copy_id) {
+                if !is_local_id_deleted(&copy_id, &already_deleted) {
                     let date_str = message_dates.get(message_id.as_str()).copied().unwrap_or("");
                     if message_matches_age(date_str) {
                         ids.push(copy_id);
@@ -1145,7 +1145,7 @@ Enjoy using Meridian!\r\n";
         let raw_messages = self.load_raw_local_records_cancelable(cancelled);
         let mut messages = raw_messages.clone();
 
-        messages.retain(|message| !deleted.contains(&message.id));
+        messages.retain(|message| !is_local_id_deleted(&message.id, &deleted));
         let mut filtered_out = std::collections::HashSet::new();
         for message in &mut messages {
             if let Some(folder_id) = folder_overrides.get(&message.id) {
@@ -1184,6 +1184,19 @@ Enjoy using Meridian!\r\n";
         }
         messages.retain(|message| !filtered_out.contains(&message.id));
 
+        // Deduplicate local draft messages that share the same RFC822 Message-ID and Subject
+        // (e.g. when both `.Drafts` and `.Entwürfe` or duplicate `.eml` exports exist on disk).
+        let mut seen_local_draft_keys = HashSet::new();
+        messages.retain(|message| {
+            if message.folder_id.eq_ignore_ascii_case("drafts") {
+                if let Some(msg_id) = message.message_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    let key = (msg_id.to_ascii_lowercase(), message.subject.trim().to_lowercase());
+                    return seen_local_draft_keys.insert(key);
+                }
+            }
+            true
+        });
+
         // Filter actions may have created a new sidecar copy while processing
         // the records above.  Reload this small map so the same refresh shows
         // the logical copy immediately instead of requiring a second reload.
@@ -1200,7 +1213,7 @@ Enjoy using Meridian!\r\n";
                     continue;
                 }
                 let copy_id = local_copy_id(&message.id, folder_id);
-                if deleted.contains(&copy_id) {
+                if is_local_id_deleted(&copy_id, &deleted) {
                     continue;
                 }
                 let mut copy = message.clone();
@@ -1232,7 +1245,7 @@ Enjoy using Meridian!\r\n";
         if include_deleted {
             let mut deleted_messages = raw_messages
                 .iter()
-                .filter(|message| deleted.contains(&message.id))
+                .filter(|message| is_local_id_deleted(&message.id, &deleted))
                 .cloned()
                 .collect::<Vec<_>>();
 
@@ -1260,7 +1273,7 @@ Enjoy using Meridian!\r\n";
                         continue;
                     }
                     let copy_id = local_copy_id(&source.id, folder_id);
-                    if !deleted.contains(&copy_id) {
+                    if !is_local_id_deleted(&copy_id, &deleted) {
                         continue;
                     }
                     let mut copy = source.clone();
@@ -1324,7 +1337,7 @@ Enjoy using Meridian!\r\n";
         let mut report = LocalFilterRunReport::default();
 
         for message in &mut messages {
-            if deleted.contains(&message.id) {
+            if is_local_id_deleted(&message.id, &deleted) {
                 continue;
             }
             if let Some(folder_id) = folder_overrides.get(&message.id) {
@@ -1390,7 +1403,7 @@ Enjoy using Meridian!\r\n";
         let mut report = LocalFilterRunReport::default();
 
         for message in &mut messages {
-            if deleted.contains(&message.id) {
+            if is_local_id_deleted(&message.id, &deleted) {
                 continue;
             }
             if let Some(folder_id) = folder_overrides.get(&message.id) {
@@ -1445,7 +1458,7 @@ Enjoy using Meridian!\r\n";
         let follow_up = self.metadata.load_follow_up();
         let cancelled = AtomicBool::new(false);
         let mut messages = self.load_raw_local_records_cancelable(&cancelled);
-        messages.retain(|message| !deleted.contains(&message.id));
+        messages.retain(|message| !is_local_id_deleted(&message.id, &deleted));
         for message in &mut messages {
             if let Some(folder_id) = folder_overrides.get(&message.id) {
                 message.folder_id = folder_id.clone();
@@ -2325,16 +2338,35 @@ pub(crate) fn local_folder_id(folder: &str) -> String {
         trimmed
     };
     let normalized = stripped.trim().trim_start_matches('.');
-    match normalized.to_ascii_lowercase().as_str() {
-        "" | "inbox" => "inbox".to_string(),
-        "sent" | "sent-mail" => "sent".to_string(),
-        "draft" | "drafts" => "drafts".to_string(),
-        "trash" | "deleted" => "trash".to_string(),
+    match normalized.to_lowercase().as_str() {
+        "" | "inbox" | "posteingang" => "inbox".to_string(),
+        "sent" | "sent-mail" | "gesendet" | "gesendete elemente" => "sent".to_string(),
+        "draft" | "drafts" | "entwurf" | "entwürfe" | "entwuerfe" => "drafts".to_string(),
+        "trash" | "deleted" | "papierkorb" | "gelöschte elemente" => "trash".to_string(),
         "archive" | "all-mail" => "archive".to_string(),
         "junk" | "spam" => "junk".to_string(),
+        "outbox" | "postausgang" => "outbox".to_string(),
         _ if normalized.starts_with("custom:") => normalized.to_string(),
         _ => format!("custom:{normalized}"),
     }
+}
+
+fn local_id_relative_mail_suffix(id: &str) -> Option<&str> {
+    let rest = id.strip_prefix("local:")?;
+    let (_, suffix) = rest.split_once("/mail/")?;
+    (!suffix.is_empty()).then_some(suffix)
+}
+
+fn is_local_id_deleted(id: &str, deleted: &HashSet<String>) -> bool {
+    if deleted.contains(id) {
+        return true;
+    }
+    let Some(suffix) = local_id_relative_mail_suffix(id) else {
+        return false;
+    };
+    deleted
+        .iter()
+        .any(|entry| local_id_relative_mail_suffix(entry) == Some(suffix))
 }
 
 fn is_local_trash_folder(folder_id: &str) -> bool {
@@ -2682,13 +2714,14 @@ fn folder_id_for_path(path: &Path) -> String {
     };
 
     let candidate = candidate.unwrap_or("inbox").trim_start_matches('.');
-    match candidate.to_ascii_lowercase().as_str() {
-        "inbox" => "inbox".to_string(),
-        "sent" | "sent-mail" => "sent".to_string(),
-        "draft" | "drafts" => "drafts".to_string(),
-        "trash" | "deleted" => "trash".to_string(),
+    match candidate.to_lowercase().as_str() {
+        "inbox" | "posteingang" => "inbox".to_string(),
+        "sent" | "sent-mail" | "gesendet" | "gesendete elemente" => "sent".to_string(),
+        "draft" | "drafts" | "entwurf" | "entwürfe" | "entwuerfe" => "drafts".to_string(),
+        "trash" | "deleted" | "papierkorb" | "gelöschte elemente" => "trash".to_string(),
         "archive" | "all-mail" => "archive".to_string(),
         "junk" | "spam" => "junk".to_string(),
+        "outbox" | "postausgang" => "outbox".to_string(),
         _ => format!("custom:{candidate}"),
     }
 }
@@ -2921,19 +2954,41 @@ pub(crate) fn parse_rfc822_header_fields(header_bytes: &[u8]) -> Vec<(String, St
 pub(crate) fn assign_thread_metadata(messages: &mut [ParsedMail]) {
     let inputs = messages
         .iter()
-        .map(|message| ThreadIdentity {
-            message_id: message.message_id.as_deref(),
-            in_reply_to: &message.in_reply_to,
-            references: &message.references,
-            subject: &message.subject,
-            sender: if !message.sender_name.trim().is_empty() {
-                &message.sender_name
+        .map(|message| {
+            let is_draft = message.id.starts_with("draft-store:")
+                || message.folder_id.eq_ignore_ascii_case("drafts")
+                || message.folder_name.eq_ignore_ascii_case("drafts")
+                || message.folder_name.eq_ignore_ascii_case("entwürfe");
+            if is_draft {
+                ThreadIdentity {
+                    message_id: Some(message.id.as_str()),
+                    in_reply_to: &[],
+                    references: &[],
+                    subject: &message.id,
+                    sender: &message.id,
+                    date_ts: 0,
+                }
             } else {
-                &message.sender_email
-            },
-            date_ts: crate::services::evolution_summary_cache::parse_rfc2822_utc_fast(&message.date_str)
-                .or_else(|| crate::views::parse_flexible_datetime(&message.date_str).map(|dt| dt.timestamp()))
-                .unwrap_or(0),
+                ThreadIdentity {
+                    message_id: message.message_id.as_deref(),
+                    in_reply_to: &message.in_reply_to,
+                    references: &message.references,
+                    subject: &message.subject,
+                    sender: if !message.sender_name.trim().is_empty() {
+                        &message.sender_name
+                    } else {
+                        &message.sender_email
+                    },
+                    date_ts: crate::services::evolution_summary_cache::parse_rfc2822_utc_fast(
+                        &message.date_str,
+                    )
+                    .or_else(|| {
+                        crate::views::parse_flexible_datetime(&message.date_str)
+                            .map(|dt| dt.timestamp())
+                    })
+                    .unwrap_or(0),
+                }
+            }
         })
         .collect::<Vec<_>>();
     let group_similar = crate::services::AppSettings::try_new()

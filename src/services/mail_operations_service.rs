@@ -1754,210 +1754,340 @@ impl MailOperationsService {
 
     /// Apply a mutation supported by the current backend boundary.
     pub(crate) fn apply(&self, operation: MailOperation) -> Result<(), MailOperationError> {
+        let is_draft_store = |id: &str, location: &Option<MailBackendLocation>| {
+            id.starts_with("draft-store:")
+                || location
+                    .as_ref()
+                    .is_some_and(|loc| loc.message_uid.starts_with("draft-store:"))
+        };
+        let extract_draft_id = |id: &str, location: &Option<MailBackendLocation>| -> Option<String> {
+            id.strip_prefix("draft-store:")
+                .map(str::to_string)
+                .or_else(|| {
+                    location.as_ref().and_then(|loc| {
+                        loc.message_uid
+                            .strip_prefix("draft-store:")
+                            .map(str::to_string)
+                    })
+                })
+        };
+
         match operation {
             MailOperation::SetMessageState {
                 id,
                 location,
                 is_unread,
                 is_flagged,
-            } => match location {
-                Some(location) => self.apply_camel(
-                    CamelMailOperation::SetMessageState {
-                        location,
-                        is_unread,
-                        is_flagged,
-                    },
-                    MailOperationKind::SetMessageState,
-                ),
-                None => self
-                    .store
-                    .persist_message_state(&id, is_unread, is_flagged)
-                    .map_err(Into::into),
-            },
+            } => {
+                if is_draft_store(&id, &location) {
+                    return self
+                        .store
+                        .persist_message_state(&id, is_unread, is_flagged)
+                        .map_err(Into::into);
+                }
+                match location {
+                    Some(location) => self.apply_camel(
+                        CamelMailOperation::SetMessageState {
+                            location,
+                            is_unread,
+                            is_flagged,
+                        },
+                        MailOperationKind::SetMessageState,
+                    ),
+                    None => self
+                        .store
+                        .persist_message_state(&id, is_unread, is_flagged)
+                        .map_err(Into::into),
+                }
+            }
             MailOperation::SetFollowUp {
                 id,
                 location,
                 metadata,
-            } => match location {
-                Some(location) => {
-                    if metadata.state == super::mail_metadata_service::MailFollowUpState::FollowUp
-                        && metadata
-                            .text
-                            .as_deref()
-                            .is_some_and(|text| !super::mail_metadata_service::is_default_follow_up_text(text))
-                    {
-                        return Err(MailOperationError::Unsupported {
-                            operation: MailOperationKind::SetFollowUp,
-                            backend: "Camel (custom follow-up text is not yet available through the native bridge)",
-                        });
-                    }
-                    camel_mail_service::set_follow_up_state(
-                        location,
-                        metadata.state,
-                        Some(metadata.due_by.unwrap_or_default()),
-                    )
-                    .map_err(|message| MailOperationError::Backend {
-                        operation: MailOperationKind::SetFollowUp,
-                        message,
-                    })
+            } => {
+                if is_draft_store(&id, &location) {
+                    return self
+                        .store
+                        .persist_follow_up(&id, metadata)
+                        .map_err(Into::into);
                 }
-                None => self
-                    .store
-                    .persist_follow_up(&id, metadata)
-                    .map_err(Into::into),
-            },
-            MailOperation::Delete { id, location } => match location {
-                Some(location) => self.apply_camel(
-                    CamelMailOperation::Delete { location },
-                    MailOperationKind::Delete,
-                ),
-                None => self
-                    .store
-                    .metadata_store()
-                    .set_deleted(&id, true)
-                    .map_err(Into::into),
-            },
+                match location {
+                    Some(location) => {
+                        if metadata.state == super::mail_metadata_service::MailFollowUpState::FollowUp
+                            && metadata
+                                .text
+                                .as_deref()
+                                .is_some_and(|text| !super::mail_metadata_service::is_default_follow_up_text(text))
+                        {
+                            return Err(MailOperationError::Unsupported {
+                                operation: MailOperationKind::SetFollowUp,
+                                backend: "Camel (custom follow-up text is not yet available through the native bridge)",
+                            });
+                        }
+                        camel_mail_service::set_follow_up_state(
+                            location,
+                            metadata.state,
+                            Some(metadata.due_by.unwrap_or_default()),
+                        )
+                        .map_err(|message| MailOperationError::Backend {
+                            operation: MailOperationKind::SetFollowUp,
+                            message,
+                        })
+                    }
+                    None => self
+                        .store
+                        .persist_follow_up(&id, metadata)
+                        .map_err(Into::into),
+                }
+            }
+            MailOperation::Delete { id, location } => {
+                if let Some(draft_id) = extract_draft_id(&id, &location) {
+                    let _ = crate::services::draft_store_service::DraftStoreService::default().delete(&draft_id);
+                    let _ = self.store.metadata_store().set_deleted(&id, true);
+                    return Ok(());
+                }
+                match location {
+                    Some(location) => self.apply_camel(
+                        CamelMailOperation::Delete { location },
+                        MailOperationKind::Delete,
+                    ),
+                    None => self
+                        .store
+                        .metadata_store()
+                        .set_deleted(&id, true)
+                        .map_err(Into::into),
+                }
+            }
             MailOperation::Move {
                 id,
                 location,
                 destination,
-            } => match location {
-                Some(location) => self.apply_camel(
-                    CamelMailOperation::Move {
-                        location,
-                        destination,
-                    },
-                    MailOperationKind::Move,
-                ),
-                None => self
-                    .store
-                    .metadata_store()
-                    .set_folder_override(&id, Some(&destination))
-                    .map_err(Into::into),
-            },
+            } => {
+                if let Some(draft_id) = extract_draft_id(&id, &location) {
+                    let dest_lower = destination.trim().trim_start_matches('.').to_lowercase();
+                    if matches!(
+                        dest_lower.as_str(),
+                        "trash" | "deleted" | "papierkorb" | "gelöschte elemente"
+                    ) {
+                        let _ = crate::services::draft_store_service::DraftStoreService::default().delete(&draft_id);
+                        let _ = self.store.metadata_store().set_deleted(&id, true);
+                    } else {
+                        let _ = self
+                            .store
+                            .metadata_store()
+                            .set_folder_override(&id, Some(&destination));
+                    }
+                    return Ok(());
+                }
+                match location {
+                    Some(location) => self.apply_camel(
+                        CamelMailOperation::Move {
+                            location,
+                            destination,
+                        },
+                        MailOperationKind::Move,
+                    ),
+                    None => self
+                        .store
+                        .metadata_store()
+                        .set_folder_override(&id, Some(&destination))
+                        .map_err(Into::into),
+                }
+            }
             MailOperation::Copy {
                 id,
                 location,
                 destination,
-            } => match location {
-                Some(_) => Err(Self::unsupported_backend(
-                    MailOperationKind::Copy,
-                    "EDS/Camel-Copy-Backend",
-                )),
-                None => self
-                    .store
-                    .metadata_store()
-                    .set_copy(&id, &destination, true)
-                    .map_err(Into::into),
-            },
+            } => {
+                if is_draft_store(&id, &location) {
+                    return self
+                        .store
+                        .metadata_store()
+                        .set_copy(&id, &destination, true)
+                        .map_err(Into::into);
+                }
+                match location {
+                    Some(_) => Err(Self::unsupported_backend(
+                        MailOperationKind::Copy,
+                        "EDS/Camel-Copy-Backend",
+                    )),
+                    None => self
+                        .store
+                        .metadata_store()
+                        .set_copy(&id, &destination, true)
+                        .map_err(Into::into),
+                }
+            }
             MailOperation::RemoveCopy {
                 id,
                 location,
                 destination,
-            } => match location {
-                Some(_) => Err(Self::unsupported_backend(
-                    MailOperationKind::Copy,
-                    "EDS/Camel-Copy-Backend",
-                )),
-                None => self
-                    .store
-                    .metadata_store()
-                    .set_copy(&id, &destination, false)
-                    .map_err(Into::into),
-            },
-            MailOperation::Archive { id, location } => match location {
-                Some(location) => self.apply_camel(
-                    CamelMailOperation::Archive { location },
-                    MailOperationKind::Archive,
-                ),
-                None => self
-                    .store
-                    .metadata_store()
-                    .set_folder_override(&id, Some("archive"))
-                    .map_err(Into::into),
-            },
+            } => {
+                if is_draft_store(&id, &location) {
+                    return self
+                        .store
+                        .metadata_store()
+                        .set_copy(&id, &destination, false)
+                        .map_err(Into::into);
+                }
+                match location {
+                    Some(_) => Err(Self::unsupported_backend(
+                        MailOperationKind::Copy,
+                        "EDS/Camel-Copy-Backend",
+                    )),
+                    None => self
+                        .store
+                        .metadata_store()
+                        .set_copy(&id, &destination, false)
+                        .map_err(Into::into),
+                }
+            }
+            MailOperation::Archive { id, location } => {
+                if is_draft_store(&id, &location) {
+                    return self
+                        .store
+                        .metadata_store()
+                        .set_folder_override(&id, Some("archive"))
+                        .map_err(Into::into);
+                }
+                match location {
+                    Some(location) => self.apply_camel(
+                        CamelMailOperation::Archive { location },
+                        MailOperationKind::Archive,
+                    ),
+                    None => self
+                        .store
+                        .metadata_store()
+                        .set_folder_override(&id, Some("archive"))
+                        .map_err(Into::into),
+                }
+            }
             MailOperation::SetJunk {
                 id,
                 location,
                 is_junk,
-            } => match location {
-                Some(location) => self.apply_camel(
-                    CamelMailOperation::SetJunk { location, is_junk },
-                    if is_junk {
-                        MailOperationKind::MarkJunk
-                    } else {
-                        MailOperationKind::MarkNotJunk
-                    },
-                ),
-                None => self
-                    .store
-                    .metadata_store()
-                    .set_folder_override(&id, is_junk.then_some("junk"))
-                    .map_err(Into::into),
-            },
+            } => {
+                if is_draft_store(&id, &location) {
+                    return self
+                        .store
+                        .metadata_store()
+                        .set_folder_override(&id, is_junk.then_some("junk"))
+                        .map_err(Into::into);
+                }
+                match location {
+                    Some(location) => self.apply_camel(
+                        CamelMailOperation::SetJunk { location, is_junk },
+                        if is_junk {
+                            MailOperationKind::MarkJunk
+                        } else {
+                            MailOperationKind::MarkNotJunk
+                        },
+                    ),
+                    None => self
+                        .store
+                        .metadata_store()
+                        .set_folder_override(&id, is_junk.then_some("junk"))
+                        .map_err(Into::into),
+                }
+            }
             MailOperation::SetImportant {
                 id,
                 location,
                 is_important,
-            } => match location {
-                Some(location) => self.apply_camel(
-                    CamelMailOperation::SetImportant {
-                        location,
-                        is_important,
-                    },
-                    if is_important {
-                        MailOperationKind::MarkImportant
-                    } else {
-                        MailOperationKind::MarkNotImportant
-                    },
-                ),
-                None => self
-                    .store
-                    .persist_important_state(&id, is_important)
-                    .map_err(Into::into),
-            },
+            } => {
+                if is_draft_store(&id, &location) {
+                    return self
+                        .store
+                        .persist_important_state(&id, is_important)
+                        .map_err(Into::into);
+                }
+                match location {
+                    Some(location) => self.apply_camel(
+                        CamelMailOperation::SetImportant {
+                            location,
+                            is_important,
+                        },
+                        if is_important {
+                            MailOperationKind::MarkImportant
+                        } else {
+                            MailOperationKind::MarkNotImportant
+                        },
+                    ),
+                    None => self
+                        .store
+                        .persist_important_state(&id, is_important)
+                        .map_err(Into::into),
+                }
+            }
             MailOperation::SetLabel {
                 id,
                 location,
                 label,
                 labeled,
-            } => match location {
-                Some(location) => self.apply_camel(
-                    CamelMailOperation::SetLabel {
-                        location,
-                        label,
-                        labeled,
-                    },
-                    MailOperationKind::SetLabel,
-                ),
-                None => self
-                    .store
-                    .metadata_store()
-                    .set_label(&id, &label, labeled)
-                    .map_err(Into::into),
-            },
-            MailOperation::RestoreDeleted { id, location } => match location {
-                Some(location) => self.apply_camel(
-                    CamelMailOperation::RestoreDeleted { location },
-                    MailOperationKind::Delete,
-                ),
-                None => self
-                    .store
-                    .metadata_store()
-                    .set_deleted(&id, false)
-                    .map_err(Into::into),
-            },
-            MailOperation::RestoreArchived { id, location } => match location {
-                Some(location) => self.apply_camel(
-                    CamelMailOperation::RestoreArchived { location },
-                    MailOperationKind::Archive,
-                ),
-                None => self
-                    .store
-                    .metadata_store()
-                    .set_folder_override(&id, None)
-                    .map_err(Into::into),
-            },
+            } => {
+                if is_draft_store(&id, &location) {
+                    return self
+                        .store
+                        .metadata_store()
+                        .set_label(&id, &label, labeled)
+                        .map_err(Into::into);
+                }
+                match location {
+                    Some(location) => self.apply_camel(
+                        CamelMailOperation::SetLabel {
+                            location,
+                            label,
+                            labeled,
+                        },
+                        MailOperationKind::SetLabel,
+                    ),
+                    None => self
+                        .store
+                        .metadata_store()
+                        .set_label(&id, &label, labeled)
+                        .map_err(Into::into),
+                }
+            }
+            MailOperation::RestoreDeleted { id, location } => {
+                if is_draft_store(&id, &location) {
+                    return self
+                        .store
+                        .metadata_store()
+                        .set_deleted(&id, false)
+                        .map_err(Into::into);
+                }
+                match location {
+                    Some(location) => self.apply_camel(
+                        CamelMailOperation::RestoreDeleted { location },
+                        MailOperationKind::Delete,
+                    ),
+                    None => self
+                        .store
+                        .metadata_store()
+                        .set_deleted(&id, false)
+                        .map_err(Into::into),
+                }
+            }
+            MailOperation::RestoreArchived { id, location } => {
+                if is_draft_store(&id, &location) {
+                    return self
+                        .store
+                        .metadata_store()
+                        .set_folder_override(&id, None)
+                        .map_err(Into::into);
+                }
+                match location {
+                    Some(location) => self.apply_camel(
+                        CamelMailOperation::RestoreArchived { location },
+                        MailOperationKind::Archive,
+                    ),
+                    None => self
+                        .store
+                        .metadata_store()
+                        .set_folder_override(&id, None)
+                        .map_err(Into::into),
+                }
+            }
             MailOperation::CopyRemoteToLocal {
                 id,
                 location,

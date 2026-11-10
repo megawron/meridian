@@ -10373,18 +10373,6 @@ impl MailPage {
                     page.update_mail_table_canvas_layout();
                 }
             });
-            let page_weak_for_font_size = self.downgrade();
-            settings.connect_changed(Some("mail-font-size"), move |_, _| {
-                if let Some(page) = page_weak_for_font_size.upgrade() {
-                    page.update_mail_table_canvas_layout();
-                }
-            });
-            let page_weak_for_font_family = self.downgrade();
-            settings.connect_changed(Some("mail-font-family"), move |_, _| {
-                if let Some(page) = page_weak_for_font_family.upgrade() {
-                    page.update_mail_table_canvas_layout();
-                }
-            });
             let page_weak_for_security = self.downgrade();
             settings.connect_changed(Some("mail-show-security-details"), move |_, _| {
                 if let Some(page) = page_weak_for_security.upgrade() {
@@ -14300,13 +14288,82 @@ impl MailPage {
             }
         }
 
+        // Also remove from `thread_children` and `thread_members`, and if a thread root was
+        // removed while remaining children exist, promote the first remaining child to root.
+        if let Some(children_rc) = self.imp().thread_children.borrow().as_ref().cloned() {
+            let mut children_map = children_rc.borrow_mut();
+            let mut empty_threads = Vec::new();
+            for (thread_id, child_store) in children_map.iter_mut() {
+                let mut i = child_store.n_items();
+                while i > 0 {
+                    i -= 1;
+                    if let Some(msg) = child_store.item(i).and_downcast::<MailMessageObject>() {
+                        if removed_ids.contains(&msg.id()) {
+                            child_store.remove(i);
+                        }
+                    }
+                }
+                if child_store.n_items() == 0 {
+                    empty_threads.push(thread_id.clone());
+                }
+            }
+            for thread_id in empty_threads {
+                children_map.remove(&thread_id);
+            }
+        }
+        if let Some(members_rc) = self.imp().thread_members.borrow().as_ref().cloned() {
+            let mut members_map = members_rc.borrow_mut();
+            let mut empty_threads = Vec::new();
+            for (thread_id, members) in members_map.iter_mut() {
+                members.retain(|msg| !removed_ids.contains(&msg.id()));
+                let new_len = members.len();
+                for (pos, msg) in members.iter().enumerate() {
+                    msg.set_thread_metadata(thread_id, new_len, pos);
+                }
+                if members.is_empty() {
+                    empty_threads.push(thread_id.clone());
+                }
+            }
+            for thread_id in empty_threads {
+                members_map.remove(&thread_id);
+            }
+        }
+
         if let Some(root_store) = self.imp().thread_root_store.borrow().as_ref() {
+            let children_rc = self.imp().thread_children.borrow().as_ref().cloned();
             let mut i = root_store.n_items();
             while i > 0 {
                 i -= 1;
                 if let Some(msg) = root_store.item(i).and_downcast::<MailMessageObject>() {
                     if removed_ids.contains(&msg.id()) {
-                        root_store.remove(i);
+                        let thread_id = msg.thread_id();
+                        let replacement = children_rc.as_ref().and_then(|rc| {
+                            let mut children_map = rc.borrow_mut();
+                            let promoted =
+                                children_map.get_mut(&thread_id).and_then(|child_store| {
+                                    if child_store.n_items() > 0 {
+                                        let item = child_store
+                                            .item(0)
+                                            .and_downcast::<MailMessageObject>();
+                                        child_store.remove(0);
+                                        item
+                                    } else {
+                                        None
+                                    }
+                                });
+                            if children_map
+                                .get(&thread_id)
+                                .is_some_and(|cs| cs.n_items() == 0)
+                            {
+                                children_map.remove(&thread_id);
+                            }
+                            promoted
+                        });
+                        if let Some(promoted) = replacement {
+                            root_store.splice(i, 1, &[promoted]);
+                        } else {
+                            root_store.remove(i);
+                        }
                     }
                 }
             }
@@ -14332,12 +14389,79 @@ impl MailPage {
                 sel.unselect_all();
             }
         }
+        self.imp().mail_table_layout.replace(None);
+        self.refresh_unread_counters();
         self.queue_mail_table_draw();
     }
 
-    pub fn delete_message(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
+    fn delete_matching_draft_store_entries(&self, message: &MailMessageObject) {
+        let store = DraftStoreService::default();
         if let Some(draft_id) = message.id().strip_prefix("draft-store:") {
-            let _ = DraftStoreService::default().delete(draft_id);
+            let _ = store.delete(draft_id);
+            return;
+        }
+        let is_draft_folder = message.folder_id().eq_ignore_ascii_case("drafts")
+            || folder_names_match(&message.folder_id(), "drafts")
+            || message
+                .backend_location()
+                .is_some_and(|loc| folder_names_match(&loc.folder_name, "drafts"));
+        if !is_draft_folder {
+            return;
+        }
+        let msg_subj = message.subject();
+        let msg_subj_norm = {
+            let s = msg_subj.trim();
+            if s.is_empty()
+                || s.eq_ignore_ascii_case("(no subject)")
+                || s.eq_ignore_ascii_case("(ohne betreff)")
+                || s == gettext("(No subject)")
+            {
+                ""
+            } else {
+                s
+            }
+        };
+        let msg_to = message.recipient_to().trim().to_lowercase();
+        let msg_preview = message.preview_snippet().trim().to_lowercase();
+        for draft in store.load() {
+            let draft_subj = draft.subject.trim();
+            let draft_subj_norm = if draft_subj.is_empty()
+                || draft_subj.eq_ignore_ascii_case("(no subject)")
+                || draft_subj.eq_ignore_ascii_case("(ohne betreff)")
+            {
+                ""
+            } else {
+                draft_subj
+            };
+            if !draft_subj_norm.eq_ignore_ascii_case(msg_subj_norm) {
+                continue;
+            }
+            let draft_to = draft.to.trim().to_lowercase();
+            let to_matches = draft_to == msg_to
+                || draft_to.is_empty()
+                || msg_to.is_empty()
+                || msg_to.contains(&draft_to)
+                || draft_to.contains(&msg_to);
+            if !to_matches {
+                continue;
+            }
+            if draft_subj_norm.is_empty() && draft_to.is_empty() {
+                let draft_plain = plain_text_from_draft_html(&draft.html_body).to_lowercase();
+                if !draft_plain.is_empty()
+                    && !msg_preview.is_empty()
+                    && !draft_plain.starts_with(&msg_preview)
+                    && !msg_preview.starts_with(&draft_plain)
+                {
+                    continue;
+                }
+            }
+            let _ = store.delete(&draft.id);
+        }
+    }
+
+    pub fn delete_message(&self, message: &MailMessageObject) -> Result<bool, MailOperationError> {
+        self.delete_matching_draft_store_entries(message);
+        if message.id().starts_with("draft-store:") {
             self.optimistically_remove_messages(std::slice::from_ref(message));
             return Ok(true);
         }
@@ -14367,8 +14491,8 @@ impl MailPage {
         let mut draft_store_msgs = Vec::new();
         let mut regular_msgs = Vec::new();
         for message in messages {
-            if let Some(draft_id) = message.id().strip_prefix("draft-store:") {
-                let _ = DraftStoreService::default().delete(draft_id);
+            self.delete_matching_draft_store_entries(&message);
+            if message.id().starts_with("draft-store:") {
                 draft_store_msgs.push(message);
             } else {
                 regular_msgs.push(message);
@@ -14488,26 +14612,38 @@ impl MailPage {
             return Ok(0);
         };
 
+        let mut draft_store_msgs = Vec::new();
+        let mut regular_msgs = Vec::new();
         let mut commands = Vec::new();
         for index in 0..store.n_items() {
             if let Some(msg) = store.item(index).and_downcast::<MailMessageObject>() {
                 if msg.thread_id() == thread_id {
-                    let cmd = match msg.backend_location() {
-                        Some(loc) => MailCommand::delete(msg.id(), loc),
-                        None => MailCommand::delete_local(msg.id()),
-                    };
-                    commands.push(cmd);
+                    self.delete_matching_draft_store_entries(&msg);
+                    if msg.id().starts_with("draft-store:") {
+                        draft_store_msgs.push(msg);
+                    } else {
+                        let cmd = match msg.backend_location() {
+                            Some(loc) => MailCommand::delete(msg.id(), loc),
+                            None => MailCommand::delete_local(msg.id()),
+                        };
+                        commands.push(cmd);
+                        regular_msgs.push(msg);
+                    }
                 }
             }
         }
 
+        if !draft_store_msgs.is_empty() {
+            self.optimistically_remove_messages(&draft_store_msgs);
+        }
         if commands.is_empty() {
-            return Ok(0);
+            return Ok(draft_store_msgs.len());
         }
 
         let count = commands.len();
         self.execute_mail_batch(commands, &gettext("Delete conversation"))?;
-        Ok(count)
+        self.optimistically_remove_messages(&regular_msgs);
+        Ok(count + draft_store_msgs.len())
     }
 
     /// Open the same local-folder editor used by the sidebar's folder button.
@@ -17334,7 +17470,23 @@ impl MailPage {
     fn delete_batch(&self) -> Result<(), MailOperationError> {
         self.clear_operation_error();
         let messages = self.selected_batch_messages();
-        let commands = messages
+        let mut draft_store_msgs = Vec::new();
+        let mut regular_msgs = Vec::new();
+        for message in messages {
+            self.delete_matching_draft_store_entries(&message);
+            if message.id().starts_with("draft-store:") {
+                draft_store_msgs.push(message);
+            } else {
+                regular_msgs.push(message);
+            }
+        }
+        if !draft_store_msgs.is_empty() {
+            self.optimistically_remove_messages(&draft_store_msgs);
+        }
+        if regular_msgs.is_empty() {
+            return Ok(());
+        }
+        let commands = regular_msgs
             .iter()
             .map(|message| {
                 message
@@ -17344,7 +17496,7 @@ impl MailPage {
             })
             .collect::<Vec<_>>();
         self.execute_mail_batch(commands, &gettext("Delete messages"))?;
-        self.optimistically_remove_messages(&messages);
+        self.optimistically_remove_messages(&regular_msgs);
         Ok(())
     }
 
@@ -24968,16 +25120,7 @@ impl MailPage {
             (11.0, 1.0)
         };
 
-        let user_font_size = settings
-            .as_ref()
-            .map(|s| s.mail_font_size())
-            .unwrap_or(16) as f64;
-        let size_factor = if user_font_size > 0.0 && (user_font_size - 16.0).abs() > 0.5 {
-            (user_font_size / 16.0).clamp(0.75, 2.0)
-        } else {
-            1.0
-        };
-        let font_size = (desktop_size_pt * text_scaling * size_factor).clamp(10.0, 32.0);
+        let font_size = (desktop_size_pt * text_scaling).clamp(10.0, 32.0);
 
         let density = settings
             .as_ref()
@@ -25015,29 +25158,8 @@ impl MailPage {
             ("Adwaita Sans".to_string(), 11.0, 1.0)
         };
 
-        let configured_family = settings
-            .as_ref()
-            .map(|s| s.mail_font_family())
-            .unwrap_or_default();
-        let font_family = if configured_family.is_empty()
-            || configured_family == "system-ui, sans-serif"
-            || configured_family.contains("sans-serif")
-        {
-            format!("{}, Adwaita Sans, Cantarell, sans-serif", desktop_family)
-        } else {
-            format!("{}, {}, Adwaita Sans, Cantarell, sans-serif", configured_family, desktop_family)
-        };
-
-        let user_font_size = settings
-            .as_ref()
-            .map(|s| s.mail_font_size())
-            .unwrap_or(16) as f64;
-        let size_factor = if user_font_size > 0.0 && (user_font_size - 16.0).abs() > 0.5 {
-            (user_font_size / 16.0).clamp(0.75, 2.0)
-        } else {
-            1.0
-        };
-        let font_size = (desktop_size_pt * text_scaling * size_factor).clamp(10.0, 32.0);
+        let font_family = format!("{}, Adwaita Sans, Cantarell, sans-serif", desktop_family);
+        let font_size = (desktop_size_pt * text_scaling).clamp(10.0, 32.0);
 
         let profile = settings
             .as_ref()
@@ -45158,7 +45280,9 @@ impl MailPage {
                             graph_search_next_cursor: None,
                         };
                         local_messages.retain(|m| {
-                            local_folders.contains(&m.folder_id)
+                            let is_welcome = m.id.ends_with("/welcome.eml#0")
+                                || m.id.ends_with("\\welcome.eml#0");
+                            (local_folders.contains(&m.folder_id) || !is_welcome)
                                 && !parsed_mail_belongs_to_disabled_account(m)
                         });
                         result = MailPageLoadResult::Combined {
@@ -45179,30 +45303,150 @@ impl MailPage {
                     .as_deref()
                     .is_none_or(|fname| folder_names_match(fname, "drafts"))
             {
-                let persisted_drafts = DraftStoreService::default().load();
-                let meaningful_drafts: Vec<DraftMessage> = persisted_drafts
-                    .into_iter()
-                    .filter(|d| {
-                        draft_store_message_has_meaningful_content(d)
-                            && (d.source_uid.trim().is_empty()
-                                || eds_service::is_source_enabled_for_service(
-                                    Self::canonical_account_uid(&d.source_uid),
-                                    EdsSourceKind::Mail,
-                                ))
-                            && req_source_uid.as_deref().is_none_or(|src| {
-                                d.source_uid.trim().is_empty()
-                                    || account_sources_match(&d.source_uid, src)
-                            })
-                    })
-                    .collect();
+                let draft_store = DraftStoreService::default();
+                let persisted_drafts = draft_store.load();
+                let mut seen_draft_signatures = HashSet::new();
+                let mut meaningful_drafts: Vec<DraftMessage> = Vec::new();
+                for d in persisted_drafts {
+                    if !draft_store_message_has_meaningful_content(&d) {
+                        if d.to.trim().is_empty()
+                            && d.cc.trim().is_empty()
+                            && d.bcc.trim().is_empty()
+                        {
+                            let _ = draft_store.delete(&d.id);
+                        }
+                        continue;
+                    }
+                    let dedup_key = (
+                        Self::canonical_account_uid(&d.source_uid).to_string(),
+                        d.to.trim().to_lowercase(),
+                        d.cc.trim().to_lowercase(),
+                        d.bcc.trim().to_lowercase(),
+                        d.subject.trim().to_lowercase(),
+                        plain_text_from_draft_html(&d.html_body),
+                    );
+                    if !seen_draft_signatures.insert(dedup_key) {
+                        let _ = draft_store.delete(&d.id);
+                        continue;
+                    }
+                    let source_ok = d.source_uid.trim().is_empty()
+                        || eds_service::is_source_enabled_for_service(
+                            Self::canonical_account_uid(&d.source_uid),
+                            EdsSourceKind::Mail,
+                        );
+                    let req_ok = req_source_uid.as_deref().is_none_or(|src| {
+                        d.source_uid.trim().is_empty()
+                            || account_sources_match(&d.source_uid, src)
+                    });
+                    if source_ok && req_ok {
+                        meaningful_drafts.push(d);
+                    }
+                }
+                let draft_matches_existing = |draft: &DraftMessage, m: &ParsedMail| -> bool {
+                    let draft_msg_id = format!("draft-store:{}", draft.id);
+                    if m.id == draft_msg_id {
+                        return true;
+                    }
+                    if !m.folder_id.eq_ignore_ascii_case("drafts")
+                        && !folder_names_match(&m.folder_name, "drafts")
+                    {
+                        return false;
+                    }
+                    let draft_subj = draft.subject.trim();
+                    let draft_subj_norm = if draft_subj.is_empty()
+                        || draft_subj.eq_ignore_ascii_case("(no subject)")
+                        || draft_subj.eq_ignore_ascii_case("(ohne betreff)")
+                    {
+                        ""
+                    } else {
+                        draft_subj
+                    };
+                    let m_subj = m.subject.trim();
+                    let m_subj_norm = if m_subj.is_empty()
+                        || m_subj.eq_ignore_ascii_case("(no subject)")
+                        || m_subj.eq_ignore_ascii_case("(ohne betreff)")
+                    {
+                        ""
+                    } else {
+                        m_subj
+                    };
+                    if !draft_subj_norm.eq_ignore_ascii_case(m_subj_norm) {
+                        return false;
+                    }
+                    let draft_to = draft.to.trim().to_lowercase();
+                    let m_to = m.recipient_to.trim().to_lowercase();
+                    let to_matches = draft_to == m_to
+                        || draft_to.is_empty()
+                        || m_to.is_empty()
+                        || m_to.contains(&draft_to)
+                        || draft_to.contains(&m_to);
+                    if !to_matches {
+                        return false;
+                    }
+                    if draft_subj_norm.is_empty() && draft_to.is_empty() {
+                        let draft_plain =
+                            plain_text_from_draft_html(&draft.html_body).to_lowercase();
+                        let m_preview = m.preview_snippet.trim().to_lowercase();
+                        return !draft_plain.is_empty()
+                            && !m_preview.is_empty()
+                            && (draft_plain.starts_with(&m_preview)
+                                || m_preview.starts_with(&draft_plain));
+                    }
+                    true
+                };
                 if !meaningful_drafts.is_empty() {
                     match &mut result {
                         MailPageLoadResult::Camel {
                             camel,
                             searchable_body_texts,
+                        } => {
+                            let default_drafts_folder = req_folder_name
+                                .as_deref()
+                                .filter(|fname| folder_names_match(fname, "drafts"))
+                                .map(str::to_string)
+                                .or_else(|| {
+                                    camel
+                                        .folders
+                                        .iter()
+                                        .find(|f| folder_names_match(&f.folder_name, "drafts"))
+                                        .map(|f| f.folder_name.clone())
+                                })
+                                .unwrap_or_else(|| "Drafts".to_string());
+                            for draft in meaningful_drafts {
+                                let already_present = camel
+                                    .messages
+                                    .iter()
+                                    .any(|m| draft_matches_existing(&draft, m));
+                                if !already_present {
+                                    let folder_for_draft = camel
+                                        .folders
+                                        .iter()
+                                        .find(|f| {
+                                            account_sources_match(&f.source_uid, &draft.source_uid)
+                                                && folder_names_match(&f.folder_name, "drafts")
+                                        })
+                                        .map(|f| f.folder_name.as_str())
+                                        .unwrap_or(&default_drafts_folder);
+                                    let parsed = draft_message_to_parsed_mail(
+                                        &draft,
+                                        req_source_uid.as_deref(),
+                                        folder_for_draft,
+                                    );
+                                    searchable_body_texts
+                                        .entry(parsed_mail_identity(&parsed))
+                                        .or_insert_with(|| {
+                                            Arc::<str>::from(parsed.preview_snippet.to_lowercase())
+                                        });
+                                    camel.messages.push(parsed);
+                                }
+                            }
+                            crate::services::mail_store_service::assign_thread_metadata(
+                                &mut camel.messages,
+                            );
                         }
-                        | MailPageLoadResult::Combined {
+                        MailPageLoadResult::Combined {
                             camel,
+                            local_messages,
                             searchable_body_texts,
                             ..
                         } => {
@@ -45219,15 +45463,13 @@ impl MailPage {
                                 })
                                 .unwrap_or_else(|| "Drafts".to_string());
                             for draft in meaningful_drafts {
-                                let draft_msg_id = format!("draft-store:{}", draft.id);
-                                let already_present = camel.messages.iter().any(|m| {
-                                    m.id == draft_msg_id
-                                        || ((m.folder_id.eq_ignore_ascii_case("drafts")
-                                            || folder_names_match(&m.folder_name, "drafts"))
-                                            && !draft.subject.trim().is_empty()
-                                            && m.subject.trim() == draft.subject.trim()
-                                            && m.recipient_to.trim() == draft.to.trim())
-                                });
+                                let already_present = camel
+                                    .messages
+                                    .iter()
+                                    .any(|m| draft_matches_existing(&draft, m))
+                                    || local_messages
+                                        .iter()
+                                        .any(|m| draft_matches_existing(&draft, m));
                                 if !already_present {
                                     let folder_for_draft = camel
                                         .folders
@@ -45261,8 +45503,10 @@ impl MailPage {
                             ..
                         } => {
                             for draft in meaningful_drafts {
-                                let draft_msg_id = format!("draft-store:{}", draft.id);
-                                if !local_messages.iter().any(|m| m.id == draft_msg_id) {
+                                let already_present = local_messages
+                                    .iter()
+                                    .any(|m| draft_matches_existing(&draft, m));
+                                if !already_present {
                                     let parsed = draft_message_to_parsed_mail(
                                         &draft,
                                         req_source_uid.as_deref(),
@@ -47864,9 +48108,10 @@ fn save_itip_reply_draft(
 }
 
 fn plain_text_from_draft_html(body: &str) -> String {
+    let stripped = crate::dialogs::compose_dialog::strip_evolution_signature_html(body);
     let mut in_tag = false;
-    let mut text = String::with_capacity(body.len());
-    for ch in body.chars() {
+    let mut text = String::with_capacity(stripped.len());
+    for ch in stripped.chars() {
         if ch == '<' {
             in_tag = true;
         } else if ch == '>' {
