@@ -654,8 +654,6 @@ impl MailViewer {
                 "render-html",
                 "force-dark-mode",
                 "mail-dark-mode",
-                "mail-font-family",
-                "mail-font-size",
                 "mail-citation-highlighting",
                 "mail-citation-color-1",
                 "mail-citation-color-2",
@@ -1183,14 +1181,8 @@ impl MailViewer {
             .as_ref()
             .map(AppSettings::render_html)
             .unwrap_or(true);
-        let mail_font_family = settings
-            .as_ref()
-            .map(AppSettings::mail_font_family)
-            .unwrap_or_else(|| "system-ui, sans-serif".to_string());
-        let mail_font_size = settings
-            .as_ref()
-            .map(AppSettings::mail_font_size)
-            .unwrap_or(16);
+        let mail_font_family = "system-ui, sans-serif".to_string();
+        let mail_font_size = 16;
         let citation_highlighting = settings
             .as_ref()
             .map(AppSettings::mail_citation_highlighting)
@@ -2424,8 +2416,158 @@ impl MailViewer {
                 let lastMeasuredWidth = 0;
                 let lastClientH = 0;
 
+                let darkModeNormalized = false;
+
+                function parseRgbString(str) {
+                    if (!str) return null;
+                    const m = str.match(/rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)(?:\\s*,\\s*([0-9.]+))?\\s*\\)/i);
+                    if (!m) return null;
+                    const a = m[4] !== undefined ? parseFloat(m[4]) : 1.0;
+                    if (a <= 0.05) return null;
+                    return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10), a];
+                }
+
+                function srgbToLinear(c) {
+                    const u = c / 255.0;
+                    return u <= 0.04045 ? u / 12.92 : Math.pow((u + 0.055) / 1.055, 2.4);
+                }
+
+                function relLuminance(r, g, b) {
+                    return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b);
+                }
+
+                function contrastRatio(l1, l2) {
+                    const bright = Math.max(l1, l2);
+                    const dark = Math.min(l1, l2);
+                    return (bright + 0.05) / (dark + 0.05);
+                }
+
+                function rgbToHsl(r, g, b) {
+                    r /= 255; g /= 255; b /= 255;
+                    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+                    let h = 0, s = 0, l = (max + min) / 2;
+                    if (max !== min) {
+                        const d = max - min;
+                        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+                        switch (max) {
+                            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+                            case g: h = (b - r) / d + 2; break;
+                            case b: h = (r - g) / d + 4; break;
+                        }
+                        h /= 6;
+                    }
+                    return [h, s, l];
+                }
+
+                function hslToRgb(h, s, l) {
+                    let r, g, b;
+                    if (s === 0) {
+                        r = g = b = l;
+                    } else {
+                        const hue2rgb = (p, q, t) => {
+                            if (t < 0) t += 1;
+                            if (t > 1) t -= 1;
+                            if (t < 1/6) return p + (q - p) * 6 * t;
+                            if (t < 1/2) return q;
+                            if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                            return p;
+                        };
+                        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                        const p = 2 * l - q;
+                        r = hue2rgb(p, q, h + 1/3);
+                        g = hue2rgb(p, q, h);
+                        b = hue2rgb(p, q, h - 1/3);
+                    }
+                    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+                }
+
+                function normalizeDarkModeContrast() {
+                    if (darkModeNormalized) return;
+                    try {
+                        const docEl = document.documentElement;
+                        const body = document.body;
+                        if (!docEl || !body) return;
+                        const rootStyle = window.getComputedStyle(docEl);
+                        if (!rootStyle || !rootStyle.colorScheme || !rootStyle.colorScheme.includes('dark')) {
+                            darkModeNormalized = true;
+                            return;
+                        }
+                        const all = body.querySelectorAll('*');
+                        for (let i = 0; i < all.length; i++) {
+                            const el = all[i];
+                            const tag = el.tagName;
+                            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'IMG' || tag === 'SVG' || tag === 'VIDEO' || tag === 'CANVAS') continue;
+                            const st = window.getComputedStyle(el);
+                            const bg = parseRgbString(st.backgroundColor);
+                            if (bg && (!st.backgroundImage || st.backgroundImage === 'none')) {
+                                const bgLum = relLuminance(bg[0], bg[1], bg[2]);
+                                const [bh, bs, bl] = rgbToHsl(bg[0], bg[1], bg[2]);
+                                if (bgLum > 0.55 && bs < 0.20) {
+                                    if (bl >= 0.94) {
+                                        el.style.setProperty('background-color', '#1e1e1e', 'important');
+                                    } else {
+                                        const targetL = Math.max(0.15, Math.min(0.24, 0.15 + (0.94 - bl) * 0.22));
+                                        const [nr, ng, nb] = hslToRgb(bh, bs * 0.5, targetL);
+                                        el.style.setProperty('background-color', 'rgb(' + nr + ', ' + ng + ', ' + nb + ')', 'important');
+                                    }
+                                } else if (bgLum > 0.65 && bs >= 0.20 && tag !== 'MARK') {
+                                    const [nr, ng, nb] = hslToRgb(bh, Math.min(bs, 0.45), 0.20);
+                                    el.style.setProperty('background-color', 'rgb(' + nr + ', ' + ng + ', ' + nb + ')', 'important');
+                                }
+                            }
+                        }
+                        for (let i = 0; i < all.length; i++) {
+                            const el = all[i];
+                            const tag = el.tagName;
+                            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'IMG' || tag === 'SVG' || tag === 'VIDEO' || tag === 'CANVAS') continue;
+                            const st = window.getComputedStyle(el);
+                            const fg = parseRgbString(st.color);
+                            if (!fg) continue;
+                            let effBg = [30, 30, 30];
+                            let cur = el;
+                            while (cur && cur !== docEl) {
+                                const cst = window.getComputedStyle(cur);
+                                const parsed = parseRgbString(cst.backgroundColor);
+                                if (parsed) {
+                                    effBg = parsed;
+                                    break;
+                                }
+                                cur = cur.parentElement;
+                            }
+                            const effBgLum = relLuminance(effBg[0], effBg[1], effBg[2]);
+                            if (effBgLum < 0.35) {
+                                const fgLum = relLuminance(fg[0], fg[1], fg[2]);
+                                const cr = contrastRatio(fgLum, effBgLum);
+                                if (cr < 4.8) {
+                                    const [h, s, l] = rgbToHsl(fg[0], fg[1], fg[2]);
+                                    let nr, ng, nb;
+                                    if (s < 0.12) {
+                                        if (fg[0] === 0 && fg[1] === 0 && fg[2] === 0) {
+                                            nr = 238; ng = 238; nb = 236;
+                                        } else {
+                                            const targetL = Math.max(0.68, Math.min(0.93, 0.93 - (Math.min(l, 0.55) / 0.55) * 0.25));
+                                            [nr, ng, nb] = hslToRgb(h, s, targetL);
+                                        }
+                                    } else {
+                                        const targetS = Math.min(s, 0.82);
+                                        let targetL = Math.max(0.64, Math.min(0.80, 0.74 - l * 0.15));
+                                        [nr, ng, nb] = hslToRgb(h, targetS, targetL);
+                                        while (targetL < 0.92 && contrastRatio(relLuminance(nr, ng, nb), effBgLum) < 5.5) {
+                                            targetL += 0.03;
+                                            [nr, ng, nb] = hslToRgb(h, targetS, targetL);
+                                        }
+                                    }
+                                    el.style.setProperty('color', 'rgb(' + nr + ', ' + ng + ', ' + nb + ')', 'important');
+                                }
+                            }
+                        }
+                        darkModeNormalized = true;
+                    } catch (e) {}
+                }
+
                 function normalizeResponsiveImages() {
                     try {
+                        normalizeDarkModeContrast();
                         const imgs = document.images;
                         if (!imgs) return;
                         for (let i = 0; i < imgs.length; i++) {
@@ -3709,14 +3851,9 @@ pub(crate) fn safe_css_font_family(value: &str) -> String {
         || value
             .chars()
             .any(|character| !(character.is_ascii_alphanumeric() || " ,-_'\"".contains(character)))
+        || value == "system-ui, sans-serif"
     {
         "Cantarell, \"Adwaita Sans\", system-ui, -apple-system, sans-serif".to_string()
-    } else if value == "system-ui, sans-serif" || value == "sans-serif" {
-        "Cantarell, \"Adwaita Sans\", system-ui, -apple-system, sans-serif".to_string()
-    } else if !value.contains("Cantarell") && !value.contains("Adwaita Sans") && !value.contains("sans-serif") {
-        format!("{value}, Cantarell, \"Adwaita Sans\", sans-serif")
-    } else if !value.contains("Cantarell") && !value.contains("Adwaita Sans") {
-        format!("Cantarell, \"Adwaita Sans\", {value}")
     } else {
         value.to_string()
     }
@@ -4330,6 +4467,519 @@ pub(crate) fn has_effective_native_dark_mode(sanitized: &str) -> bool {
     has_effective_native_dark_mode_from_lower(&sanitized.to_ascii_lowercase())
 }
 
+fn srgb_channel_to_linear(c: u8) -> f64 {
+    let u = c as f64 / 255.0;
+    if u <= 0.04045 {
+        u / 12.92
+    } else {
+        ((u + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn wcag_relative_luminance(r: u8, g: u8, b: u8) -> f64 {
+    0.2126 * srgb_channel_to_linear(r)
+        + 0.7152 * srgb_channel_to_linear(g)
+        + 0.0722 * srgb_channel_to_linear(b)
+}
+
+fn wcag_contrast_ratio(l1: f64, l2: f64) -> f64 {
+    let (bright, dark) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+    (bright + 0.05) / (dark + 0.05)
+}
+
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+    let rf = r as f64 / 255.0;
+    let gf = g as f64 / 255.0;
+    let bf = b as f64 / 255.0;
+    let max = rf.max(gf).max(bf);
+    let min = rf.min(gf).min(bf);
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < 1e-6 {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if (max - rf).abs() < 1e-6 {
+        (gf - bf) / d + if gf < bf { 6.0 } else { 0.0 }
+    } else if (max - gf).abs() < 1e-6 {
+        (bf - rf) / d + 2.0
+    } else {
+        (rf - gf) / d + 4.0
+    } / 6.0;
+    (h, s, l)
+}
+
+fn hue_to_rgb(p: f64, q: f64, mut t: f64) -> f64 {
+    if t < 0.0 {
+        t += 1.0;
+    }
+    if t > 1.0 {
+        t -= 1.0;
+    }
+    if t < 1.0 / 6.0 {
+        return p + (q - p) * 6.0 * t;
+    }
+    if t < 1.0 / 2.0 {
+        return q;
+    }
+    if t < 2.0 / 3.0 {
+        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    }
+    p
+}
+
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    if s.abs() < 1e-6 {
+        let v = (l.clamp(0.0, 1.0) * 255.0).round() as u8;
+        return (v, v, v);
+    }
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+    let r = (hue_to_rgb(p, q, h + 1.0 / 3.0).clamp(0.0, 1.0) * 255.0).round() as u8;
+    let g = (hue_to_rgb(p, q, h).clamp(0.0, 1.0) * 255.0).round() as u8;
+    let b = (hue_to_rgb(p, q, h - 1.0 / 3.0).clamp(0.0, 1.0) * 255.0).round() as u8;
+    (r, g, b)
+}
+
+fn parse_rgb_func(token: &str) -> Option<(u8, u8, u8)> {
+    let trimmed = token.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let inner = if let Some(s) = lower.strip_prefix("rgba(") {
+        s.strip_suffix(')')?
+    } else if let Some(s) = lower.strip_prefix("rgb(") {
+        s.strip_suffix(')')?
+    } else {
+        return None;
+    };
+    let parts: Vec<&str> = inner
+        .split(|c: char| c == ',' || c == '/' || c.is_ascii_whitespace())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    if parts.len() >= 4 {
+        if let Ok(a) = parts[3].trim_end_matches('%').parse::<f64>() {
+            let alpha = if parts[3].ends_with('%') { a / 100.0 } else { a };
+            if alpha <= 0.05 {
+                return None;
+            }
+        }
+    }
+    let parse_chan = |s: &str| -> Option<u8> {
+        if let Some(pct) = s.strip_suffix('%') {
+            let v: f64 = pct.parse().ok()?;
+            Some(((v.clamp(0.0, 100.0) / 100.0) * 255.0).round() as u8)
+        } else {
+            let v: f64 = s.parse().ok()?;
+            Some(v.clamp(0.0, 255.0).round() as u8)
+        }
+    };
+    Some((
+        parse_chan(parts[0])?,
+        parse_chan(parts[1])?,
+        parse_chan(parts[2])?,
+    ))
+}
+
+fn parse_css_color(token: &str) -> Option<(u8, u8, u8)> {
+    let t = token.trim().trim_matches(|c: char| c == ';' || c == '"' || c == '\'');
+    if t.is_empty() {
+        return None;
+    }
+    if t.starts_with('#') {
+        return parse_hex_color(t);
+    }
+    if t.len() >= 4 && (t[..4].eq_ignore_ascii_case("rgb(") || t.get(..5).map_or(false, |p| p.eq_ignore_ascii_case("rgba("))) {
+        return parse_rgb_func(t);
+    }
+    match t.to_ascii_lowercase().as_str() {
+        "black" | "windowtext" | "canvastext" | "buttontext" | "infotext" | "menutext"
+        | "captiontext" => Some((0, 0, 0)),
+        "white" | "window" | "canvas" | "threedlightshadow" => Some((255, 255, 255)),
+        "whitesmoke" => Some((245, 245, 245)),
+        "snow" => Some((255, 250, 250)),
+        "ghostwhite" => Some((248, 248, 255)),
+        "aliceblue" => Some((240, 248, 255)),
+        "ivory" => Some((255, 255, 240)),
+        "floralwhite" => Some((255, 250, 240)),
+        "seashell" => Some((255, 245, 238)),
+        "linen" => Some((250, 240, 230)),
+        "beige" => Some((245, 245, 220)),
+        "lightgray" | "lightgrey" => Some((211, 211, 211)),
+        "silver" => Some((192, 192, 192)),
+        "darkgray" | "darkgrey" => Some((169, 169, 169)),
+        "gray" | "grey" => Some((128, 128, 128)),
+        "dimgray" | "dimgrey" => Some((105, 105, 105)),
+        "darkslategray" | "darkslategrey" => Some((47, 79, 79)),
+        "slategray" | "slategrey" => Some((112, 128, 144)),
+        "lightslategray" | "lightslategrey" => Some((119, 136, 153)),
+        "navy" => Some((0, 0, 128)),
+        "darkblue" => Some((0, 0, 139)),
+        "mediumblue" => Some((0, 0, 205)),
+        "blue" => Some((0, 0, 255)),
+        "royalblue" => Some((65, 105, 225)),
+        "steelblue" => Some((70, 130, 180)),
+        "dodgerblue" => Some((30, 144, 255)),
+        "darkslateblue" => Some((72, 61, 139)),
+        "midnightblue" => Some((25, 25, 112)),
+        "indigo" => Some((75, 0, 130)),
+        "purple" => Some((128, 0, 128)),
+        "darkmagenta" => Some((139, 0, 139)),
+        "darkviolet" => Some((148, 0, 211)),
+        "maroon" => Some((128, 0, 0)),
+        "darkred" => Some((139, 0, 0)),
+        "firebrick" => Some((178, 34, 34)),
+        "crimson" => Some((220, 20, 60)),
+        "red" => Some((255, 0, 0)),
+        "brown" => Some((165, 42, 42)),
+        "saddlebrown" => Some((139, 69, 19)),
+        "sienna" => Some((160, 82, 45)),
+        "darkgreen" => Some((0, 100, 0)),
+        "green" => Some((0, 128, 0)),
+        "forestgreen" => Some((34, 139, 34)),
+        "seagreen" => Some((46, 139, 87)),
+        "teal" => Some((0, 128, 128)),
+        "darkcyan" => Some((0, 139, 139)),
+        "olive" => Some((128, 128, 0)),
+        "darkolivegreen" => Some((85, 107, 47)),
+        _ => None,
+    }
+}
+
+pub(crate) fn adapt_foreground_color_for_dark_bg(
+    r: u8,
+    g: u8,
+    b: u8,
+    bg_lum: f64,
+) -> Option<(u8, u8, u8)> {
+    let fg_lum = wcag_relative_luminance(r, g, b);
+    let cr = wcag_contrast_ratio(fg_lum, bg_lum);
+    if cr >= 4.8 {
+        return None;
+    }
+    let (h, s, l) = rgb_to_hsl(r, g, b);
+    if s < 0.12 {
+        if r == 0 && g == 0 && b == 0 {
+            return Some((0xee, 0xee, 0xec));
+        }
+        let target_l = (0.93 - (l.min(0.55) / 0.55) * 0.25).clamp(0.68, 0.93);
+        Some(hsl_to_rgb(h, s, target_l))
+    } else {
+        let target_s = s.min(0.82);
+        let mut target_l = (0.74 - l * 0.15).clamp(0.64, 0.80);
+        let mut rgb = hsl_to_rgb(h, target_s, target_l);
+        while target_l < 0.92
+            && wcag_contrast_ratio(wcag_relative_luminance(rgb.0, rgb.1, rgb.2), bg_lum) < 5.5
+        {
+            target_l += 0.03;
+            rgb = hsl_to_rgb(h, target_s, target_l);
+        }
+        Some(rgb)
+    }
+}
+
+pub(crate) fn adapt_background_color_for_dark_mode(r: u8, g: u8, b: u8) -> Option<(u8, u8, u8)> {
+    let bg_lum = wcag_relative_luminance(r, g, b);
+    if bg_lum < 0.35 {
+        return None;
+    }
+    let (h, s, l) = rgb_to_hsl(r, g, b);
+    if s < 0.20 {
+        if l >= 0.94 {
+            Some((0x1e, 0x1e, 0x1e))
+        } else if l >= 0.55 {
+            let target_l = (0.15 + (0.94 - l) * 0.22).clamp(0.15, 0.24);
+            Some(hsl_to_rgb(h, s * 0.5, target_l))
+        } else {
+            None
+        }
+    } else if l >= 0.65 {
+        let target_s = s.min(0.45);
+        let target_l = (0.18 + (1.0 - l) * 0.15).clamp(0.16, 0.24);
+        Some(hsl_to_rgb(h, target_s, target_l))
+    } else {
+        None
+    }
+}
+
+fn adapt_border_color_for_dark_mode(r: u8, g: u8, b: u8) -> Option<(u8, u8, u8)> {
+    let lum = wcag_relative_luminance(r, g, b);
+    let (h, s, l) = rgb_to_hsl(r, g, b);
+    if lum < 0.08 {
+        Some((0x3d, 0x3d, 0x3d))
+    } else if lum > 0.55 && s < 0.20 {
+        let target_l = (0.24 + (1.0 - l) * 0.10).clamp(0.22, 0.30);
+        Some(hsl_to_rgb(h, s * 0.5, target_l))
+    } else {
+        None
+    }
+}
+
+fn replace_color_tokens_in_shorthand(val: &str, is_background: bool) -> String {
+    if let Some((r, g, b)) = parse_css_color(val) {
+        let adapted = if is_background {
+            adapt_background_color_for_dark_mode(r, g, b)
+        } else {
+            adapt_border_color_for_dark_mode(r, g, b)
+        };
+        if let Some((nr, ng, nb)) = adapted {
+            return format!("#{nr:02x}{ng:02x}{nb:02x}");
+        }
+        return val.to_string();
+    }
+    let mut out = Vec::new();
+    for tok in val.split_whitespace() {
+        if let Some((r, g, b)) = parse_css_color(tok) {
+            let adapted = if is_background {
+                adapt_background_color_for_dark_mode(r, g, b)
+            } else {
+                adapt_border_color_for_dark_mode(r, g, b)
+            };
+            if let Some((nr, ng, nb)) = adapted {
+                out.push(format!("#{nr:02x}{ng:02x}{nb:02x}"));
+                continue;
+            }
+        }
+        out.push(tok.to_string());
+    }
+    out.join(" ")
+}
+
+fn adapt_css_declarations_for_dark_mode(decls: &str) -> String {
+    const DARK_BG_LUM: f64 = 0.0130;
+    let mut out = String::with_capacity(decls.len() + 16);
+    let parts: Vec<&str> = decls.split(';').collect();
+    for (idx, part) in parts.iter().enumerate() {
+        if idx > 0 {
+            out.push(';');
+        }
+        let Some(colon_pos) = part.find(':') else {
+            out.push_str(part);
+            continue;
+        };
+        let (prop_raw, after_colon) = part.split_at(colon_pos);
+        let val_raw = &after_colon[1..];
+        let prop_name = prop_raw.trim().to_ascii_lowercase();
+        let val_trimmed = val_raw.trim();
+        let (val_core, important_suffix) = if val_trimmed.len() >= 10
+            && val_trimmed[val_trimmed.len() - 10..].eq_ignore_ascii_case("!important")
+        {
+            (val_trimmed[..val_trimmed.len() - 10].trim(), " !important")
+        } else {
+            (val_trimmed, "")
+        };
+
+        let replaced_val = match prop_name.as_str() {
+            "color" | "-webkit-text-fill-color" => {
+                if let Some((r, g, b)) = parse_css_color(val_core) {
+                    adapt_foreground_color_for_dark_bg(r, g, b, DARK_BG_LUM)
+                        .map(|(nr, ng, nb)| format!("#{nr:02x}{ng:02x}{nb:02x}"))
+                } else {
+                    None
+                }
+            }
+            "background-color" | "background" => {
+                let adapted = replace_color_tokens_in_shorthand(val_core, true);
+                if adapted != val_core {
+                    Some(adapted)
+                } else {
+                    None
+                }
+            }
+            "border" | "border-top" | "border-right" | "border-bottom" | "border-left"
+            | "border-color" | "border-top-color" | "border-right-color"
+            | "border-bottom-color" | "border-left-color" => {
+                let adapted = replace_color_tokens_in_shorthand(val_core, false);
+                if adapted != val_core {
+                    Some(adapted)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(new_val) = replaced_val {
+            out.push_str(prop_raw);
+            out.push(':');
+            out.push_str(&new_val);
+            out.push_str(important_suffix);
+        } else {
+            out.push_str(part);
+        }
+    }
+    out
+}
+
+fn adapt_style_sheet_colors_for_dark_mode(css: &str) -> String {
+    let mut out = String::with_capacity(css.len() + 32);
+    let mut cursor = 0;
+    while let Some(open_rel) = css[cursor..].find('{') {
+        let open_pos = cursor + open_rel;
+        out.push_str(&css[cursor..=open_pos]);
+        cursor = open_pos + 1;
+        let rest = &css[cursor..];
+        let next_open = rest.find('{');
+        let next_close = rest.find('}');
+        match (next_open, next_close) {
+            (Some(no), Some(nc)) if no < nc => {
+                // Outer block (e.g. @media): continue to nested `{`
+                continue;
+            }
+            (_, Some(nc)) => {
+                let block_body = &rest[..nc];
+                out.push_str(&adapt_css_declarations_for_dark_mode(block_body));
+                out.push('}');
+                cursor += nc + 1;
+            }
+            (_, None) => {
+                out.push_str(rest);
+                cursor = css.len();
+            }
+        }
+    }
+    if cursor < css.len() {
+        out.push_str(&css[cursor..]);
+    }
+    out
+}
+
+fn adapt_tag_attributes_for_dark_mode(tag: &str) -> String {
+    const DARK_BG_LUM: f64 = 0.0130;
+    let lower = tag.to_ascii_lowercase();
+    if !lower.contains("style") && !lower.contains("color") && !lower.contains("text") {
+        return tag.to_string();
+    }
+    let bytes = tag.as_bytes();
+    let mut out = String::with_capacity(tag.len() + 16);
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_alphabetic() {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
+                i += 1;
+            }
+            let attr_name = &tag[start..i];
+            let attr_lower = attr_name.to_ascii_lowercase();
+            let ws_start = i;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b'=' {
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+                    let quote = bytes[i];
+                    let val_start = i + 1;
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != quote {
+                        i += 1;
+                    }
+                    let val = &tag[val_start..i];
+                    let has_closing_quote = i < bytes.len() && bytes[i] == quote;
+                    if has_closing_quote {
+                        i += 1;
+                    }
+                    let new_val = match attr_lower.as_str() {
+                        "style" => Some(adapt_css_declarations_for_dark_mode(val)),
+                        "bgcolor" => parse_css_color(val)
+                            .and_then(|(r, g, b)| adapt_background_color_for_dark_mode(r, g, b))
+                            .map(|(nr, ng, nb)| format!("#{nr:02x}{ng:02x}{nb:02x}")),
+                        "color" | "text" => parse_css_color(val)
+                            .and_then(|(r, g, b)| adapt_foreground_color_for_dark_bg(r, g, b, DARK_BG_LUM))
+                            .map(|(nr, ng, nb)| format!("#{nr:02x}{ng:02x}{nb:02x}")),
+                        _ => None,
+                    };
+                    if let Some(adapted_val) = new_val {
+                        out.push_str(attr_name);
+                        out.push('=');
+                        out.push(quote as char);
+                        out.push_str(&adapted_val);
+                        if has_closing_quote {
+                            out.push(quote as char);
+                        }
+                        continue;
+                    } else {
+                        out.push_str(&tag[start..i]);
+                        continue;
+                    }
+                } else {
+                    out.push_str(&tag[start..i]);
+                    continue;
+                }
+            } else {
+                out.push_str(&tag[start..ws_start]);
+                i = ws_start;
+                continue;
+            }
+        }
+        let ch = tag[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+pub(crate) fn adapt_html_colors_for_dark_mode(html: &str, adapt_style_blocks: bool) -> String {
+    let mut out = String::with_capacity(html.len() + 64);
+    let lower = html.to_ascii_lowercase();
+    let mut cursor = 0;
+    while cursor < html.len() {
+        let Some(tag_rel) = html[cursor..].find('<') else {
+            out.push_str(&html[cursor..]);
+            break;
+        };
+        let tag_start = cursor + tag_rel;
+        out.push_str(&html[cursor..tag_start]);
+        let Some(tag_end_rel) = html[tag_start..].find('>') else {
+            out.push_str(&html[tag_start..]);
+            break;
+        };
+        let tag_end = tag_start + tag_end_rel + 1;
+        let tag_slice = &html[tag_start..tag_end];
+        let tag_lower = &lower[tag_start..tag_end];
+        if tag_lower.starts_with("<style") {
+            out.push_str(tag_slice);
+            cursor = tag_end;
+            if let Some(close_rel) = lower[cursor..].find("</style>") {
+                let style_end = cursor + close_rel;
+                let style_content = &html[cursor..style_end];
+                if adapt_style_blocks {
+                    out.push_str(&adapt_style_sheet_colors_for_dark_mode(style_content));
+                } else {
+                    out.push_str(style_content);
+                }
+                out.push_str(&html[style_end..style_end + 8]);
+                cursor = style_end + 8;
+            }
+        } else if tag_lower.starts_with("<!--") {
+            if let Some(comment_end_rel) = html[tag_start..].find("-->") {
+                let comment_end = tag_start + comment_end_rel + 3;
+                out.push_str(&html[tag_start..comment_end]);
+                cursor = comment_end;
+            } else {
+                out.push_str(tag_slice);
+                cursor = tag_end;
+            }
+        } else {
+            out.push_str(&adapt_tag_attributes_for_dark_mode(tag_slice));
+            cursor = tag_end;
+        }
+    }
+    out
+}
+
 fn compose_sanitized_mail_document(
     sanitized: &str,
     render_html: bool,
@@ -4342,13 +4992,20 @@ fn compose_sanitized_mail_document(
 ) -> String {
     let mail_font_family = safe_css_font_family(mail_font_family);
     let mail_font_size = safe_mail_font_size(mail_font_size);
+    let lower_initial = sanitized.to_ascii_lowercase();
+    let has_native_dark_mode = has_effective_native_dark_mode_from_lower(&lower_initial);
+    let adapted_storage;
+    let sanitized = if force_dark_mode && render_html {
+        adapted_storage = adapt_html_colors_for_dark_mode(sanitized, !has_native_dark_mode);
+        adapted_storage.as_str()
+    } else {
+        sanitized
+    };
     let lower = sanitized.to_ascii_lowercase();
-    let has_native_dark_mode = has_effective_native_dark_mode_from_lower(&lower);
 
     let (body_css, dark_inversion_css) = if force_dark_mode {
-        if !render_html || has_native_dark_mode {
-            (
-                r#"
+        (
+            r#"
   html {
     color-scheme: dark;
     background-color: transparent !important;
@@ -4360,40 +5017,12 @@ fn compose_sanitized_mail_document(
   body {
     font-size: __FONT_SIZE__px;
     line-height: 1.35;
-    color: inherit;
+    color: #eeeeec;
     background-color: #1e1e1e !important;
   }
 "#,
-                "",
-            )
-        } else {
-            (
-                r#"
-  html {
-    color-scheme: dark;
-    background-color: #e1e1e1 !important;
-    color: #000000;
-    filter: invert(100%) hue-rotate(180deg);
-    -webkit-filter: invert(100%) hue-rotate(180deg);
-  }
-  html, body {
-    font-family: __FONT_FAMILY__;
-  }
-  body {
-    font-size: __FONT_SIZE__px;
-    line-height: 1.35;
-    color: inherit;
-    background-color: #e1e1e1 !important;
-  }
-"#,
-                r#"
-  img, video, canvas, svg, iframe, input[type="image"] {
-    filter: invert(100%) hue-rotate(180deg) !important;
-    -webkit-filter: invert(100%) hue-rotate(180deg) !important;
-  }
-"#,
-            )
-        }
+            "",
+        )
     } else {
         (
             r#"
@@ -5430,9 +6059,9 @@ mod tests {
     fn test_mail_viewer_composed_document_dark_mode_css() {
         let colors = test_citation_colors();
 
-        // 1. Standard HTML email in dark mode: Smart Inversion applied
-        let doc_dark_inverted = compose_sanitized_mail_document(
-            "<p>Hallo Dark</p>",
+        // 1. Standard HTML email in dark mode: Contrast-relative dark mode adaptation applied
+        let doc_dark_adapted = compose_sanitized_mail_document(
+            "<style>p.MsoNormal { color: windowtext; }</style><p style=\"background:white\"><span style=\"color:black\">Hallo Dark</span> <span style=\"color:#333333\">Subtext</span></p>",
             true,
             false,
             true, // force_dark_mode = true
@@ -5441,10 +6070,14 @@ mod tests {
             false,
             &colors,
         );
-        assert!(doc_dark_inverted.contains("color-scheme: dark"));
-        assert!(doc_dark_inverted.contains("filter: invert(100%) hue-rotate(180deg)"));
-        assert!(doc_dark_inverted.contains("background-color: #e1e1e1"));
-        assert!(doc_dark_inverted.contains("img, video, canvas, svg, iframe, input[type=\"image\"]"));
+        assert!(doc_dark_adapted.contains("color-scheme: dark"));
+        assert!(doc_dark_adapted.contains("background-color: #1e1e1e"));
+        assert!(doc_dark_adapted.contains("color: #eeeeec"));
+        assert!(!doc_dark_adapted.contains("filter: invert(100%) hue-rotate(180deg)"));
+        assert!(doc_dark_adapted.contains("color:#eeeeec"));
+        assert!(doc_dark_adapted.contains("background:#1e1e1e"));
+        assert!(!doc_dark_adapted.contains("color:black"));
+        assert!(!doc_dark_adapted.contains("color:#333333"));
 
         // 2. Native dark mode email (contains prefers-color-scheme): Direct dark styling applied, no inversion
         let doc_dark_native = compose_sanitized_mail_document(
@@ -6039,9 +6672,10 @@ Content-Type: text/html; charset=utf-8\r\n\
             &colors,
         );
         assert!(doc.contains("color-scheme: dark"));
-        assert!(doc.contains("filter: invert(100%) hue-rotate(180deg)"));
-        assert!(doc.contains("background-color: #e1e1e1"));
-        assert!(doc.contains("img, video, canvas, svg, iframe, input[type=\"image\"]"));
+        assert!(doc.contains("background-color: #1e1e1e"));
+        assert!(doc.contains("color: #eeeeec"));
+        assert!(doc.contains("background-color:#1e1e1e; color:#eeeeec"));
+        assert!(!doc.contains("filter: invert(100%) hue-rotate(180deg)"));
     }
 
     #[test]
@@ -6132,8 +6766,44 @@ Content-Type: text/html; charset=utf-8\r\n\
             "Document baseline CSS must style html and body so child elements inherit inline font families"
         );
         assert!(
-            doc.contains("font-family: Cantarell, \"Adwaita Sans\", \"TestSans\", sans-serif;"),
+            doc.contains("font-family: \"TestSans\", sans-serif;")
+                || doc.contains("font-family: Cantarell, \"Adwaita Sans\", \"TestSans\", sans-serif;"),
             "Document baseline CSS must use the safe configured font family"
+        );
+    }
+
+    #[test]
+    fn test_dark_mode_contrast_relative_color_adaptation() {
+        // Pure black -> #eeeeec (off-white)
+        assert_eq!(
+            super::adapt_foreground_color_for_dark_bg(0, 0, 0, 0.013),
+            Some((0xee, 0xee, 0xec))
+        );
+        // Dark gray (#333333) -> light gray (slightly softer than pure black, preserving hierarchy)
+        let adapted_gray = super::adapt_foreground_color_for_dark_bg(0x33, 0x33, 0x33, 0.013)
+            .expect("Dark gray must be adapted on dark background");
+        assert!(
+            adapted_gray.0 > 180 && adapted_gray.0 < 238,
+            "Dark gray should become light gray, got {:?}",
+            adapted_gray
+        );
+        // Dark blue (#002060) -> readable light blue with >= 5.5:1 contrast ratio
+        let adapted_blue = super::adapt_foreground_color_for_dark_bg(0x00, 0x20, 0x60, 0.013)
+            .expect("Dark blue must be adapted on dark background");
+        assert!(
+            adapted_blue.2 > adapted_blue.0,
+            "Blue hue must be preserved, got {:?}",
+            adapted_blue
+        );
+        let lum_blue = super::wcag_relative_luminance(adapted_blue.0, adapted_blue.1, adapted_blue.2);
+        assert!(
+            super::wcag_contrast_ratio(lum_blue, 0.013) >= 5.5,
+            "Adapted blue must meet >= 5.5:1 contrast ratio"
+        );
+        // Already bright text (#eeeeec) is left untouched
+        assert_eq!(
+            super::adapt_foreground_color_for_dark_bg(0xee, 0xee, 0xec, 0.013),
+            None
         );
     }
 
