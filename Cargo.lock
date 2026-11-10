@@ -1221,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "meridian"
-version = "0.3.0-beta.1"
+version = "0.4.0-beta.1"
 dependencies = [
  "async-channel",
  "chrono",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "meridian-tests"
-version = "0.3.0-beta.1"
+version = "0.4.0-beta.1"
 dependencies = [
  "chrono",
  "gdk4",

@@ -81,6 +81,18 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.4.0-beta.1" date="2026-11-10" type="development">
+      <description>
+        <p>Meridian 0.4.0-beta.1 improvements and fixes:</p>
+        <ul>
+          <li>Contrast-relative dark mode color adaptation in MailViewer for dark text and light container backgrounds without double-inversion artifacts</li>
+          <li>Redesigned Rich Text Composer formatting toolbar with B/I/U/S icons, direct indentation buttons, circular color/background swatches, and interactive in-canvas table controls</li>
+          <li>Markdown auto-formatting in the Composer (headings, lists, blockquotes, horizontal rules, inline emphasis) with preference toggle</li>
+          <li>Reliable draft deletion and UID deduplication in "On This Computer" local folders</li>
+          <li>Standard system folder icons and default color reset restoration in Folder Properties dialog</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.0-beta.1" date="2026-11-10" type="development">
       <description>
         <p>Meridian 0.3.0-beta.1 improvements and fixes:</p>

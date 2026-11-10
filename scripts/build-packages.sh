@@ -362,11 +362,11 @@ fi
 
 %changelog
 * Tue Nov 10 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
-- Persistent On This Computer local mail tree with full right-click CRUD and subfolder hierarchy
-- Full account and folder tree picker in Filter Rule Editor with wildcard, regex, and All Messages matching
-- GNOME HIG overhaul for Folder Properties dialog with custom icons, colors, and retention settings
-- Camel IMAP/Exchange folder CRUD and persistent expanded/collapsed sidebar state
-- Subtle header-bar Offline Mode indicator and online-by-default first launch
+- Contrast-relative dark mode text and background color adaptation in MailViewer
+- Overhauled Rich Text Composer toolbar, circular color swatches, and interactive in-canvas table controls
+- Markdown auto-formatting in Composer with preference switch
+- Fixed local Drafts deletion and deduplicated messages in On This Computer
+- Added standard system folder icons and fixed default color reset in Folder Properties dialog
 EOF
 
     rpmbuild -bb --define "_topdir $work/rpmbuild" "$work/rpmbuild/SPECS/meridian.spec"
