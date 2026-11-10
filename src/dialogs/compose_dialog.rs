@@ -1345,7 +1345,7 @@ impl ComposeDialog {
             .margin_start(16)
             .margin_end(16)
             .margin_top(4)
-            .margin_bottom(12)
+            .margin_bottom(8)
             .css_classes(["card", "composer-header-card"])
             .build();
 
@@ -1734,8 +1734,8 @@ impl ComposeDialog {
             .spacing(6)
             .margin_start(16)
             .margin_end(16)
-            .margin_top(2)
-            .margin_bottom(6)
+            .margin_top(6)
+            .margin_bottom(0)
             .visible(false)
             .build();
         content_box.append(&options_badges_box);
@@ -1854,7 +1854,15 @@ impl ComposeDialog {
         html_editor.set_vexpand(true);
         html_editor.set_toolbar_scrollable(false);
         btn_format.set_sensitive(!initial_plain);
-        html_editor.set_format_toolbar_visible(!initial_plain && btn_format.is_active());
+        let initial_toolbar_visible = !initial_plain && btn_format.is_active();
+        header_card.set_margin_bottom(if initial_toolbar_visible { 0 } else { 8 });
+        html_editor.set_format_toolbar_visible(initial_toolbar_visible);
+        if let Some(revealer) = html_editor.imp().format_toolbar_revealer.borrow().as_ref() {
+            let hc = header_card.clone();
+            revealer.connect_notify_local(Some("reveal-child"), move |rev, _| {
+                hc.set_margin_bottom(if rev.reveals_child() { 0 } else { 8 });
+            });
+        }
 
         let plain_for_fmt = btn_plain_text.clone();
         btn_format.connect_toggled(glib::clone!(
@@ -9366,18 +9374,42 @@ fn composer_print_snapshot(message_key: &str, message: &OutgoingMessage) -> Mail
     }
 }
 
-fn editor_body_has_user_content(body: &str) -> bool {
+pub(crate) fn strip_evolution_signature_html(body: &str) -> String {
     let trimmed = body.trim();
     if trimmed.is_empty() {
-        return false;
+        return String::new();
     }
-    if trimmed.contains("<img") || trimmed.contains("<svg") || trimmed.contains("<table") {
-        return true;
-    }
-
-    let content_without_sig = if let Some(sig_start) = trimmed.find("<div id=\"_evolution_signature_\"") {
-        if let Some(sig_end) = trimmed[sig_start..].find("</div>") {
-            format!("{}{}", &trimmed[..sig_start], &trimmed[sig_start + sig_end + 6..])
+    if let Some(sig_start) = trimmed
+        .find("<div id=\"_evolution_signature_\"")
+        .or_else(|| trimmed.find("<div id='_evolution_signature_'"))
+    {
+        let rest = &trimmed[sig_start..];
+        let lower_rest = rest.to_ascii_lowercase();
+        let bytes = lower_rest.as_bytes();
+        let mut idx = 0usize;
+        let mut depth = 0usize;
+        let mut end_offset = None;
+        while idx < bytes.len() {
+            if bytes[idx..].starts_with(b"<div")
+                && bytes
+                    .get(idx + 4)
+                    .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/')
+            {
+                depth += 1;
+                idx += 4;
+            } else if bytes[idx..].starts_with(b"</div>") {
+                depth = depth.saturating_sub(1);
+                idx += 6;
+                if depth == 0 {
+                    end_offset = Some(idx);
+                    break;
+                }
+            } else {
+                idx += 1;
+            }
+        }
+        if let Some(end_rel) = end_offset.filter(|&off| rest.is_char_boundary(off)) {
+            format!("{}{}", &trimmed[..sig_start], &rest[end_rel..])
         } else {
             trimmed[..sig_start].to_string()
         }
@@ -9387,11 +9419,22 @@ fn editor_body_has_user_content(body: &str) -> bool {
         String::new()
     } else {
         trimmed.to_string()
-    };
+    }
+}
+
+fn editor_body_has_user_content(body: &str) -> bool {
+    let content_without_sig = strip_evolution_signature_html(body);
+    let trimmed = content_without_sig.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains("<img") || trimmed.contains("<svg") || trimmed.contains("<table") {
+        return true;
+    }
 
     let mut in_tag = false;
-    let mut text = String::with_capacity(content_without_sig.len());
-    for ch in content_without_sig.chars() {
+    let mut text = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
         if ch == '<' {
             in_tag = true;
         } else if ch == '>' {
@@ -9947,6 +9990,15 @@ mod tests {
             "application/octet-stream"
         );
         assert_eq!(format_size(1024), "1.0 KiB");
+    }
+
+    #[test]
+    fn strip_evolution_signature_handles_multibyte_utf8_and_nested_divs() {
+        let sig_only = "<p><br></p><div id=\"_evolution_signature_\"><div>Mit freundlichen Grüßen — äöüÄÖÜß</div><div>Auktion &amp; Markt AG</div></div>";
+        assert!(!editor_body_has_user_content(sig_only));
+        let with_text = "<h1>Überschrift</h1><div id=\"_evolution_signature_\"><div>Mit freundlichen Grüßen</div></div>";
+        assert!(editor_body_has_user_content(with_text));
+        assert_eq!(strip_evolution_signature_html(with_text), "<h1>Überschrift</h1>");
     }
 
     #[test]
@@ -11024,8 +11076,8 @@ mod tests {
         let editor = dialog.html_editor().expect("html editor exists");
         let toolbar = editor.imp().format_toolbar.borrow().as_ref().cloned().expect("format toolbar exists");
         assert!(toolbar.has_css_class("composer-format-toolbar"));
-        assert_eq!(toolbar.margin_top(), 4);
-        assert_eq!(toolbar.margin_bottom(), 8);
+        assert_eq!(toolbar.margin_top(), 6);
+        assert_eq!(toolbar.margin_bottom(), 6);
         assert_eq!(toolbar.margin_start(), 16);
         assert_eq!(toolbar.margin_end(), 16);
 

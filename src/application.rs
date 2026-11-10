@@ -387,6 +387,14 @@ impl MeridianApplication {
                 "external-link-symbolic.svg",
                 include_str!("../data/icons/hicolor/scalable/actions/external-link-symbolic.svg"),
             ),
+            (
+                "meridian-format-quote-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/meridian-format-quote-symbolic.svg"),
+            ),
+            (
+                "meridian-horizontal-rule-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/meridian-horizontal-rule-symbolic.svg"),
+            ),
         ];
 
         for (filename, content) in icons {

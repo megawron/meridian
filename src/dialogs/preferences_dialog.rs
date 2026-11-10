@@ -4200,6 +4200,22 @@ impl PreferencesDialog {
         }
         group_composer.add(&row_spellcheck_languages);
 
+        let row_composer_auto_format = adw::SwitchRow::builder()
+            .title(gettext("Automatic formatting while typing"))
+            .subtitle(gettext(
+                "Convert -, 1., >, #, and --- into lists, quotes, headings, and dividers",
+            ))
+            .active(true)
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_composer_auto_format.set_active(settings.composer_auto_format());
+            let s_af = settings.clone();
+            row_composer_auto_format.connect_active_notify(move |row| {
+                s_af.set_composer_auto_format(row.is_active());
+            });
+        }
+        group_composer.add(&row_composer_auto_format);
+
         let font_family_model_labels: Vec<String> = crate::views::html_editor::COMPOSER_FONT_FAMILIES
             .iter()
             .map(|(label, _)| {
@@ -7604,76 +7620,6 @@ impl PreferencesDialog {
         let group_typography = adw::PreferencesGroup::builder()
             .title(gettext("Typography and Rendering"))
             .build();
-
-        let typography_font_labels: Vec<String> = crate::views::html_editor::COMPOSER_FONT_FAMILIES
-            .iter()
-            .map(|(label, _)| {
-                if *label == "System Default" {
-                    gettext("System Default")
-                } else {
-                    (*label).to_string()
-                }
-            })
-            .collect();
-        let typography_font_refs: Vec<&str> = typography_font_labels.iter().map(String::as_str).collect();
-        let row_font_family = adw::ComboRow::builder()
-            .title(gettext("Font Family"))
-            .model(&gtk::StringList::new(&typography_font_refs))
-            .build();
-        if let Some(ref s) = settings {
-            let updating_ff = std::rc::Rc::new(std::cell::Cell::new(false));
-            row_font_family.set_selected(
-                crate::views::html_editor::font_family_index_for_css(&s.mail_font_family()),
-            );
-            let s_ff = s.clone();
-            let updating_ff_notify = updating_ff.clone();
-            row_font_family.connect_selected_notify(move |row| {
-                if updating_ff_notify.get() {
-                    return;
-                }
-                let idx = row.selected() as usize;
-                let css = crate::views::html_editor::COMPOSER_FONT_FAMILIES
-                    .get(idx)
-                    .map(|(_, css)| *css)
-                    .unwrap_or("system-ui, sans-serif");
-                s_ff.set_mail_font_family(css);
-            });
-            let row_ff_weak = row_font_family.downgrade();
-            let updating_ff_change = updating_ff;
-            s.connect_changed(Some("mail-font-family"), move |s_obj, _| {
-                let Some(row) = row_ff_weak.upgrade() else { return; };
-                let target = crate::views::html_editor::font_family_index_for_css(
-                    &s_obj.string("mail-font-family"),
-                );
-                if row.selected() != target {
-                    updating_ff_change.set(true);
-                    row.set_selected(target);
-                    updating_ff_change.set(false);
-                }
-            });
-        }
-        group_typography.add(&row_font_family);
-
-        let row_font_size = adw::SpinRow::with_range(8.0, 48.0, 1.0);
-        row_font_size.set_title(&gettext("Font Size"));
-        row_font_size.set_digits(0);
-        row_font_size.set_snap_to_ticks(true);
-        if let Some(ref s) = settings {
-            row_font_size.set_value(s.mail_font_size() as f64);
-            let s_fs = s.clone();
-            row_font_size.connect_value_notify(move |spin| {
-                s_fs.set_mail_font_size(spin.value().round() as u32);
-            });
-            let spin_weak = row_font_size.downgrade();
-            s.connect_changed(Some("mail-font-size"), move |s_obj, _| {
-                let Some(spin) = spin_weak.upgrade() else { return; };
-                let val = s_obj.int("mail-font-size").clamp(8, 48) as f64;
-                if (spin.value() - val).abs() > f64::EPSILON {
-                    spin.set_value(val);
-                }
-            });
-        }
-        group_typography.add(&row_font_size);
 
         let row_force_dark = adw::SwitchRow::builder()
             .title(gettext("Force dark colors in all HTML emails"))

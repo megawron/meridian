@@ -36,11 +36,8 @@ pub const COMPOSER_FONT_FAMILIES: &[(&str, &str)] = &[
 
 pub fn font_family_index_for_css(raw: &str) -> u32 {
     let lower = raw.trim().to_ascii_lowercase();
-    if lower.is_empty() || lower.starts_with("system-ui") {
+    if lower.is_empty() || lower.contains("system-ui") {
         return 0;
-    }
-    if lower.contains("cantarell") {
-        return 4;
     }
     if lower.contains("inter") {
         return 5;
@@ -66,10 +63,13 @@ pub fn font_family_index_for_css(raw: &str) -> u32 {
     if lower.contains("courier") {
         return 12;
     }
+    if lower.contains("cantarell") {
+        return 4;
+    }
     if lower == "monospace" || lower.ends_with("monospace") {
         return 3;
     }
-    if lower == "serif" {
+    if lower == "serif" || (lower.ends_with("serif") && !lower.contains("sans-serif")) {
         return 2;
     }
     if lower == "sans-serif" {
@@ -78,9 +78,383 @@ pub fn font_family_index_for_css(raw: &str) -> u32 {
     0
 }
 
-pub const DROPDOWN_FORMAT_WIDTH: i32 = 136;
-pub const DROPDOWN_FONT_FAMILY_WIDTH: i32 = 164;
-pub const DROPDOWN_FONT_SIZE_WIDTH: i32 = 86;
+fn primary_webkit_font_family(css_family: &str, desktop_font: &str) -> String {
+    let idx = font_family_index_for_css(css_family);
+    match idx {
+        4 => "Cantarell".to_string(),
+        5 => "Inter".to_string(),
+        6 => "Roboto".to_string(),
+        7 => "Arial".to_string(),
+        8 => "Verdana".to_string(),
+        9 => "Tahoma".to_string(),
+        10 => "Times New Roman".to_string(),
+        11 => "Georgia".to_string(),
+        12 => "Courier New".to_string(),
+        _ => desktop_font.to_string(),
+    }
+}
+
+pub const COMPOSER_FONT_SIZES: &[u32] = &[
+    8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 24, 28, 32, 36, 48,
+];
+
+pub fn font_size_index_for_px(px: u32) -> u32 {
+    let target = if px == 0 { 14 } else { px };
+    if let Some(pos) = COMPOSER_FONT_SIZES.iter().position(|&s| s == target) {
+        return pos as u32;
+    }
+    if let Some((best_pos, _)) = COMPOSER_FONT_SIZES
+        .iter()
+        .enumerate()
+        .min_by_key(|&(_, &s)| (s as i32 - target as i32).abs())
+    {
+        return best_pos as u32;
+    }
+    6
+}
+
+pub fn font_size_px_for_index(idx: u32) -> u32 {
+    COMPOSER_FONT_SIZES
+        .get(idx as usize)
+        .copied()
+        .unwrap_or(14)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CustomBlockStyle {
+    #[serde(default)]
+    pub font_family: String,
+    #[serde(default)]
+    pub font_size_px: u32,
+    #[serde(default)]
+    pub bold: Option<bool>,
+    #[serde(default)]
+    pub italic: Option<bool>,
+    #[serde(default)]
+    pub underline: Option<bool>,
+    #[serde(default)]
+    pub color: String,
+}
+
+impl CustomBlockStyle {
+    pub fn to_inline_css(&self) -> String {
+        let mut rules = Vec::new();
+        if !self.font_family.trim().is_empty() {
+            let safe_ff = crate::views::mail_viewer::safe_css_font_family(&self.font_family);
+            rules.push(format!("font-family: {safe_ff};"));
+        }
+        if self.font_size_px >= 8 && self.font_size_px <= 72 {
+            rules.push(format!("font-size: {}px;", self.font_size_px));
+        }
+        if let Some(bold) = self.bold {
+            rules.push(format!(
+                "font-weight: {};",
+                if bold { "bold" } else { "normal" }
+            ));
+        }
+        if let Some(italic) = self.italic {
+            rules.push(format!(
+                "font-style: {};",
+                if italic { "italic" } else { "normal" }
+            ));
+        }
+        if let Some(underline) = self.underline {
+            rules.push(format!(
+                "text-decoration: {};",
+                if underline { "underline" } else { "none" }
+            ));
+        }
+        let col = self.color.trim();
+        if !col.is_empty()
+            && !col.contains(';')
+            && !col.contains('{')
+            && !col.contains('}')
+            && !col.contains('<')
+        {
+            rules.push(format!("color: {col};"));
+        }
+        rules.join(" ")
+    }
+}
+
+fn custom_composer_styles_path() -> std::path::PathBuf {
+    glib::user_config_dir()
+        .join("meridian")
+        .join("composer_styles.json")
+}
+
+pub fn load_custom_composer_styles() -> std::collections::BTreeMap<String, CustomBlockStyle> {
+    let path = custom_composer_styles_path();
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_custom_composer_styles(
+    styles: &std::collections::BTreeMap<String, CustomBlockStyle>,
+) {
+    let path = custom_composer_styles_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(styles) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+pub fn build_custom_styles_css(
+    styles: &std::collections::BTreeMap<String, CustomBlockStyle>,
+) -> String {
+    let mut css = String::new();
+    for (tag, style) in styles {
+        if !matches!(tag.as_str(), "p" | "h1" | "h2" | "h3" | "pre") {
+            continue;
+        }
+        let inline = style.to_inline_css();
+        if !inline.is_empty() {
+            css.push_str(&format!("{tag} {{ {inline} }}\n"));
+        }
+    }
+    css
+}
+
+pub const MAX_RECENT_COMPOSER_COLORS: usize = 5;
+
+fn recent_composer_colors_path() -> std::path::PathBuf {
+    glib::user_config_dir()
+        .join("meridian")
+        .join("composer_recent_colors.json")
+}
+
+pub fn load_recent_composer_colors() -> Vec<String> {
+    let path = recent_composer_colors_path();
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_recent_composer_colors(colors: &[String]) {
+    let path = recent_composer_colors_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(colors) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+fn draw_cairo_rounded_rect(
+    cr: &gtk::cairo::Context,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    r: f64,
+) {
+    let deg = std::f64::consts::PI / 180.0;
+    cr.new_sub_path();
+    cr.arc(x + w - r, y + r, r, -90.0 * deg, 0.0 * deg);
+    cr.arc(x + w - r, y + h - r, r, 0.0 * deg, 90.0 * deg);
+    cr.arc(x + r, y + h - r, r, 90.0 * deg, 180.0 * deg);
+    cr.arc(x + r, y + r, r, 180.0 * deg, 270.0 * deg);
+    cr.close_path();
+}
+
+const SWATCH_BUTTON_SIZE: i32 = 24;
+const SWATCH_AREA_SIZE: i32 = 24;
+const SWATCH_OUTER_RADIUS: f64 = 10.0;
+
+fn build_cairo_color_swatch_button(color_css: &str, tooltip: &str) -> gtk::Button {
+    let btn = gtk::Button::builder()
+        .tooltip_text(tooltip)
+        .width_request(SWATCH_BUTTON_SIZE)
+        .height_request(SWATCH_BUTTON_SIZE)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .css_classes(["flat", "composer-color-swatch"])
+        .build();
+    set_accessible_label(&btn, tooltip);
+
+    let rgba = gtk::gdk::RGBA::parse(color_css)
+        .unwrap_or_else(|_| gtk::gdk::RGBA::new(0.21, 0.52, 0.89, 1.0));
+    let area = gtk::DrawingArea::builder()
+        .content_width(SWATCH_AREA_SIZE)
+        .content_height(SWATCH_AREA_SIZE)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .build();
+    area.set_draw_func(move |widget, cr, w, h| {
+        let cx = (w as f64) / 2.0;
+        let cy = (h as f64) / 2.0;
+        let selected = widget
+            .parent()
+            .is_some_and(|p| p.has_css_class("selected-swatch"));
+
+        if selected {
+            // FolderPropertiesDialog style: outer 2px accent ring + 1px inner gap + solid fill
+            cr.arc(cx, cy, SWATCH_OUTER_RADIUS - 2.3, 0.0, 2.0 * std::f64::consts::PI);
+            cr.set_source_rgba(
+                rgba.red() as f64,
+                rgba.green() as f64,
+                rgba.blue() as f64,
+                rgba.alpha().max(0.88) as f64,
+            );
+            let _ = cr.fill();
+
+            cr.arc(cx, cy, SWATCH_OUTER_RADIUS - 0.9, 0.0, 2.0 * std::f64::consts::PI);
+            cr.set_line_width(1.8);
+            cr.set_source_rgba(0.208, 0.518, 0.894, 1.0);
+            let _ = cr.stroke();
+        } else {
+            // Flat, borderless solid circle matching FolderPropertiesDialog
+            cr.arc(cx, cy, SWATCH_OUTER_RADIUS, 0.0, 2.0 * std::f64::consts::PI);
+            cr.set_source_rgba(
+                rgba.red() as f64,
+                rgba.green() as f64,
+                rgba.blue() as f64,
+                rgba.alpha().max(0.88) as f64,
+            );
+            let _ = cr.fill();
+        }
+    });
+    btn.set_child(Some(&area));
+    btn
+}
+
+fn build_cairo_reset_swatch_button(tooltip: &str) -> gtk::Button {
+    let btn = gtk::Button::builder()
+        .tooltip_text(tooltip)
+        .width_request(SWATCH_BUTTON_SIZE)
+        .height_request(SWATCH_BUTTON_SIZE)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .css_classes(["flat", "composer-color-swatch", "selected-swatch"])
+        .build();
+    set_accessible_label(&btn, tooltip);
+
+    let area = gtk::DrawingArea::builder()
+        .content_width(SWATCH_AREA_SIZE)
+        .content_height(SWATCH_AREA_SIZE)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .build();
+    area.set_draw_func(move |widget, cr, w, h| {
+        let cx = (w as f64) / 2.0;
+        let cy = (h as f64) / 2.0;
+        let selected = widget
+            .parent()
+            .is_some_and(|p| p.has_css_class("selected-swatch"));
+
+        if selected {
+            let stroke_w = 1.8;
+            cr.arc(
+                cx,
+                cy,
+                SWATCH_OUTER_RADIUS - stroke_w / 2.0,
+                0.0,
+                2.0 * std::f64::consts::PI,
+            );
+            cr.set_line_width(stroke_w);
+            cr.set_source_rgba(0.208, 0.518, 0.894, 1.0);
+            let _ = cr.stroke();
+        } else {
+            let stroke_w = 1.3;
+            cr.arc(
+                cx,
+                cy,
+                SWATCH_OUTER_RADIUS - stroke_w / 2.0,
+                0.0,
+                2.0 * std::f64::consts::PI,
+            );
+            cr.set_line_width(stroke_w);
+            cr.set_source_rgba(0.5, 0.5, 0.5, 0.42);
+            let _ = cr.stroke();
+        }
+
+        // Crisp "×" icon matching FolderPropertiesDialog's window-close-symbolic
+        let d = 3.1;
+        cr.set_line_cap(gtk::cairo::LineCap::Round);
+        cr.move_to(cx - d, cy - d);
+        cr.line_to(cx + d, cy + d);
+        cr.move_to(cx + d, cy - d);
+        cr.line_to(cx - d, cy + d);
+        cr.set_line_width(1.6);
+        cr.set_source_rgba(0.24, 0.22, 0.27, 0.90);
+        let _ = cr.stroke();
+    });
+    btn.set_child(Some(&area));
+    btn
+}
+
+fn build_cairo_custom_swatch_button(tooltip: &str) -> gtk::Button {
+    let btn = gtk::Button::builder()
+        .tooltip_text(tooltip)
+        .width_request(SWATCH_BUTTON_SIZE)
+        .height_request(SWATCH_BUTTON_SIZE)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .css_classes(["flat", "composer-color-swatch"])
+        .build();
+    set_accessible_label(&btn, tooltip);
+
+    let area = gtk::DrawingArea::builder()
+        .content_width(SWATCH_AREA_SIZE)
+        .content_height(SWATCH_AREA_SIZE)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .build();
+    area.set_draw_func(move |_, cr, w, h| {
+        let cx = (w as f64) / 2.0;
+        let cy = (h as f64) / 2.0;
+        let stroke_w = 1.3;
+        cr.arc(
+            cx,
+            cy,
+            SWATCH_OUTER_RADIUS - stroke_w / 2.0,
+            0.0,
+            2.0 * std::f64::consts::PI,
+        );
+        cr.set_line_width(stroke_w);
+        cr.set_source_rgba(0.5, 0.5, 0.5, 0.42);
+        let _ = cr.stroke();
+
+        // Crisp "+" symbol matching the "×" reset button weight
+        let arm = 3.6;
+        cr.set_line_cap(gtk::cairo::LineCap::Round);
+        cr.move_to(cx - arm, cy);
+        cr.line_to(cx + arm, cy);
+        cr.move_to(cx, cy - arm);
+        cr.line_to(cx, cy + arm);
+        cr.set_line_width(1.6);
+        cr.set_source_rgba(0.24, 0.22, 0.27, 0.90);
+        let _ = cr.stroke();
+    });
+    btn.set_child(Some(&area));
+    btn
+}
+
+fn select_swatch_in_row(row: &gtk::Box, active_btn: &gtk::Button) {
+    let mut child_opt = row.first_child();
+    while let Some(child) = child_opt {
+        if &child == active_btn.upcast_ref::<gtk::Widget>() {
+            child.add_css_class("selected-swatch");
+        } else {
+            child.remove_css_class("selected-swatch");
+        }
+        if let Some(btn) = child.downcast_ref::<gtk::Button>() {
+            if let Some(area) = btn.child() {
+                area.queue_draw();
+            }
+        }
+        child_opt = child.next_sibling();
+    }
+}
+
+pub const DROPDOWN_FORMAT_WIDTH: i32 = 80;
+pub const DROPDOWN_FONT_FAMILY_WIDTH: i32 = 96;
+pub const DROPDOWN_FONT_SIZE_WIDTH: i32 = 44;
 
 fn configure_fixed_width_dropdown(dropdown: &gtk::DropDown, width_request: i32, label_chars: i32) {
     dropdown.set_width_request(width_request);
@@ -138,6 +512,106 @@ fn configure_fixed_width_dropdown(dropdown: &gtk::DropDown, width_request: i32, 
     });
 
     dropdown.set_factory(Some(&button_factory));
+    dropdown.set_list_factory(Some(&list_factory));
+}
+
+fn configure_style_dropdown_list_preview(dropdown: &gtk::DropDown) {
+    let list_factory = gtk::SignalListItemFactory::new();
+    list_factory.connect_setup(|_, item| {
+        if let Some(list_item) = item.downcast_ref::<gtk::ListItem>() {
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(12)
+                .margin_start(6)
+                .margin_end(6)
+                .margin_top(2)
+                .margin_bottom(2)
+                .build();
+            let title = gtk::Label::builder()
+                .xalign(0.0)
+                .hexpand(true)
+                .single_line_mode(true)
+                .use_markup(true)
+                .build();
+            let accel = gtk::Label::builder()
+                .xalign(1.0)
+                .single_line_mode(true)
+                .css_classes(["dim-label", "caption"])
+                .build();
+            row.append(&title);
+            row.append(&accel);
+            list_item.set_child(Some(&row));
+        }
+    });
+    list_factory.connect_bind(|_, item| {
+        if let Some(list_item) = item.downcast_ref::<gtk::ListItem>() {
+            let pos = list_item.position();
+            let text = list_item
+                .item()
+                .and_downcast::<gtk::StringObject>()
+                .map(|s| s.string().to_string())
+                .unwrap_or_default();
+            let escaped = glib::markup_escape_text(&text);
+            let (markup, shortcut) = match pos {
+                1 => (format!("<b><span size=\"large\">{escaped}</span></b>"), "Ctrl+1"),
+                2 => (format!("<b><span size=\"medium\">{escaped}</span></b>"), "Ctrl+2"),
+                3 => (format!("<b>{escaped}</b>"), "Ctrl+3"),
+                4 => (format!("<tt>{escaped}</tt>"), "Ctrl+4"),
+                _ => (escaped.to_string(), "Ctrl+0"),
+            };
+            if let Some(row) = list_item.child().and_downcast::<gtk::Box>() {
+                if let Some(title) = row.first_child().and_downcast::<gtk::Label>() {
+                    title.set_markup(&markup);
+                }
+                if let Some(accel) = row.last_child().and_downcast::<gtk::Label>() {
+                    accel.set_label(shortcut);
+                }
+            }
+        }
+    });
+    dropdown.set_list_factory(Some(&list_factory));
+}
+
+fn configure_font_dropdown_list_preview(dropdown: &gtk::DropDown) {
+    let list_factory = gtk::SignalListItemFactory::new();
+    list_factory.connect_setup(|_, item| {
+        if let Some(list_item) = item.downcast_ref::<gtk::ListItem>() {
+            let label = gtk::Label::builder()
+                .xalign(0.0)
+                .single_line_mode(true)
+                .use_markup(true)
+                .margin_start(6)
+                .margin_end(6)
+                .margin_top(2)
+                .margin_bottom(2)
+                .build();
+            list_item.set_child(Some(&label));
+        }
+    });
+    list_factory.connect_bind(|_, item| {
+        if let Some(list_item) = item.downcast_ref::<gtk::ListItem>() {
+            let pos = list_item.position() as usize;
+            let text = list_item
+                .item()
+                .and_downcast::<gtk::StringObject>()
+                .map(|s| s.string().to_string())
+                .unwrap_or_default();
+            let escaped = glib::markup_escape_text(&text);
+            let markup = if pos == 0 {
+                escaped.to_string()
+            } else {
+                let face = COMPOSER_FONT_FAMILIES
+                    .get(pos)
+                    .map(|(name, _)| *name)
+                    .unwrap_or("Sans");
+                let escaped_face = glib::markup_escape_text(face);
+                format!("<span font_family=\"{escaped_face}\">{escaped}</span>")
+            };
+            if let Some(label) = list_item.child().and_downcast::<gtk::Label>() {
+                label.set_markup(&markup);
+            }
+        }
+    });
     dropdown.set_list_factory(Some(&list_factory));
 }
 
@@ -211,6 +685,14 @@ mod imp {
         pub web_context: RefCell<Option<webkit6::WebContext>>,
         pub format_toolbar: RefCell<Option<gtk::Box>>,
         pub format_toolbar_revealer: RefCell<Option<gtk::Revealer>>,
+        pub btn_typography: RefCell<Option<gtk::MenuButton>>,
+        pub typography_popover: RefCell<Option<gtk::Popover>>,
+        pub color_popover: RefCell<Option<gtk::Popover>>,
+        pub align_popover: RefCell<Option<gtk::Popover>>,
+        pub style_buttons: RefCell<Vec<gtk::Button>>,
+        pub font_family_buttons: RefCell<Vec<gtk::Button>>,
+        pub font_size_label: RefCell<Option<gtk::Label>>,
+        pub font_size_buttons: RefCell<Vec<(u32, gtk::Button)>>,
         pub dropdown_format: RefCell<Option<gtk::DropDown>>,
         pub dropdown_font_family: RefCell<Option<gtk::DropDown>>,
         pub dropdown_font_size: RefCell<Option<gtk::DropDown>>,
@@ -218,9 +700,22 @@ mod imp {
         pub btn_italic: RefCell<Option<gtk::Button>>,
         pub btn_underline: RefCell<Option<gtk::Button>>,
         pub btn_strikethrough: RefCell<Option<gtk::Button>>,
+        pub btn_color: RefCell<Option<gtk::MenuButton>>,
         pub btn_list: RefCell<Option<gtk::Button>>,
         pub btn_ordered_list: RefCell<Option<gtk::Button>>,
         pub btn_blockquote: RefCell<Option<gtk::Button>>,
+        pub btn_align: RefCell<Option<gtk::MenuButton>>,
+        pub btn_link: RefCell<Option<gtk::MenuButton>>,
+        pub link_popover: RefCell<Option<gtk::Popover>>,
+        pub btn_table: RefCell<Option<gtk::MenuButton>>,
+        pub table_popover: RefCell<Option<gtk::Popover>>,
+        pub btn_save_style: RefCell<Option<gtk::Button>>,
+        pub btn_reset_style: RefCell<Option<gtk::Button>>,
+        pub custom_styles: RefCell<std::collections::BTreeMap<String, CustomBlockStyle>>,
+        pub last_text_color: RefCell<String>,
+        pub color_indicator_bar: RefCell<Option<gtk::DrawingArea>>,
+        pub recent_colors: RefCell<Vec<String>>,
+        pub recent_color_row: RefCell<Option<gtk::Box>>,
         pub btn_undo: RefCell<Option<gtk::Button>>,
         pub btn_redo: RefCell<Option<gtk::Button>>,
         pub suppress_toolbar_sync: Cell<bool>,
@@ -238,6 +733,7 @@ mod imp {
         pub pending_scripts: RefCell<Vec<String>>,
         pub spell_checking_enabled: Cell<bool>,
         pub spell_checking_languages: RefCell<Vec<String>>,
+        pub auto_format_enabled: Cell<bool>,
         pub spelling_handler_ids: RefCell<Vec<glib::SignalHandlerId>>,
         pub files_dropped_callbacks: RefCell<CallbackList>,
         pub drag_motion_callbacks: RefCell<DragMotionCallbackList>,
@@ -1327,8 +1823,11 @@ impl HtmlEditor {
             r#"JSON.stringify({ body: (typeof window.meridianExtractPlainText === 'function' ? window.meridianExtractPlainText(document.body) : document.body.innerText), plain_text: true })"#
         } else {
             r#"(() => {
+                const customMap = window.__meridianCustomStyles || {};
+                const hasCustomStyles = Object.keys(customMap).length > 0;
                 const richSelector = 'b, strong, i, em, u, s, strike, del, font, a[href], img, ul, ol, li, blockquote, h1, h2, h3, h4, h5, h6, hr, pre, code, table, sup, sub, [style*="color"], [style*="font-"], [style*="text-align"], [style*="background"]';
-                const hasFormatting = document.body.querySelector(richSelector) !== null
+                const hasFormatting = hasCustomStyles
+                    || document.body.querySelector(richSelector) !== null
                     || Boolean(document.body.style && document.body.style.fontFamily);
                 if (!hasFormatting) {
                     const plain = typeof window.meridianExtractPlainText === 'function'
@@ -1337,6 +1836,15 @@ impl HtmlEditor {
                     return JSON.stringify({ body: plain, plain_text: true });
                 }
                 const clone = document.body.cloneNode(true);
+                for (const tag of ['p', 'h1', 'h2', 'h3', 'pre']) {
+                    const customCss = customMap[tag] || '';
+                    if (customCss) {
+                        clone.querySelectorAll(tag).forEach(el => {
+                            const existing = el.getAttribute('style') || '';
+                            el.setAttribute('style', existing ? (customCss + ' ' + existing) : customCss);
+                        });
+                    }
+                }
                 clone.querySelectorAll('p').forEach(p => {
                     const st = p.getAttribute('style') || '';
                     if (!/margin/i.test(st)) {
@@ -1589,6 +2097,395 @@ impl HtmlEditor {
         );
     }
 
+    pub fn toggle_strikethrough(&self) {
+        if self.plain_text_mode() {
+            return;
+        }
+        self.evaluate_or_queue(
+            "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('strikethrough', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string(),
+        );
+    }
+
+    pub fn clear_formatting(&self) {
+        if self.plain_text_mode() {
+            return;
+        }
+        self.evaluate_or_queue(
+            "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('removeFormat', false, null); if (typeof window.meridianUnwrapBlockquote === 'function') { while (window.meridianUnwrapBlockquote()) {} } document.execCommand('formatBlock', false, 'p'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string(),
+        );
+    }
+
+    pub fn copy_formatting(&self) {
+        if self.plain_text_mode() {
+            return;
+        }
+        self.evaluate_or_queue(
+            "if (typeof window.meridianCopyStyle === 'function') { window.meridianCopyStyle(); }".to_string(),
+        );
+    }
+
+    pub fn apply_copied_formatting(&self) {
+        if self.plain_text_mode() {
+            return;
+        }
+        self.evaluate_or_queue(
+            "if (typeof window.meridianApplyCopiedStyle === 'function') { window.meridianApplyCopiedStyle(); }".to_string(),
+        );
+    }
+
+    pub fn insert_plain_text_matching_style(&self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let Ok(encoded) = serde_json::to_string(text) else {
+            return;
+        };
+        self.evaluate_or_queue(format!(
+            "if (typeof window.meridianInsertPlainTextMatchStyle === 'function') {{ window.meridianInsertPlainTextMatchStyle({encoded}); }} else {{ if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('insertText', false, {encoded}); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); }}"
+        ));
+    }
+
+    /// Smart `Ctrl+Shift+V` handler:
+    /// - If the user copied formatting (`Ctrl+Shift+C`) and has a non-collapsed text selection,
+    ///   applies the copied formatting directly to the selected text without replacing it.
+    /// - Otherwise, reads plain text from the clipboard and inserts it matching the current
+    ///   cursor formatting (`insertText`), stripping all foreign HTML/backgrounds/fonts.
+    pub fn paste_or_apply_formatting(&self) {
+        if self.plain_text_mode() {
+            self.paste_plain_text_from_clipboard();
+            return;
+        }
+        let Some(web_view) = self.imp().web_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        if !self.imp().web_view_ready.get() {
+            self.apply_copied_formatting();
+            return;
+        }
+        let editor_weak = self.downgrade();
+        web_view.evaluate_javascript(
+            r#"(() => {
+                const sel = window.getSelection();
+                if (window.__meridianCopiedStyle && sel && !sel.isCollapsed && sel.toString().length > 0 && typeof window.meridianApplyCopiedStyle === 'function') {
+                    return window.meridianApplyCopiedStyle() ? 'applied' : 'paste';
+                }
+                return 'paste';
+            })()"#,
+            None,
+            None,
+            None::<&gio::Cancellable>,
+            move |result| {
+                let applied = result
+                    .map(|val| val.to_str() == "applied")
+                    .unwrap_or(false);
+                if !applied {
+                    if let Some(editor) = editor_weak.upgrade() {
+                        editor.paste_plain_text_from_clipboard();
+                    }
+                }
+            },
+        );
+    }
+
+    fn paste_plain_text_from_clipboard(&self) {
+        let clipboard = self.display().clipboard();
+        let editor_weak = self.downgrade();
+        clipboard.read_text_async(None::<&gio::Cancellable>, move |res| {
+            if let Ok(Some(text)) = res {
+                if !text.is_empty() {
+                    if let Some(editor) = editor_weak.upgrade() {
+                        editor.insert_plain_text_matching_style(&text);
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn open_link_popover(&self) {
+        if self.plain_text_mode() {
+            return;
+        }
+        if !self.is_format_toolbar_visible() {
+            self.set_format_toolbar_visible(true);
+        }
+        if let Some(popover) = self.imp().link_popover.borrow().as_ref() {
+            popover.popup();
+        } else if let Some(btn) = self.imp().btn_link.borrow().as_ref() {
+            btn.popup();
+        }
+    }
+
+    pub fn set_text_color(&self, color: &str) {
+        if self.plain_text_mode() {
+            return;
+        }
+        self.imp().last_text_color.replace(color.to_string());
+        if let Some(bar) = self.imp().color_indicator_bar.borrow().as_ref() {
+            bar.queue_draw();
+        }
+        if !color.is_empty() {
+            self.record_recent_color(color);
+        }
+        let script = if color.is_empty() {
+            "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('styleWithCSS', false, true); document.execCommand('foreColor', false, 'inherit'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string()
+        } else if let Ok(encoded) = serde_json::to_string(color) {
+            format!(
+                "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('styleWithCSS', false, true); document.execCommand('foreColor', false, {encoded}); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();"
+            )
+        } else {
+            return;
+        };
+        self.evaluate_or_queue(script);
+    }
+
+    pub fn record_recent_color(&self, color: &str) {
+        let trimmed = color.trim();
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("transparent")
+            || trimmed.eq_ignore_ascii_case("inherit")
+        {
+            return;
+        }
+        {
+            let mut recent = self.imp().recent_colors.borrow_mut();
+            recent.retain(|c| !c.eq_ignore_ascii_case(trimmed));
+            recent.insert(0, trimmed.to_string());
+            if recent.len() > MAX_RECENT_COMPOSER_COLORS {
+                recent.truncate(MAX_RECENT_COMPOSER_COLORS);
+            }
+            save_recent_composer_colors(&recent);
+        }
+        self.rebuild_recent_colors_row();
+    }
+
+    pub(crate) fn rebuild_recent_colors_row(&self) {
+        let Some(row) = self.imp().recent_color_row.borrow().clone() else {
+            return;
+        };
+        while let Some(child) = row.first_child() {
+            row.remove(&child);
+        }
+        let colors = self.imp().recent_colors.borrow().clone();
+        if colors.is_empty() {
+            row.set_visible(false);
+            return;
+        }
+        row.set_visible(true);
+        let pop_weak = self
+            .imp()
+            .color_popover
+            .borrow()
+            .as_ref()
+            .map(|p| p.downgrade());
+
+        for hex in colors.iter().take(MAX_RECENT_COMPOSER_COLORS) {
+            let swatch = build_cairo_color_swatch_button(hex, hex);
+            let editor_weak = self.downgrade();
+            let pop_w = pop_weak.clone();
+            let hex_str = hex.clone();
+            swatch.connect_clicked(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.set_text_color(&hex_str);
+                }
+                if let Some(pw) = pop_w.as_ref().and_then(|w| w.upgrade()) {
+                    pw.popdown();
+                }
+            });
+            row.append(&swatch);
+        }
+    }
+
+    pub fn apply_custom_styles_to_dom(&self) {
+        let styles = self.imp().custom_styles.borrow().clone();
+        let css = build_custom_styles_css(&styles);
+        let inline_map: std::collections::BTreeMap<String, String> = styles
+            .iter()
+            .filter_map(|(tag, st)| {
+                let inline = st.to_inline_css();
+                if inline.is_empty() {
+                    None
+                } else {
+                    Some((tag.clone(), inline))
+                }
+            })
+            .collect();
+        let Ok(css_json) = serde_json::to_string(&css) else {
+            return;
+        };
+        let Ok(map_json) = serde_json::to_string(&inline_map) else {
+            return;
+        };
+        self.evaluate_or_queue(format!(
+            "if (typeof window.meridianSetCustomStyles === 'function') {{ window.meridianSetCustomStyles({map_json}, {css_json}); }}"
+        ));
+    }
+
+    pub fn save_current_style_preset(&self) {
+        let tag = match self
+            .imp()
+            .dropdown_format
+            .borrow()
+            .as_ref()
+            .map(|dd| dd.selected())
+            .unwrap_or(0)
+        {
+            1 => "h1",
+            2 => "h2",
+            3 => "h3",
+            4 => "pre",
+            _ => "p",
+        };
+        let ff_idx = self
+            .imp()
+            .dropdown_font_family
+            .borrow()
+            .as_ref()
+            .map(|dd| dd.selected() as usize)
+            .unwrap_or(0);
+        let font_family = COMPOSER_FONT_FAMILIES
+            .get(ff_idx)
+            .map(|(_, css)| (*css).to_string())
+            .unwrap_or_else(|| "system-ui, sans-serif".to_string());
+        let fs_idx = self
+            .imp()
+            .dropdown_font_size
+            .borrow()
+            .as_ref()
+            .map(|dd| dd.selected())
+            .unwrap_or(0);
+        let font_size_px = {
+            let px = font_size_px_for_index(fs_idx);
+            if px == 0 {
+                AppSettings::try_new()
+                    .map(|s| s.mail_font_size())
+                    .unwrap_or(14)
+            } else {
+                px
+            }
+        };
+        let bold = self
+            .imp()
+            .btn_bold
+            .borrow()
+            .as_ref()
+            .map(|b| b.has_css_class("suggested-action"));
+        let italic = self
+            .imp()
+            .btn_italic
+            .borrow()
+            .as_ref()
+            .map(|b| b.has_css_class("suggested-action"));
+        let underline = self
+            .imp()
+            .btn_underline
+            .borrow()
+            .as_ref()
+            .map(|b| b.has_css_class("suggested-action"));
+        let color = self.imp().last_text_color.borrow().clone();
+
+        let preset = CustomBlockStyle {
+            font_family: font_family.clone(),
+            font_size_px,
+            bold,
+            italic,
+            underline,
+            color,
+        };
+        {
+            let mut styles = self.imp().custom_styles.borrow_mut();
+            styles.insert(tag.to_string(), preset);
+            save_custom_composer_styles(&styles);
+        }
+        if tag == "p" {
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_font_family(&font_family);
+                settings.set_mail_font_size(font_size_px);
+            }
+        }
+        self.apply_custom_styles_to_dom();
+    }
+
+    pub fn reset_current_style_preset(&self) {
+        let tag = match self
+            .imp()
+            .dropdown_format
+            .borrow()
+            .as_ref()
+            .map(|dd| dd.selected())
+            .unwrap_or(0)
+        {
+            1 => "h1",
+            2 => "h2",
+            3 => "h3",
+            4 => "pre",
+            _ => "p",
+        };
+        {
+            let mut styles = self.imp().custom_styles.borrow_mut();
+            styles.remove(tag);
+            save_custom_composer_styles(&styles);
+        }
+        self.apply_custom_styles_to_dom();
+    }
+
+    pub fn set_highlight_color(&self, color: &str) {
+        if self.plain_text_mode() {
+            return;
+        }
+        let target = if color.is_empty() { "transparent" } else { color };
+        let Ok(encoded) = serde_json::to_string(target) else {
+            return;
+        };
+        self.evaluate_or_queue(format!(
+            "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('styleWithCSS', false, true); document.execCommand('hiliteColor', false, {encoded}); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();"
+        ));
+    }
+
+    pub fn set_text_alignment(&self, command: &str) {
+        if self.plain_text_mode() {
+            return;
+        }
+        if !matches!(
+            command,
+            "justifyLeft" | "justifyCenter" | "justifyRight" | "justifyFull" | "indent" | "outdent"
+        ) {
+            return;
+        }
+        let script = if command == "indent" {
+            "if (typeof window.meridianIndent === 'function') { window.meridianIndent(); } else { document.execCommand('indent', false, null); }".to_string()
+        } else if command == "outdent" {
+            "if (typeof window.meridianOutdent === 'function') { window.meridianOutdent(); } else { document.execCommand('outdent', false, null); }".to_string()
+        } else {
+            format!(
+                "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('{command}', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();"
+            )
+        };
+        self.evaluate_or_queue(script);
+    }
+
+    pub fn insert_table(&self, rows: u32, cols: u32) {
+        if self.plain_text_mode() {
+            return;
+        }
+        let r = rows.clamp(1, 20);
+        let c = cols.clamp(1, 12);
+        self.evaluate_or_queue(format!(
+            "if (typeof window.meridianInsertTable === 'function') {{ window.meridianInsertTable({r}, {c}); }}"
+        ));
+    }
+
+    pub fn modify_table(&self, action: &str) {
+        if self.plain_text_mode() {
+            return;
+        }
+        if !matches!(action, "addRow" | "addCol" | "delRow" | "delCol" | "delTable") {
+            return;
+        }
+        self.evaluate_or_queue(format!(
+            "if (typeof window.meridianModifyTable === 'function') {{ window.meridianModifyTable('{action}'); }}"
+        ));
+    }
+
     pub fn forward_delete(&self) {
         self.evaluate_or_queue(
             "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('forwardDelete', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string(),
@@ -1644,6 +2541,13 @@ impl HtmlEditor {
                     dd.set_selected(fmt_idx);
                 }
             }
+            if let Some(btn_typo) = self.imp().btn_typography.borrow().as_ref() {
+                if fmt_idx != 0 {
+                    btn_typo.add_css_class("suggested-action");
+                } else {
+                    btn_typo.remove_css_class("suggested-action");
+                }
+            }
         }
         if let Some(ff) = parsed.get("font_family").and_then(|v| v.as_str()) {
             if !ff.is_empty() {
@@ -1656,16 +2560,7 @@ impl HtmlEditor {
             }
         }
         if let Some(fs) = parsed.get("font_size").and_then(|v| v.as_u64()) {
-            let fs_idx = match fs {
-                10 => 1,
-                12 => 2,
-                14 => 3,
-                16 => 4,
-                18 => 5,
-                24 => 6,
-                32 => 7,
-                _ => 0,
-            };
+            let fs_idx = font_size_index_for_px(fs as u32);
             if let Some(dd) = self.imp().dropdown_font_size.borrow().as_ref() {
                 if dd.selected() != fs_idx {
                     dd.set_selected(fs_idx);
@@ -1673,10 +2568,109 @@ impl HtmlEditor {
             }
         }
         self.imp().suppress_toolbar_sync.set(false);
+        self.sync_typography_popover_ui();
+    }
+
+    pub fn popdown_toolbar_popovers(&self) {
+        for pop_cell in [
+            &self.imp().typography_popover,
+            &self.imp().color_popover,
+            &self.imp().align_popover,
+            &self.imp().link_popover,
+            &self.imp().table_popover,
+        ] {
+            if let Some(pop) = pop_cell.borrow().as_ref() {
+                if pop.is_visible() {
+                    pop.popdown();
+                }
+            }
+        }
+    }
+
+    pub(crate) fn sync_typography_popover_ui(&self) {
+        let fmt_idx = self
+            .imp()
+            .dropdown_format
+            .borrow()
+            .as_ref()
+            .map(|dd| dd.selected() as usize)
+            .unwrap_or(0);
+        for (idx, btn) in self.imp().style_buttons.borrow().iter().enumerate() {
+            if idx == fmt_idx {
+                btn.add_css_class("active");
+            } else {
+                btn.remove_css_class("active");
+            }
+        }
+
+        let ff_idx = self
+            .imp()
+            .dropdown_font_family
+            .borrow()
+            .as_ref()
+            .map(|dd| dd.selected() as usize)
+            .unwrap_or(0);
+        for (idx, btn) in self.imp().font_family_buttons.borrow().iter().enumerate() {
+            if idx == ff_idx {
+                btn.add_css_class("active");
+            } else {
+                btn.remove_css_class("active");
+            }
+        }
+
+        let fs_idx = self
+            .imp()
+            .dropdown_font_size
+            .borrow()
+            .as_ref()
+            .map(|dd| dd.selected())
+            .unwrap_or(0);
+        let current_px = {
+            let px = font_size_px_for_index(fs_idx);
+            if px == 0 {
+                AppSettings::try_new()
+                    .map(|s| s.mail_font_size())
+                    .unwrap_or(14)
+            } else {
+                px
+            }
+        };
+        if let Some(lbl) = self.imp().font_size_label.borrow().as_ref() {
+            lbl.set_label(&format!("{current_px} px"));
+        }
+        for (px, btn) in self.imp().font_size_buttons.borrow().iter() {
+            if *px == current_px {
+                btn.add_css_class("active");
+            } else {
+                btn.remove_css_class("active");
+            }
+        }
     }
 
     pub fn spell_checking_enabled(&self) -> bool {
         self.imp().spell_checking_enabled.get()
+    }
+
+    pub fn auto_format_enabled(&self) -> bool {
+        self.imp().auto_format_enabled.get()
+    }
+
+    pub fn set_auto_format_enabled(&self, enabled: bool) {
+        self.imp().auto_format_enabled.set(enabled);
+        self.evaluate_or_queue(format!(
+            "window.__meridianAutoFormatEnabled = {};",
+            if enabled { "true" } else { "false" }
+        ));
+    }
+
+    pub fn set_block_format_index(&self, idx: u32) {
+        if self.plain_text_mode() {
+            return;
+        }
+        let clamped = idx.min(4);
+        if let Some(dd) = self.imp().dropdown_format.borrow().as_ref() {
+            dd.set_selected(clamped);
+        }
     }
 
     pub fn set_spell_checking_enabled(&self, enabled: bool) {
@@ -1911,7 +2905,7 @@ impl HtmlEditor {
                 tb.set_margin_bottom(2);
             } else {
                 tb.set_margin_start(16);
-                tb.set_margin_end(8);
+                tb.set_margin_end(16);
                 tb.set_margin_top(6);
                 tb.set_margin_bottom(6);
             }
@@ -2022,45 +3016,45 @@ impl HtmlEditor {
         // WYSIWYG Toolbar
         let toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
+            .spacing(2)
             .margin_start(16)
-            .margin_end(8)
+            .margin_end(16)
             .margin_top(6)
             .margin_bottom(6)
             .css_classes(["composer-format-toolbar"])
             .build();
 
         let btn_bold = gtk::Button::builder()
-            .icon_name("format-text-bold-symbolic")
+            .icon_name("meridian-format-bold-symbolic")
             .tooltip_text(gettext("Bold (Ctrl+B)"))
             .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_bold, &gettext("Bold"));
 
         let btn_italic = gtk::Button::builder()
-            .icon_name("format-text-italic-symbolic")
+            .icon_name("meridian-format-italic-symbolic")
             .tooltip_text(gettext("Italic (Ctrl+I)"))
             .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_italic, &gettext("Italic"));
 
         let btn_underline = gtk::Button::builder()
-            .icon_name("format-text-underline-symbolic")
+            .icon_name("meridian-format-underline-symbolic")
             .tooltip_text(gettext("Underline (Ctrl+U)"))
             .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_underline, &gettext("Underline"));
 
         let btn_strikethrough = gtk::Button::builder()
-            .icon_name("format-text-strikethrough-symbolic")
-            .tooltip_text(gettext("Strikethrough"))
+            .icon_name("meridian-format-strikethrough-symbolic")
+            .tooltip_text(gettext("Strikethrough (Ctrl+Shift+X)"))
             .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_strikethrough, &gettext("Strikethrough"));
 
         let btn_clear = gtk::Button::builder()
             .icon_name("edit-clear-symbolic")
-            .tooltip_text(gettext("Clear formatting"))
+            .tooltip_text(gettext("Clear formatting (Ctrl+\\)"))
             .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_clear, &gettext("Clear formatting"));
@@ -2070,19 +3064,21 @@ impl HtmlEditor {
             gettext("Heading 1"),
             gettext("Heading 2"),
             gettext("Heading 3"),
-            gettext("Preformatted"),
+            gettext("Code"),
         ];
         let format_strs: Vec<&str> = format_labels.iter().map(|s| s.as_str()).collect();
         let dropdown_format = gtk::DropDown::from_strings(&format_strs);
         dropdown_format.set_valign(gtk::Align::Center);
-        configure_fixed_width_dropdown(&dropdown_format, DROPDOWN_FORMAT_WIDTH, 12);
+        dropdown_format.set_tooltip_text(Some(&gettext("Paragraph style")));
+        configure_fixed_width_dropdown(&dropdown_format, DROPDOWN_FORMAT_WIDTH, 7);
+        configure_style_dropdown_list_preview(&dropdown_format);
         set_accessible_label(&dropdown_format, &gettext("Paragraph format"));
 
         let font_family_labels: Vec<String> = COMPOSER_FONT_FAMILIES
             .iter()
             .map(|(label, _)| {
                 if *label == "System Default" {
-                    gettext("Default Font")
+                    gettext("Default")
                 } else {
                     (*label).to_string()
                 }
@@ -2092,39 +3088,471 @@ impl HtmlEditor {
         let dropdown_font_family = gtk::DropDown::from_strings(&font_family_strs);
         dropdown_font_family.set_valign(gtk::Align::Center);
         dropdown_font_family.set_tooltip_text(Some(&gettext("Font Family")));
-        configure_fixed_width_dropdown(&dropdown_font_family, DROPDOWN_FONT_FAMILY_WIDTH, 15);
+        configure_fixed_width_dropdown(&dropdown_font_family, DROPDOWN_FONT_FAMILY_WIDTH, 9);
+        configure_font_dropdown_list_preview(&dropdown_font_family);
         set_accessible_label(&dropdown_font_family, &gettext("Font family"));
         if let Some(settings) = AppSettings::try_new() {
             dropdown_font_family.set_selected(font_family_index_for_css(&settings.mail_font_family()));
         }
 
-        let font_size_labels = [
-            "Size",
-            "10 px",
-            "12 px",
-            "14 px",
-            "16 px",
-            "18 px",
-            "24 px",
-            "32 px",
-        ];
+        let font_size_strings: Vec<String> =
+            COMPOSER_FONT_SIZES.iter().map(|px| px.to_string()).collect();
+        let font_size_labels: Vec<&str> = font_size_strings.iter().map(String::as_str).collect();
         let dropdown_font_size = gtk::DropDown::from_strings(&font_size_labels);
         dropdown_font_size.set_valign(gtk::Align::Center);
         dropdown_font_size.set_tooltip_text(Some(&gettext("Font Size")));
-        configure_fixed_width_dropdown(&dropdown_font_size, DROPDOWN_FONT_SIZE_WIDTH, 6);
+        configure_fixed_width_dropdown(&dropdown_font_size, DROPDOWN_FONT_SIZE_WIDTH, 2);
         set_accessible_label(&dropdown_font_size, &gettext("Font size"));
         if let Some(settings) = AppSettings::try_new() {
-            let size_idx = match settings.mail_font_size() {
-                10 => 1,
-                12 => 2,
-                14 => 3,
-                16 => 4,
-                18 => 5,
-                24 => 6,
-                32 => 7,
-                _ => 0,
-            };
-            dropdown_font_size.set_selected(size_idx);
+            dropdown_font_size.set_selected(font_size_index_for_px(settings.mail_font_size()));
+        }
+
+        // Load user-customized block styles (Normal, H1, H2, H3, Preformatted)
+        let initial_custom_styles = load_custom_composer_styles();
+        self.imp().custom_styles.replace(initial_custom_styles);
+
+        let typography_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        let btn_save_style = gtk::Button::builder()
+            .label(gettext("Update style to match selection"))
+            .tooltip_text(gettext(
+                "Save current font, size, and formatting as default for the selected style",
+            ))
+            .css_classes(["flat", "caption"])
+            .build();
+        set_accessible_label(&btn_save_style, &gettext("Update style to match selection"));
+        let btn_reset_style = gtk::Button::builder()
+            .label(gettext("Reset style to default"))
+            .tooltip_text(gettext("Reset selected style to default"))
+            .css_classes(["flat", "caption"])
+            .build();
+        set_accessible_label(&btn_reset_style, &gettext("Reset style to default"));
+        typography_box.append(&btn_save_style);
+        typography_box.append(&btn_reset_style);
+
+        let typography_popover = gtk::Popover::builder()
+            .child(&typography_box)
+            .autohide(true)
+            .build();
+        {
+            let editor_weak = self.downgrade();
+            let pop_weak = typography_popover.downgrade();
+            btn_save_style.connect_clicked(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.save_current_style_preset();
+                }
+                if let Some(p) = pop_weak.upgrade() {
+                    p.popdown();
+                }
+            });
+        }
+        {
+            let editor_weak = self.downgrade();
+            let pop_weak = typography_popover.downgrade();
+            btn_reset_style.connect_clicked(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.reset_current_style_preset();
+                }
+                if let Some(p) = pop_weak.upgrade() {
+                    p.popdown();
+                }
+            });
+        }
+        self.imp().btn_save_style.replace(Some(btn_save_style));
+        self.imp().btn_reset_style.replace(Some(btn_reset_style));
+        self.imp()
+            .typography_popover
+            .replace(Some(typography_popover.clone()));
+
+        let btn_typography = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .tooltip_text(gettext("Style defaults (Update or reset current style)"))
+            .popover(&typography_popover)
+            .css_classes(["flat", "composer-style-menu-btn"])
+            .build();
+        set_accessible_label(&btn_typography, &gettext("Style defaults"));
+
+        // Minimalist Native Libadwaita Color Popover (Circular GNOME HIG Swatches, Single-View)
+        let initial_recent_colors = load_recent_composer_colors();
+        self.imp().recent_colors.replace(initial_recent_colors);
+
+        let color_popover_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(8)
+            .build();
+        let color_popover = gtk::Popover::builder()
+            .child(&color_popover_box)
+            .autohide(true)
+            .build();
+
+        color_popover_box.append(
+            &gtk::Label::builder()
+                .label(gettext("Text color"))
+                .halign(gtk::Align::Start)
+                .margin_start(2)
+                .css_classes(["caption-heading", "dim-label"])
+                .build(),
+        );
+
+        let text_color_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Start)
+            .build();
+
+        let btn_default_color = build_cairo_reset_swatch_button(&gettext("Default color"));
+        {
+            let editor_weak = self.downgrade();
+            let popover_weak = color_popover.downgrade();
+            let row_clone = text_color_row.clone();
+            btn_default_color.connect_clicked(move |btn| {
+                select_swatch_in_row(&row_clone, btn);
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.set_text_color("");
+                }
+                if let Some(p) = popover_weak.upgrade() {
+                    p.popdown();
+                }
+            });
+        }
+        text_color_row.append(&btn_default_color);
+
+        let gnome_text_colors: &[(&str, &str)] = &[
+            ("#3584e4", "Blue"),
+            ("#2190a4", "Teal"),
+            ("#3a944a", "Green"),
+            ("#c88800", "Yellow"),
+            ("#ed5b00", "Orange"),
+            ("#e62d42", "Red"),
+            ("#9141ac", "Purple"),
+        ];
+        for (hex, name) in gnome_text_colors {
+            let swatch = build_cairo_color_swatch_button(hex, &gettext(*name));
+            let editor_weak = self.downgrade();
+            let popover_weak = color_popover.downgrade();
+            let row_clone = text_color_row.clone();
+            let hex_str = (*hex).to_string();
+            swatch.connect_clicked(move |btn| {
+                select_swatch_in_row(&row_clone, btn);
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.set_text_color(&hex_str);
+                }
+                if let Some(p) = popover_weak.upgrade() {
+                    p.popdown();
+                }
+            });
+            text_color_row.append(&swatch);
+        }
+
+        let btn_custom_color = build_cairo_custom_swatch_button(&gettext("Custom color…"));
+        {
+            let editor_weak = self.downgrade();
+            let popover_weak = color_popover.downgrade();
+            btn_custom_color.connect_clicked(move |_| {
+                if let Some(p) = popover_weak.upgrade() {
+                    p.popdown();
+                }
+                let Some(editor) = editor_weak.upgrade() else {
+                    return;
+                };
+                let dialog = gtk::ColorDialog::builder()
+                    .title(gettext("Choose Text Color"))
+                    .modal(true)
+                    .with_alpha(false)
+                    .build();
+                let parent_win = editor
+                    .root()
+                    .and_then(|r| r.downcast::<gtk::Window>().ok());
+                let editor_weak_inner = editor.downgrade();
+                dialog.choose_rgba(
+                    parent_win.as_ref(),
+                    None::<&gtk::gdk::RGBA>,
+                    None::<&gio::Cancellable>,
+                    move |res| {
+                        if let Ok(rgba) = res {
+                            let r = (rgba.red().clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let g = (rgba.green().clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let b = (rgba.blue().clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let hex = format!("#{r:02x}{g:02x}{b:02x}");
+                            if let Some(ed) = editor_weak_inner.upgrade() {
+                                ed.set_text_color(&hex);
+                            }
+                        }
+                    },
+                );
+            });
+        }
+        text_color_row.append(&btn_custom_color);
+        color_popover_box.append(&text_color_row);
+
+        let recent_color_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Start)
+            .visible(false)
+            .build();
+        color_popover_box.append(&recent_color_row);
+        self.imp()
+            .recent_color_row
+            .replace(Some(recent_color_row.clone()));
+
+        color_popover_box.append(
+            &gtk::Label::builder()
+                .label(gettext("Background color"))
+                .halign(gtk::Align::Start)
+                .margin_start(2)
+                .margin_top(4)
+                .css_classes(["caption-heading", "dim-label"])
+                .build(),
+        );
+
+        let highlight_color_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Start)
+            .build();
+
+        let btn_no_highlight = build_cairo_reset_swatch_button(&gettext("No background color"));
+        {
+            let editor_weak = self.downgrade();
+            let popover_weak = color_popover.downgrade();
+            let row_clone = highlight_color_row.clone();
+            btn_no_highlight.connect_clicked(move |btn| {
+                select_swatch_in_row(&row_clone, btn);
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.set_highlight_color("transparent");
+                }
+                if let Some(p) = popover_weak.upgrade() {
+                    p.popdown();
+                }
+            });
+        }
+        highlight_color_row.append(&btn_no_highlight);
+
+        let highlight_colors: &[(&str, &str)] = &[
+            ("rgba(153, 193, 241, 0.70)", "Blue"),
+            ("rgba(143, 240, 212, 0.70)", "Teal"),
+            ("rgba(143, 240, 164, 0.75)", "Green"),
+            ("rgba(249, 240, 107, 0.80)", "Yellow"),
+            ("rgba(255, 190, 111, 0.75)", "Orange"),
+            ("rgba(246, 97, 81, 0.55)", "Pink"),
+            ("rgba(220, 138, 221, 0.65)", "Purple"),
+        ];
+        for (rgba, name) in highlight_colors {
+            let swatch = build_cairo_color_swatch_button(rgba, &gettext(*name));
+            let editor_weak = self.downgrade();
+            let popover_weak = color_popover.downgrade();
+            let row_clone = highlight_color_row.clone();
+            let rgba_str = (*rgba).to_string();
+            swatch.connect_clicked(move |btn| {
+                select_swatch_in_row(&row_clone, btn);
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.set_highlight_color(&rgba_str);
+                }
+                if let Some(p) = popover_weak.upgrade() {
+                    p.popdown();
+                }
+            });
+            highlight_color_row.append(&swatch);
+        }
+
+        let btn_custom_bg_color =
+            build_cairo_custom_swatch_button(&gettext("Custom background color…"));
+        {
+            let editor_weak = self.downgrade();
+            let popover_weak = color_popover.downgrade();
+            btn_custom_bg_color.connect_clicked(move |btn| {
+                if let Some(p) = popover_weak.upgrade() {
+                    p.popdown();
+                }
+                let Some(editor) = editor_weak.upgrade() else {
+                    return;
+                };
+                let window = btn
+                    .root()
+                    .and_then(|r| r.downcast::<gtk::Window>().ok());
+                let dialog = gtk::ColorDialog::builder()
+                    .title(gettext("Select Background Color"))
+                    .modal(true)
+                    .with_alpha(true)
+                    .build();
+                let ed_weak = editor.downgrade();
+                dialog.choose_rgba(
+                    window.as_ref(),
+                    None::<&gtk::gdk::RGBA>,
+                    None::<&gio::Cancellable>,
+                    move |res| {
+                        if let Ok(rgba) = res {
+                            let r = (rgba.red().clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let g = (rgba.green().clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let b = (rgba.blue().clamp(0.0, 1.0) * 255.0).round() as u8;
+                            let a = rgba.alpha().clamp(0.15, 1.0);
+                            let css_color = if (a - 1.0).abs() < 0.01 {
+                                format!("#{:02x}{:02x}{:02x}", r, g, b)
+                            } else {
+                                format!("rgba({}, {}, {}, {:.2})", r, g, b, a)
+                            };
+                            if let Some(ed) = ed_weak.upgrade() {
+                                ed.set_highlight_color(&css_color);
+                            }
+                        }
+                    },
+                );
+            });
+        }
+        highlight_color_row.append(&btn_custom_bg_color);
+        color_popover_box.append(&highlight_color_row);
+
+        self.imp().color_popover.replace(Some(color_popover.clone()));
+        self.rebuild_recent_colors_row();
+
+        // Standard "A" with live color bar underneath for immediate recognition
+        let color_btn_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(1)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+        let color_btn_label = gtk::Label::builder()
+            .label("A")
+            .css_classes(["composer-color-btn-glyph"])
+            .build();
+        let color_indicator_bar = gtk::DrawingArea::builder()
+            .content_width(14)
+            .content_height(3)
+            .halign(gtk::Align::Center)
+            .build();
+        {
+            let editor_weak = self.downgrade();
+            color_indicator_bar.set_draw_func(move |_, cr, w, h| {
+                let hex = editor_weak
+                    .upgrade()
+                    .map(|ed| ed.imp().last_text_color.borrow().clone())
+                    .unwrap_or_default();
+                let color_str = if hex.trim().is_empty() {
+                    "#3584e4"
+                } else {
+                    hex.trim()
+                };
+                if let Ok(rgba) = gtk::gdk::RGBA::parse(color_str) {
+                    cr.set_source_rgba(
+                        rgba.red() as f64,
+                        rgba.green() as f64,
+                        rgba.blue() as f64,
+                        rgba.alpha() as f64,
+                    );
+                    draw_cairo_rounded_rect(cr, 0.0, 0.0, w as f64, h as f64, 1.5);
+                    let _ = cr.fill();
+                }
+            });
+        }
+        self.imp()
+            .color_indicator_bar
+            .replace(Some(color_indicator_bar.clone()));
+        color_btn_content.append(&color_btn_label);
+        color_btn_content.append(&color_indicator_bar);
+
+        let btn_color = gtk::MenuButton::builder()
+            .child(&color_btn_content)
+            .tooltip_text(gettext("Text & background color"))
+            .popover(&color_popover)
+            .css_classes(["flat"])
+            .build();
+        set_accessible_label(&btn_color, &gettext("Text & background color"));
+
+        // Compact Alignment & Indentation Popover
+        let align_popover_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        let align_popover = gtk::Popover::builder()
+            .child(&align_popover_box)
+            .autohide(true)
+            .build();
+        self.imp().align_popover.replace(Some(align_popover.clone()));
+
+        let align_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(["linked"])
+            .build();
+        for (icon, tip, cmd) in [
+            ("format-justify-left-symbolic", "Align left", "justifyLeft"),
+            ("format-justify-center-symbolic", "Align center", "justifyCenter"),
+            ("format-justify-right-symbolic", "Align right", "justifyRight"),
+            ("format-justify-fill-symbolic", "Justify", "justifyFull"),
+        ] {
+            let b = gtk::Button::builder()
+                .icon_name(icon)
+                .tooltip_text(gettext(tip))
+                .css_classes(["flat"])
+                .build();
+            set_accessible_label(&b, &gettext(tip));
+            let editor_weak = self.downgrade();
+            let popover_weak = align_popover.downgrade();
+            let cmd_str = cmd.to_string();
+            b.connect_clicked(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.set_text_alignment(&cmd_str);
+                }
+                if let Some(p) = popover_weak.upgrade() {
+                    p.popdown();
+                }
+            });
+            align_group.append(&b);
+        }
+
+        align_popover_box.append(&align_group);
+
+        let btn_align = gtk::MenuButton::builder()
+            .icon_name("format-justify-left-symbolic")
+            .tooltip_text(gettext("Alignment"))
+            .popover(&align_popover)
+            .css_classes(["flat"])
+            .build();
+        set_accessible_label(&btn_align, &gettext("Alignment"));
+
+        let btn_outdent = gtk::Button::builder()
+            .icon_name("format-indent-less-symbolic")
+            .tooltip_text(gettext("Decrease indent (Shift+Tab)"))
+            .css_classes(["flat"])
+            .build();
+        set_accessible_label(&btn_outdent, &gettext("Decrease indent"));
+        {
+            let editor_weak = self.downgrade();
+            btn_outdent.connect_clicked(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.set_text_alignment("outdent");
+                }
+            });
+        }
+
+        let btn_indent = gtk::Button::builder()
+            .icon_name("format-indent-more-symbolic")
+            .tooltip_text(gettext("Increase indent (Tab)"))
+            .css_classes(["flat"])
+            .build();
+        set_accessible_label(&btn_indent, &gettext("Increase indent"));
+        {
+            let editor_weak = self.downgrade();
+            btn_indent.connect_clicked(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.set_text_alignment("indent");
+                }
+            });
         }
 
         let btn_list = gtk::Button::builder()
@@ -2142,7 +3570,7 @@ impl HtmlEditor {
         set_accessible_label(&btn_ordered_list, &gettext("Numbered list"));
 
         let btn_blockquote = gtk::Button::builder()
-            .icon_name("format-text-direction-ltr-symbolic")
+            .icon_name("meridian-format-quote-symbolic")
             .tooltip_text(gettext("Block quote"))
             .css_classes(["flat"])
             .build();
@@ -2189,26 +3617,111 @@ impl HtmlEditor {
 
         let link_popover = gtk::Popover::builder().child(&link_popover_box).build();
         let btn_link = gtk::MenuButton::builder()
-            .icon_name("insert-link-symbolic")
-            .tooltip_text(gettext("Insert hyperlink"))
+            .icon_name("meridian-insert-link-symbolic")
+            .tooltip_text(gettext("Insert hyperlink (Ctrl+K)"))
             .popover(&link_popover)
             .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_link, &gettext("Insert hyperlink"));
 
         let btn_rule = gtk::Button::builder()
-            .icon_name("insert-object-symbolic")
+            .icon_name("meridian-horizontal-rule-symbolic")
             .tooltip_text(gettext("Insert horizontal rule"))
             .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_rule, &gettext("Insert horizontal rule"));
 
         let btn_image = gtk::Button::builder()
-            .icon_name("insert-image-symbolic")
+            .icon_name("meridian-insert-image-symbolic")
             .tooltip_text(gettext("Insert image"))
             .css_classes(["flat"])
             .build();
         set_accessible_label(&btn_image, &gettext("Insert image"));
+
+        // Minimalist Table Picker Popover (5x5 Grid; Row/Col/+/- controls live interactively on the table in the composer)
+        let table_popover_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        let table_popover = gtk::Popover::builder()
+            .child(&table_popover_box)
+            .autohide(true)
+            .build();
+
+        let table_size_label = gtk::Label::builder()
+            .label("3 × 3")
+            .halign(gtk::Align::Center)
+            .css_classes(["caption-heading", "dim-label"])
+            .build();
+        table_popover_box.append(&table_size_label);
+
+        let table_grid = gtk::Grid::builder()
+            .row_spacing(3)
+            .column_spacing(3)
+            .margin_top(2)
+            .margin_bottom(2)
+            .margin_start(2)
+            .margin_end(2)
+            .halign(gtk::Align::Center)
+            .build();
+
+        let mut grid_cells: Vec<(usize, usize, gtk::Button)> = Vec::with_capacity(25);
+        for r in 0..5usize {
+            for c in 0..5usize {
+                let cell_btn = gtk::Button::builder()
+                    .tooltip_text(format!("{} × {}", r + 1, c + 1))
+                    .css_classes(["flat", "composer-table-grid-cell"])
+                    .build();
+                if r < 3 && c < 3 {
+                    cell_btn.add_css_class("active");
+                }
+                table_grid.attach(&cell_btn, c as i32, r as i32, 1, 1);
+                grid_cells.push((r, c, cell_btn));
+            }
+        }
+        let shared_cells = std::rc::Rc::new(grid_cells);
+        for (r, c, cell_btn) in shared_cells.iter() {
+            let r_val = *r;
+            let c_val = *c;
+            let cells_for_hover = shared_cells.clone();
+            let lbl_for_hover = table_size_label.clone();
+            let motion = gtk::EventControllerMotion::new();
+            motion.connect_enter(move |_, _, _| {
+                lbl_for_hover.set_label(&format!("{} × {}", r_val + 1, c_val + 1));
+                for (cr, cc, b) in cells_for_hover.iter() {
+                    if *cr <= r_val && *cc <= c_val {
+                        b.add_css_class("active");
+                    } else {
+                        b.remove_css_class("active");
+                    }
+                }
+            });
+            cell_btn.add_controller(motion);
+
+            let editor_weak = self.downgrade();
+            let pop_weak = table_popover.downgrade();
+            cell_btn.connect_clicked(move |_| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    editor.insert_table((r_val + 1) as u32, (c_val + 1) as u32);
+                }
+                if let Some(p) = pop_weak.upgrade() {
+                    p.popdown();
+                }
+            });
+        }
+        table_popover_box.append(&table_grid);
+
+        let btn_table = gtk::MenuButton::builder()
+            .icon_name("meridian-insert-table-symbolic")
+            .tooltip_text(gettext("Insert table"))
+            .popover(&table_popover)
+            .css_classes(["flat"])
+            .build();
+        set_accessible_label(&btn_table, &gettext("Insert table"));
 
         let btn_undo = gtk::Button::builder()
             .icon_name("edit-undo-symbolic")
@@ -2224,6 +3737,9 @@ impl HtmlEditor {
             .build();
         set_accessible_label(&btn_redo, &gettext("Redo"));
 
+        toolbar.append(&btn_undo);
+        toolbar.append(&btn_redo);
+        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         toolbar.append(&dropdown_format);
         toolbar.append(&dropdown_font_family);
         toolbar.append(&dropdown_font_size);
@@ -2232,19 +3748,21 @@ impl HtmlEditor {
         toolbar.append(&btn_italic);
         toolbar.append(&btn_underline);
         toolbar.append(&btn_strikethrough);
-        toolbar.append(&btn_clear);
+        toolbar.append(&btn_color);
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        toolbar.append(&btn_align);
         toolbar.append(&btn_list);
         toolbar.append(&btn_ordered_list);
-        toolbar.append(&btn_blockquote);
+        toolbar.append(&btn_outdent);
+        toolbar.append(&btn_indent);
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        toolbar.append(&btn_blockquote);
         toolbar.append(&btn_link);
         toolbar.append(&btn_image);
+        toolbar.append(&btn_table);
         toolbar.append(&btn_rule);
-        toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        toolbar.append(&btn_undo);
-        toolbar.append(&btn_redo);
 
+        self.imp().btn_typography.replace(Some(btn_typography));
         self.imp().dropdown_format.replace(Some(dropdown_format.clone()));
         self.imp()
             .dropdown_font_family
@@ -2260,6 +3778,7 @@ impl HtmlEditor {
         self.imp()
             .btn_strikethrough
             .replace(Some(btn_strikethrough.clone()));
+        self.imp().btn_color.replace(Some(btn_color));
         self.imp().btn_list.replace(Some(btn_list.clone()));
         self.imp()
             .btn_ordered_list
@@ -2267,6 +3786,11 @@ impl HtmlEditor {
         self.imp()
             .btn_blockquote
             .replace(Some(btn_blockquote.clone()));
+        self.imp().btn_align.replace(Some(btn_align));
+        self.imp().btn_link.replace(Some(btn_link));
+        self.imp().link_popover.replace(Some(link_popover.clone()));
+        self.imp().btn_table.replace(Some(btn_table));
+        self.imp().table_popover.replace(Some(table_popover));
         self.imp().btn_undo.replace(Some(btn_undo.clone()));
         self.imp().btn_redo.replace(Some(btn_redo.clone()));
         self.imp().format_toolbar.replace(Some(toolbar.clone()));
@@ -2501,13 +4025,24 @@ impl HtmlEditor {
             false
         });
 
+        let font_family_raw = AppSettings::try_new()
+            .as_ref()
+            .map(AppSettings::mail_font_family)
+            .unwrap_or_else(|| "system-ui, sans-serif".to_string());
+        let font_family = crate::views::mail_viewer::safe_css_font_family(&font_family_raw);
+        let font_size = AppSettings::try_new()
+            .as_ref()
+            .map(AppSettings::mail_font_size)
+            .unwrap_or(14);
+
         if let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
             let desktop_font = crate::views::mail_viewer::detect_desktop_font_family();
             let desktop_mono = crate::views::mail_viewer::detect_desktop_monospace_font_family();
-            settings.set_default_font_family(&desktop_font);
-            settings.set_sans_serif_font_family(&desktop_font);
-            settings.set_serif_font_family(&desktop_font);
+            let primary_font = primary_webkit_font_family(&font_family_raw, &desktop_font);
+            settings.set_default_font_family(&primary_font);
+            settings.set_sans_serif_font_family(&primary_font);
             settings.set_monospace_font_family(&desktop_mono);
+            settings.set_default_font_size(font_size.clamp(8, 48));
             settings.set_enable_javascript(true);
             settings.set_auto_load_images(true);
             settings.set_enable_developer_extras(false);
@@ -2522,16 +4057,6 @@ impl HtmlEditor {
             settings.set_enable_html5_database(false);
             settings.set_enable_offline_web_application_cache(false);
         }
-
-        let font_family_raw = AppSettings::try_new()
-            .as_ref()
-            .map(AppSettings::mail_font_family)
-            .unwrap_or_else(|| "system-ui, sans-serif".to_string());
-        let font_family = crate::views::mail_viewer::safe_css_font_family(&font_family_raw);
-        let font_size = AppSettings::try_new()
-            .as_ref()
-            .map(AppSettings::mail_font_size)
-            .unwrap_or(14);
         let is_dark_initial = adw::StyleManager::default().is_dark()
             || AppSettings::try_new()
                 .map(|s| s.force_dark_mode())
@@ -2541,17 +4066,38 @@ impl HtmlEditor {
         } else {
             "meridian-light"
         };
+        let initial_custom_styles_map = self.imp().custom_styles.borrow().clone();
+        let initial_custom_css = build_custom_styles_css(&initial_custom_styles_map);
+        let initial_custom_inline_map: std::collections::BTreeMap<String, String> =
+            initial_custom_styles_map
+                .iter()
+                .filter_map(|(tag, st)| {
+                    let inline = st.to_inline_css();
+                    if inline.is_empty() {
+                        None
+                    } else {
+                        Some((tag.clone(), inline))
+                    }
+                })
+                .collect();
+        let initial_custom_map_json =
+            serde_json::to_string(&initial_custom_inline_map).unwrap_or_else(|_| "{}".to_string());
         let initial_html = format!(
             concat!(
                 "<!DOCTYPE html><html class=\"{}\"><head><style>",
                 "html, body {{ font-family: {}; font-size: {}px; line-height: 1.35; color: #222; margin: 12px; background-color: transparent; }}",
                 "p {{ margin: 0; }}",
-                "p.MsoNormal, li.MsoNormal, div.MsoNormal, blockquote p {{ margin: 0; line-height: 1.15; }}",
+                "p.MsoNormal, li.MsoNormal, div.MsoNormal, blockquote p {{ margin: 0; line-height: 1.35; min-height: 1.35em; }}",
                 "img {{ max-width: 100%; height: auto; cursor: grab; -webkit-user-drag: element; }}",
                 "img:active {{ cursor: grabbing; }}",
                 "a {{ color: #1a73e8; text-decoration: underline; cursor: pointer; }}",
-                "blockquote, blockquote[type=\"cite\"] {{ margin: 4px 0 4px 0.8ex; border-left: 2px solid #729fcf; padding-left: 1ex; }}",
+                "blockquote, blockquote[type=\"cite\"] {{ margin: 4px 0 4px 4px; border-left: 3px solid #3584e4; padding: 2px 0 2px 12px; }}",
+                "blockquote + blockquote {{ margin-top: 0; padding-top: 2px; }}",
                 "blockquote > :first-child {{ margin-top: 0; }}",
+                "code {{ font-family: monospace; background-color: rgba(128, 128, 128, 0.14); padding: 1px 4px; border-radius: 4px; font-size: 0.92em; }}",
+                "pre {{ font-family: monospace; background-color: rgba(128, 128, 128, 0.10); padding: 8px 10px; border-radius: 6px; overflow-x: auto; margin: 4px 0; }}",
+                "table {{ border-collapse: collapse; width: calc(100% - 28px); margin: 6px 0 28px 0; }}",
+                "td, th {{ border: 1px solid rgba(128, 128, 128, 0.38); padding: 6px 8px; min-width: 40px; vertical-align: top; }}",
                 "html.meridian-dark {{ color-scheme: dark; background-color: #e1e1e1 !important; color: #111111; filter: invert(100%) hue-rotate(180deg); -webkit-filter: invert(100%) hue-rotate(180deg); }}",
                 "html.meridian-dark body {{ background-color: transparent !important; color: #111111; }}",
                 "html.meridian-dark img, html.meridian-dark video, html.meridian-dark canvas, html.meridian-dark svg {{ filter: invert(100%) hue-rotate(180deg) !important; -webkit-filter: invert(100%) hue-rotate(180deg) !important; }}",
@@ -2561,7 +4107,21 @@ impl HtmlEditor {
                 "  html:not(.meridian-light) img, html:not(.meridian-light) video, html:not(.meridian-light) canvas, html:not(.meridian-light) svg {{ filter: invert(100%) hue-rotate(180deg) !important; -webkit-filter: invert(100%) hue-rotate(180deg) !important; }}",
                 "}}",
                 "</style>",
+                "<style id=\"__meridian_custom_styles\">{}</style>",
                 "<script>",
+                "window.__meridianCustomStyles = {};",
+                "window.meridianSetCustomStyles = function(stylesMap, cssText) {{",
+                "    window.__meridianCustomStyles = stylesMap || {{}};",
+                "    let stEl = document.getElementById('__meridian_custom_styles');",
+                "    if (!stEl) {{",
+                "        stEl = document.createElement('style');",
+                "        stEl.id = '__meridian_custom_styles';",
+                "        document.head.appendChild(stEl);",
+                "    }}",
+                "    stEl.textContent = cssText || '';",
+                "    if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "}};",
                 "document.addEventListener('mouseover', function(e) {{",
                 "    const link = e.target.closest('a');",
                 "    if (link && link.href && !link.title) {{",
@@ -3356,6 +4916,437 @@ impl HtmlEditor {
                 "    if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
                 "    return true;",
                 "}};",
+                "window.meridianToggleBlockquote = function() {{",
+                "    try {{",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        if (window.meridianUnwrapBlockquote()) return;",
+                "        const sel = window.getSelection();",
+                "        let blocks = meridianSelectedBlocks().filter(function(b) {{ return b.tagName !== 'BLOCKQUOTE'; }});",
+                "        if (blocks.length === 0) {{",
+                "            document.execCommand('formatBlock', false, 'p');",
+                "            blocks = meridianSelectedBlocks().filter(function(b) {{ return b.tagName !== 'BLOCKQUOTE'; }});",
+                "        }}",
+                "        const bq = document.createElement('blockquote');",
+                "        let targetP = null;",
+                "        if (blocks.length > 0 && blocks[0].parentNode) {{",
+                "            blocks[0].parentNode.insertBefore(bq, blocks[0]);",
+                "            blocks.forEach(function(b) {{",
+                "                if (b.tagName !== 'P' && b.tagName !== 'H1' && b.tagName !== 'H2' && b.tagName !== 'H3' && b.tagName !== 'PRE') {{",
+                "                    const p = document.createElement('p');",
+                "                    while (b.firstChild) p.appendChild(b.firstChild);",
+                "                    if (isBlockEmpty(p)) p.innerHTML = '<br>';",
+                "                    b.remove();",
+                "                    bq.appendChild(p);",
+                "                    if (!targetP) targetP = p;",
+                "                }} else {{",
+                "                    if (isBlockEmpty(b)) b.innerHTML = '<br>';",
+                "                    bq.appendChild(b);",
+                "                    if (!targetP) targetP = b;",
+                "                }}",
+                "            }});",
+                "        }} else {{",
+                "            const p = document.createElement('p');",
+                "            p.innerHTML = '<br>';",
+                "            bq.appendChild(p);",
+                "            document.body.appendChild(bq);",
+                "            targetP = p;",
+                "        }}",
+                "        while (bq.previousElementSibling && bq.previousElementSibling.tagName === 'BLOCKQUOTE') {{",
+                "            const prevBq = bq.previousElementSibling;",
+                "            while (prevBq.lastChild) bq.insertBefore(prevBq.lastChild, bq.firstChild);",
+                "            prevBq.remove();",
+                "        }}",
+                "        while (bq.nextElementSibling && bq.nextElementSibling.tagName === 'BLOCKQUOTE') {{",
+                "            const nextBq = bq.nextElementSibling;",
+                "            while (nextBq.firstChild) bq.appendChild(nextBq.firstChild);",
+                "            nextBq.remove();",
+                "        }}",
+                "        if (targetP && sel) {{",
+                "            const cr = document.createRange();",
+                "            if (isBlockEmpty(targetP)) {{",
+                "                cr.setStart(targetP, 0);",
+                "                cr.collapse(true);",
+                "            }} else {{",
+                "                cr.selectNodeContents(targetP);",
+                "                cr.collapse(false);",
+                "            }}",
+                "            sel.removeAllRanges();",
+                "            sel.addRange(cr);",
+                "        }}",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "        if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "    }} catch (err) {{}}",
+                "}};",
+                "function meridianSelectedBlocks() {{",
+                "    const sel = window.getSelection();",
+                "    if (!sel || sel.rangeCount === 0) return [];",
+                "    const range = sel.getRangeAt(0);",
+                "    let node = sel.anchorNode || range.startContainer;",
+                "    if (node && node.nodeType === 3) node = node.parentElement;",
+                "    const sig = document.getElementById('_evolution_signature_') || document.querySelector('.evolution-signature');",
+                "    const candidates = Array.from(document.body.querySelectorAll('p, div, h1, h2, h3, pre, blockquote')).filter(function(el) {{",
+                "        if (el === sig || (sig && sig.contains(el)) || el.id === '__meridian_drop_caret') return false;",
+                "        if (el.tagName === 'DIV' && el.querySelector('p, div, h1, h2, h3, pre, blockquote')) return false;",
+                "        return sel.containsNode(el, true) || (node && el.contains(node)) || el === node;",
+                "    }});",
+                "    if (candidates.length === 0 && node && node !== document.body) {{",
+                "        const closest = node.closest ? node.closest('p, div, h1, h2, h3, pre, blockquote') : null;",
+                "        if (closest && closest !== sig && !(sig && sig.contains(closest))) return [closest];",
+                "    }}",
+                "    return candidates;",
+                "}};",
+                "window.meridianIndent = function() {{",
+                "    try {{",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        const sel = window.getSelection();",
+                "        let node = sel && sel.rangeCount > 0 ? (sel.anchorNode || sel.getRangeAt(0).startContainer) : null;",
+                "        if (node && node.nodeType === 3) node = node.parentElement;",
+                "        if (node && node.closest && node.closest('li')) {{",
+                "            document.execCommand('indent', false, null);",
+                "        }} else {{",
+                "            let blocks = meridianSelectedBlocks();",
+                "            if (blocks.length === 0) {{",
+                "                document.execCommand('formatBlock', false, 'p');",
+                "                blocks = meridianSelectedBlocks();",
+                "            }}",
+                "            blocks.forEach(function(b) {{",
+                "                const cur = parseInt(b.style.marginLeft || '0', 10) || 0;",
+                "                b.style.marginLeft = Math.min(288, cur + 24) + 'px';",
+                "            }});",
+                "        }}",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "        if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "    }} catch (err) {{}}",
+                "}};",
+                "window.meridianOutdent = function() {{",
+                "    try {{",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        const sel = window.getSelection();",
+                "        let node = sel && sel.rangeCount > 0 ? (sel.anchorNode || sel.getRangeAt(0).startContainer) : null;",
+                "        if (node && node.nodeType === 3) node = node.parentElement;",
+                "        if (node && node.closest && node.closest('li')) {{",
+                "            document.execCommand('outdent', false, null);",
+                "        }} else {{",
+                "            const blocks = meridianSelectedBlocks();",
+                "            let reduced = false;",
+                "            blocks.forEach(function(b) {{",
+                "                const cur = parseInt(b.style.marginLeft || '0', 10) || 0;",
+                "                if (cur > 0) {{",
+                "                    reduced = true;",
+                "                    const next = Math.max(0, cur - 24);",
+                "                    if (next === 0) b.style.removeProperty('margin-left');",
+                "                    else b.style.marginLeft = next + 'px';",
+                "                }}",
+                "            }});",
+                "            if (!reduced && node && node.closest && node.closest('blockquote')) {{",
+                "                window.meridianUnwrapBlockquote();",
+                "                return;",
+                "            }}",
+                "        }}",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "        if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "    }} catch (err) {{}}",
+                "}};",
+                "window.__meridianActiveTable = null;",
+                "window.meridianInsertTable = function(rows, cols) {{",
+                "    try {{",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        const rCount = Math.max(1, Math.min(20, rows || 3));",
+                "        const cCount = Math.max(1, Math.min(12, cols || 3));",
+                "        const table = document.createElement('table');",
+                "        table.setAttribute('style', 'border-collapse: collapse; width: calc(100% - 28px); margin: 6px 0 28px 0;');",
+                "        const tbody = document.createElement('tbody');",
+                "        let firstCell = null;",
+                "        for (let r = 0; r < rCount; r++) {{",
+                "            const tr = document.createElement('tr');",
+                "            for (let c = 0; c < cCount; c++) {{",
+                "                const td = document.createElement('td');",
+                "                td.setAttribute('style', 'border: 1px solid #c0bfbc; padding: 6px 8px; vertical-align: top;');",
+                "                td.innerHTML = '<br>';",
+                "                if (!firstCell) firstCell = td;",
+                "                tr.appendChild(td);",
+                "            }}",
+                "            tbody.appendChild(tr);",
+                "        }}",
+                "        table.appendChild(tbody);",
+                "        const trailingP = document.createElement('p');",
+                "        trailingP.innerHTML = '<br>';",
+                "        const sel = window.getSelection();",
+                "        const sig = document.getElementById('_evolution_signature_') || document.querySelector('.evolution-signature');",
+                "        if (sel && sel.rangeCount > 0 && document.body.contains(sel.anchorNode)) {{",
+                "            let range = sel.getRangeAt(0);",
+                "            if (typeof constrainRangeBeforeSignature === 'function') range = constrainRangeBeforeSignature(range);",
+                "            let block = (range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement);",
+                "            block = block && block.closest ? block.closest('p, div, h1, h2, h3, pre, blockquote') : null;",
+                "            if (block && block.parentNode === document.body && isBlockEmpty(block) && block !== sig) {{",
+                "                document.body.insertBefore(table, block);",
+                "            }} else if (block && block.parentNode === document.body && block !== sig) {{",
+                "                document.body.insertBefore(table, block.nextSibling);",
+                "                if (!table.nextElementSibling || table.nextElementSibling === sig) {{",
+                "                    document.body.insertBefore(trailingP, table.nextSibling);",
+                "                }}",
+                "            }} else {{",
+                "                range.deleteContents();",
+                "                range.insertNode(trailingP);",
+                "                range.insertNode(table);",
+                "            }}",
+                "        }} else if (sig) {{",
+                "            document.body.insertBefore(table, sig);",
+                "            document.body.insertBefore(trailingP, sig);",
+                "        }} else {{",
+                "            document.body.appendChild(table);",
+                "            document.body.appendChild(trailingP);",
+                "        }}",
+                "        window.__meridianActiveTable = table;",
+                "        if (firstCell && sel) {{",
+                "            const cr = document.createRange();",
+                "            cr.setStart(firstCell, 0);",
+                "            cr.collapse(true);",
+                "            sel.removeAllRanges();",
+                "            sel.addRange(cr);",
+                "        }}",
+                "        if (typeof window.meridianUpdateTableUI === 'function') window.meridianUpdateTableUI();",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "        if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "    }} catch (err) {{}}",
+                "}};",
+                "window.meridianModifyTable = function(action) {{",
+                "    try {{",
+                "        const sel = window.getSelection();",
+                "        let node = sel && sel.rangeCount > 0 ? (sel.anchorNode || sel.getRangeAt(0).startContainer) : null;",
+                "        if (node && node.nodeType === 3) node = node.parentElement;",
+                "        let cell = node && node.closest ? node.closest('td, th') : null;",
+                "        let table = (cell ? cell.closest('table') : null) || (window.__meridianActiveTable && document.body.contains(window.__meridianActiveTable) ? window.__meridianActiveTable : null) || document.body.querySelector('table');",
+                "        if (!table) return;",
+                "        if (cell && cell.closest('table') !== table) cell = null;",
+                "        const row = cell ? cell.closest('tr') : null;",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        if (action === 'delTable') {{",
+                "            table.remove();",
+                "            window.__meridianActiveTable = null;",
+                "        }} else if (action === 'addRow') {{",
+                "            const targetRow = row || table.rows[table.rows.length - 1];",
+                "            if (!targetRow) return;",
+                "            const colCount = targetRow.cells.length || 1;",
+                "            const newRow = table.insertRow(targetRow.rowIndex + 1);",
+                "            for (let c = 0; c < colCount; c++) {{",
+                "                const td = newRow.insertCell(c);",
+                "                td.setAttribute('style', 'border: 1px solid #c0bfbc; padding: 6px 8px; vertical-align: top;');",
+                "                td.innerHTML = '<br>';",
+                "            }}",
+                "        }} else if (action === 'addCol') {{",
+                "            const insertIdx = cell ? (cell.cellIndex + 1) : -1;",
+                "            for (let r = 0; r < table.rows.length; r++) {{",
+                "                const tr = table.rows[r];",
+                "                const td = tr.insertCell(insertIdx >= 0 && insertIdx <= tr.cells.length ? insertIdx : -1);",
+                "                td.setAttribute('style', 'border: 1px solid #c0bfbc; padding: 6px 8px; vertical-align: top;');",
+                "                td.innerHTML = '<br>';",
+                "            }}",
+                "        }} else if (action === 'delRow') {{",
+                "            const targetRow = row || table.rows[table.rows.length - 1];",
+                "            if (!targetRow) return;",
+                "            if (table.rows.length <= 1) {{ table.remove(); window.__meridianActiveTable = null; }} else {{ table.deleteRow(targetRow.rowIndex); }}",
+                "        }} else if (action === 'delCol') {{",
+                "            const colIdx = cell ? cell.cellIndex : ((table.rows[0] ? table.rows[0].cells.length : 1) - 1);",
+                "            if (colIdx < 0) return;",
+                "            if (table.rows[0] && table.rows[0].cells.length <= 1) {{",
+                "                table.remove();",
+                "                window.__meridianActiveTable = null;",
+                "            }} else {{",
+                "                for (let r = 0; r < table.rows.length; r++) {{",
+                "                    if (colIdx < table.rows[r].cells.length) table.rows[r].deleteCell(colIdx);",
+                "                }}",
+                "            }}",
+                "        }}",
+                "        if (typeof window.meridianUpdateTableUI === 'function') window.meridianUpdateTableUI();",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "        if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "    }} catch (err) {{}}",
+                "}};",
+                "(function() {{",
+                "    let uiRoot = null;",
+                "    let colPill = null;",
+                "    let rowPill = null;",
+                "    let resizingState = null;",
+                "    let hoveringColPill = false;",
+                "    let hoveringRowPill = false;",
+                "    let showColNearEdge = false;",
+                "    let showRowNearEdge = false;",
+                "    const svgPlus = '<svg width=\"12\" height=\"12\" viewBox=\"0 0 12 12\" fill=\"none\" style=\"display:block;pointer-events:none;\"><path d=\"M6 2.25V9.75M2.25 6H9.75\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\"/></svg>';",
+                "    const svgMinus = '<svg width=\"12\" height=\"12\" viewBox=\"0 0 12 12\" fill=\"none\" style=\"display:block;pointer-events:none;\"><path d=\"M2.5 6H9.5\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\"/></svg>';",
+                "    const svgClose = '<svg width=\"12\" height=\"12\" viewBox=\"0 0 12 12\" fill=\"none\" style=\"display:block;pointer-events:none;\"><path d=\"M3.25 3.25L8.75 8.75M8.75 3.25L3.25 8.75\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\"/></svg>';",
+                "    const btnCss = 'appearance:none;-webkit-appearance:none;border:none;background:transparent;color:#3d3846;width:20px;height:20px;padding:0;margin:0;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:4px;user-select:none;';",
+                "    const pillCss = 'position:fixed;z-index:2147483646;display:none;background:#f6f5f4;border:1px solid rgba(0,0,0,0.16);border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,0.10);padding:2px;user-select:none;-webkit-user-select:none;';",
+                "    function makeStepBtn(svgHtml, title, action, extraColor) {{",
+                "        const b = document.createElement('button');",
+                "        b.type = 'button';",
+                "        b.innerHTML = svgHtml;",
+                "        b.title = title;",
+                "        b.setAttribute('style', btnCss + (extraColor ? ('color:' + extraColor + ';') : ''));",
+                "        b.addEventListener('mouseenter', function() {{ b.style.backgroundColor = 'rgba(0,0,0,0.08)'; }});",
+                "        b.addEventListener('mouseleave', function() {{ b.style.backgroundColor = 'transparent'; }});",
+                "        b.addEventListener('mousedown', function(e) {{",
+                "            e.preventDefault();",
+                "            e.stopPropagation();",
+                "            window.meridianModifyTable(action);",
+                "        }});",
+                "        return b;",
+                "    }}",
+                "    function ensureTableUI() {{",
+                "        if (uiRoot && uiRoot.parentNode) return;",
+                "        uiRoot = document.createElement('div');",
+                "        uiRoot.id = '__meridian_table_ui';",
+                "        uiRoot.setAttribute('contenteditable', 'false');",
+                "        uiRoot.setAttribute('style', 'position:fixed;left:0;top:0;width:0;height:0;overflow:visible;z-index:2147483646;pointer-events:none;user-select:none;');",
+                "        colPill = document.createElement('div');",
+                "        colPill.setAttribute('style', pillCss + 'pointer-events:auto;flex-direction:column;gap:1px;');",
+                "        colPill.appendChild(makeStepBtn(svgPlus, 'Add column', 'addCol'));",
+                "        colPill.appendChild(makeStepBtn(svgMinus, 'Remove column', 'delCol'));",
+                "        colPill.addEventListener('mouseenter', function() {{ hoveringColPill = true; window.meridianUpdateTableUI(); }});",
+                "        colPill.addEventListener('mouseleave', function() {{ hoveringColPill = false; window.meridianUpdateTableUI(); }});",
+                "        rowPill = document.createElement('div');",
+                "        rowPill.setAttribute('style', pillCss + 'pointer-events:auto;flex-direction:row;align-items:center;gap:1px;');",
+                "        rowPill.appendChild(makeStepBtn(svgPlus, 'Add row', 'addRow'));",
+                "        rowPill.appendChild(makeStepBtn(svgMinus, 'Remove row', 'delRow'));",
+                "        const sep = document.createElement('div');",
+                "        sep.setAttribute('style', 'width:1px;height:12px;background:rgba(0,0,0,0.15);margin:0 2px;');",
+                "        rowPill.appendChild(sep);",
+                "        rowPill.appendChild(makeStepBtn(svgClose, 'Delete table', 'delTable', '#c01c28'));",
+                "        rowPill.addEventListener('mouseenter', function() {{ hoveringRowPill = true; window.meridianUpdateTableUI(); }});",
+                "        rowPill.addEventListener('mouseleave', function() {{ hoveringRowPill = false; window.meridianUpdateTableUI(); }});",
+                "        uiRoot.appendChild(colPill);",
+                "        uiRoot.appendChild(rowPill);",
+                "        document.documentElement.appendChild(uiRoot);",
+                "    }}",
+                "    window.meridianUpdateTableUI = function() {{",
+                "        try {{",
+                "            if (window.__plainTextMode) {{",
+                "                if (colPill) colPill.style.display = 'none';",
+                "                if (rowPill) rowPill.style.display = 'none';",
+                "                return;",
+                "            }}",
+                "            const sel = window.getSelection();",
+                "            let node = sel && sel.rangeCount > 0 ? (sel.anchorNode || sel.getRangeAt(0).startContainer) : null;",
+                "            if (node && node.nodeType === 3) node = node.parentElement;",
+                "            const selTable = node && node.closest ? node.closest('table') : null;",
+                "            if (selTable) window.__meridianActiveTable = selTable;",
+                "            const table = window.__meridianActiveTable;",
+                "            if (!table || !document.body || !document.body.contains(table)) {{",
+                "                if (colPill) colPill.style.display = 'none';",
+                "                if (rowPill) rowPill.style.display = 'none';",
+                "                return;",
+                "            }}",
+                "            ensureTableUI();",
+                "            const rect = table.getBoundingClientRect();",
+                "            if (rect.width <= 0 || rect.height <= 0) {{",
+                "                colPill.style.display = 'none';",
+                "                rowPill.style.display = 'none';",
+                "                return;",
+                "            }}",
+                "            const visCol = Boolean(showColNearEdge || hoveringColPill);",
+                "            const visRow = Boolean(showRowNearEdge || hoveringRowPill);",
+                "            if (visCol) {{",
+                "                colPill.style.display = 'flex';",
+                "                colPill.style.left = Math.min(window.innerWidth - 26, Math.round(rect.right + 4)) + 'px';",
+                "                colPill.style.top = Math.max(4, Math.round(rect.top + Math.max(0, (rect.height - 44) / 2))) + 'px';",
+                "            }} else {{",
+                "                colPill.style.display = 'none';",
+                "            }}",
+                "            if (visRow) {{",
+                "                rowPill.style.display = 'flex';",
+                "                rowPill.style.left = Math.max(4, Math.round(rect.left)) + 'px';",
+                "                rowPill.style.top = Math.round(rect.bottom + 4) + 'px';",
+                "            }} else {{",
+                "                rowPill.style.display = 'none';",
+                "            }}",
+                "        }} catch (e) {{}}",
+                "    }};",
+                "    document.addEventListener('mousedown', function(e) {{",
+                "        if (uiRoot && uiRoot.contains(e.target)) return;",
+                "        const cell = e.target && e.target.closest ? e.target.closest('td, th') : null;",
+                "        if (cell) {{",
+                "            const tbl = cell.closest('table');",
+                "            window.__meridianActiveTable = tbl;",
+                "            const cr = cell.getBoundingClientRect();",
+                "            if (e.clientX >= cr.right - 5 && e.clientX <= cr.right + 3) {{",
+                "                e.preventDefault();",
+                "                if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "                resizingState = {{ table: tbl, colIndex: cell.cellIndex, startX: e.clientX, startWidth: cr.width }};",
+                "            }}",
+                "        }} else {{",
+                "            const tbl = e.target && e.target.closest ? e.target.closest('table') : null;",
+                "            window.__meridianActiveTable = tbl;",
+                "            if (!tbl) {{ showColNearEdge = false; showRowNearEdge = false; }}",
+                "        }}",
+                "        setTimeout(window.meridianUpdateTableUI, 0);",
+                "    }});",
+                "    document.addEventListener('mousemove', function(e) {{",
+                "        if (resizingState) {{",
+                "            e.preventDefault();",
+                "            const w = Math.max(36, Math.round(resizingState.startWidth + (e.clientX - resizingState.startX)));",
+                "            const rows = resizingState.table.rows;",
+                "            for (let r = 0; r < rows.length; r++) {{",
+                "                if (resizingState.colIndex < rows[r].cells.length) {{",
+                "                    rows[r].cells[resizingState.colIndex].style.width = w + 'px';",
+                "                }}",
+                "            }}",
+                "            window.meridianUpdateTableUI();",
+                "            return;",
+                "        }}",
+                "        const cell = e.target && e.target.closest ? e.target.closest('td, th') : null;",
+                "        if (cell) {{",
+                "            const cr = cell.getBoundingClientRect();",
+                "            if (e.clientX >= cr.right - 5 && e.clientX <= cr.right + 3) {{",
+                "                cell.style.cursor = 'col-resize';",
+                "            }} else if (cell.style.cursor === 'col-resize') {{",
+                "                cell.style.cursor = '';",
+                "            }}",
+                "        }}",
+                "        let hoveredTable = (e.target && e.target.closest) ? e.target.closest('table') : null;",
+                "        if (!hoveredTable && document.body) {{",
+                "            const tables = document.body.querySelectorAll('table');",
+                "            for (let i = 0; i < tables.length; i++) {{",
+                "                const tr = tables[i].getBoundingClientRect();",
+                "                if (e.clientX >= tr.left - 12 && e.clientX <= tr.right + 38 && e.clientY >= tr.top - 12 && e.clientY <= tr.bottom + 38) {{",
+                "                    hoveredTable = tables[i];",
+                "                    break;",
+                "                }}",
+                "            }}",
+                "        }}",
+                "        if (hoveredTable) {{",
+                "            window.__meridianActiveTable = hoveredTable;",
+                "            const r = hoveredTable.getBoundingClientRect();",
+                "            showColNearEdge = (e.clientX >= r.right - 42 && e.clientX <= r.right + 38 && e.clientY >= r.top - 8 && e.clientY <= r.bottom + 8);",
+                "            showRowNearEdge = (e.clientY >= r.bottom - 32 && e.clientY <= r.bottom + 38 && e.clientX >= r.left - 8 && e.clientX <= r.right + 28);",
+                "        }} else if (!hoveringColPill && !hoveringRowPill) {{",
+                "            showColNearEdge = false;",
+                "            showRowNearEdge = false;",
+                "        }}",
+                "        window.meridianUpdateTableUI();",
+                "    }});",
+                "    document.addEventListener('keydown', function() {{",
+                "        if (showColNearEdge || showRowNearEdge) {{",
+                "            showColNearEdge = false;",
+                "            showRowNearEdge = false;",
+                "            window.meridianUpdateTableUI();",
+                "        }}",
+                "    }}, true);",
+                "    document.addEventListener('mouseup', function() {{",
+                "        if (resizingState) {{",
+                "            resizingState = null;",
+                "            if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "            if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "            window.meridianUpdateTableUI();",
+                "        }}",
+                "    }});",
+                "    window.addEventListener('scroll', function() {{ window.meridianUpdateTableUI(); }}, true);",
+                "    window.addEventListener('resize', function() {{ window.meridianUpdateTableUI(); }});",
+                "}})();",
                 "window.__meridianUndoStack = [];",
                 "window.__meridianRedoStack = [];",
                 "window.__meridianUserEdited = false;",
@@ -3487,44 +5478,10 @@ impl HtmlEditor {
                 "    window.__meridianUndoStack.push(next);",
                 "    meridianApplySnapshot(next);",
                 "}};",
-                "document.addEventListener('beforeinput', function(e) {{",
-                "    window.__meridianUserEdited = true;",
-                "    const now = Date.now();",
-                "    const isWordBreak = e.data === ' ' || e.data === '\\n' || e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak';",
-                "    if (window.__meridianUndoStack.length === 0 || isWordBreak || e.inputType !== 'insertText' || (now - __meridianLastSnapshotTime > 400)) {{",
-                "        window.meridianRecordUndoSnapshot(false);",
-                "    }}",
-                "}});",
-                "document.addEventListener('input', function() {{",
-                "    window.__meridianUserEdited = true;",
-                "    if (__meridianInputTimer) clearTimeout(__meridianInputTimer);",
-                "    __meridianInputTimer = setTimeout(function() {{",
-                "        __meridianInputTimer = null;",
-                "        window.meridianRecordUndoSnapshot(false);",
-                "    }}, 250);",
-                "}});",
-                "document.addEventListener('keydown', function(e) {{",
-                "    if ((e.ctrlKey || e.metaKey) && !e.altKey) {{",
-                "        const k = (e.key || '').toLowerCase();",
-                "        if (k === 'z') {{",
-                "            e.preventDefault();",
-                "            e.stopPropagation();",
-                "            if (e.shiftKey) {{ window.meridianRedo(); }} else {{ window.meridianUndo(); }}",
-                "        }} else if (k === 'y' && !e.shiftKey) {{",
-                "            e.preventDefault();",
-                "            e.stopPropagation();",
-                "            window.meridianRedo();",
-                "        }}",
-                "    }}",
-                "}}, true);",
-                "window.addEventListener('load', function() {{",
-                "    if (window.__meridianUndoStack.length === 0) window.meridianResetHistory();",
-                "}});",
-                "function notifyMeridianSelectionState() {{",
+                "window.__meridianCopiedStyle = null;",
+                "window.meridianCopyStyle = function() {{",
                 "    try {{",
-                "        if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.meridianSelectionState) return;",
                 "        const sel = window.getSelection();",
-                "        const hasSelection = Boolean(sel && !sel.isCollapsed && sel.toString().trim().length > 0);",
                 "        let node = null;",
                 "        if (sel && sel.rangeCount > 0) {{",
                 "            const r = sel.getRangeAt(0);",
@@ -3536,6 +5493,635 @@ impl HtmlEditor {
                 "            while (node && node.nodeType !== 1) {{",
                 "                node = node.parentElement || node.parentNode;",
                 "            }}",
+                "        }}",
+                "        if (!node) node = document.body;",
+                "        const cs = window.getComputedStyle ? window.getComputedStyle(node) : null;",
+                "        const bold = Boolean(document.queryCommandState('bold')) || Boolean(node.closest && node.closest('b, strong, h1, h2, h3')) || Boolean(cs && (parseInt(cs.fontWeight, 10) >= 600 || cs.fontWeight === 'bold'));",
+                "        const italic = Boolean(document.queryCommandState('italic')) || Boolean(node.closest && node.closest('i, em')) || Boolean(cs && (cs.fontStyle === 'italic' || cs.fontStyle === 'oblique'));",
+                "        const underline = Boolean(document.queryCommandState('underline')) || Boolean(node.closest && node.closest('u'));",
+                "        const strikethrough = Boolean(document.queryCommandState('strikethrough')) || Boolean(node.closest && node.closest('s, strike, del'));",
+                "        let blockTag = 'p';",
+                "        if (node.closest) {{",
+                "            if (node.closest('h1')) blockTag = 'h1';",
+                "            else if (node.closest('h2')) blockTag = 'h2';",
+                "            else if (node.closest('h3')) blockTag = 'h3';",
+                "            else if (node.closest('pre')) blockTag = 'pre';",
+                "            else if (node.closest('blockquote')) blockTag = 'blockquote';",
+                "        }}",
+                "        let color = cs ? (cs.color || '') : '';",
+                "        let fontFamily = cs ? (cs.fontFamily || '') : '';",
+                "        let fontSize = cs ? (cs.fontSize || '') : '';",
+                "        let textAlign = cs ? (cs.textAlign || '') : '';",
+                "        let bg = '';",
+                "        let el = node;",
+                "        while (el && el !== document.body && el.nodeType === 1) {{",
+                "            if (el.style && el.style.backgroundColor && el.style.backgroundColor !== 'transparent' && el.style.backgroundColor !== 'rgba(0, 0, 0, 0)') {{",
+                "                bg = el.style.backgroundColor;",
+                "                break;",
+                "            }}",
+                "            el = el.parentElement;",
+                "        }}",
+                "        window.__meridianCopiedStyle = {{",
+                "            bold: bold,",
+                "            italic: italic,",
+                "            underline: underline,",
+                "            strikethrough: strikethrough,",
+                "            fontFamily: fontFamily,",
+                "            fontSize: fontSize,",
+                "            color: color,",
+                "            backgroundColor: bg,",
+                "            blockTag: blockTag,",
+                "            textAlign: textAlign",
+                "        }};",
+                "        return true;",
+                "    }} catch (e) {{ return false; }}",
+                "}};",
+                "window.meridianApplyCopiedStyle = function() {{",
+                "    try {{",
+                "        const st = window.__meridianCopiedStyle;",
+                "        if (!st) return false;",
+                "        const sel = window.getSelection();",
+                "        if (!sel || sel.rangeCount === 0) return false;",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        document.execCommand('styleWithCSS', false, true);",
+                "        document.execCommand('removeFormat', false, null);",
+                "        if (st.blockTag && ['p', 'h1', 'h2', 'h3', 'pre', 'blockquote'].includes(st.blockTag)) {{",
+                "            document.execCommand('formatBlock', false, st.blockTag);",
+                "        }}",
+                "        if (Boolean(document.queryCommandState('bold')) !== Boolean(st.bold)) {{",
+                "            document.execCommand('bold', false, null);",
+                "        }}",
+                "        if (Boolean(document.queryCommandState('italic')) !== Boolean(st.italic)) {{",
+                "            document.execCommand('italic', false, null);",
+                "        }}",
+                "        if (Boolean(document.queryCommandState('underline')) !== Boolean(st.underline)) {{",
+                "            document.execCommand('underline', false, null);",
+                "        }}",
+                "        if (Boolean(document.queryCommandState('strikethrough')) !== Boolean(st.strikethrough)) {{",
+                "            document.execCommand('strikethrough', false, null);",
+                "        }}",
+                "        if (st.fontFamily) {{",
+                "            document.execCommand('fontName', false, st.fontFamily);",
+                "        }}",
+                "        if (st.color) {{",
+                "            document.execCommand('foreColor', false, st.color);",
+                "        }}",
+                "        if (st.backgroundColor) {{",
+                "            document.execCommand('hiliteColor', false, st.backgroundColor);",
+                "        }}",
+                "        if (st.fontSize) {{",
+                "            window.__meridianSuppressSelectionNotify = true;",
+                "            document.execCommand('styleWithCSS', false, false);",
+                "            document.execCommand('fontSize', false, '7');",
+                "            const spans = document.querySelectorAll('font[size=\"7\"], span[style*=\"xxx-large\"], [style*=\"-webkit-xxx-large\"]');",
+                "            for (let i = 0; i < spans.length; i++) {{",
+                "                const el = spans[i];",
+                "                if (el.tagName === 'FONT') {{",
+                "                    const sp = document.createElement('span');",
+                "                    sp.style.fontSize = st.fontSize;",
+                "                    while (el.firstChild) sp.appendChild(el.firstChild);",
+                "                    if (el.parentNode) el.parentNode.replaceChild(sp, el);",
+                "                }} else {{",
+                "                    el.removeAttribute('size');",
+                "                    el.style.fontSize = st.fontSize;",
+                "                }}",
+                "            }}",
+                "            window.__meridianSuppressSelectionNotify = false;",
+                "        }}",
+                "        if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "        if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "        if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "        return true;",
+                "    }} catch (e) {{ return false; }}",
+                "}};",
+                "window.meridianInsertPlainTextMatchStyle = function(text) {{",
+                "    if (typeof text !== 'string' || text.length === 0) return;",
+                "    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "    document.execCommand('insertText', false, text);",
+                "    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
+                "    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "    if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "}};",
+                "document.addEventListener('beforeinput', function(e) {{",
+                "    window.__meridianUserEdited = true;",
+                "    const now = Date.now();",
+                "    const isWordBreak = e.data === ' ' || e.data === '\\n' || e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak';",
+                "    if (window.__meridianUndoStack.length === 0 || isWordBreak || e.inputType !== 'insertText' || (now - __meridianLastSnapshotTime > 400)) {{",
+                "        window.meridianRecordUndoSnapshot(false);",
+                "    }}",
+                "    if (!window.__plainTextMode && window.__meridianAutoFormatEnabled !== false && e.inputType === 'insertParagraph') {{",
+                "        try {{",
+                "            const sel = window.getSelection();",
+                "            if (sel && sel.isCollapsed && sel.rangeCount > 0) {{",
+                "                const r = sel.getRangeAt(0);",
+                "                const node = r.startContainer;",
+                "                const parentEl = node.nodeType === 1 ? node : node.parentElement;",
+                "                if (parentEl && !parentEl.closest('pre, code')) {{",
+                "                    const block = parentEl.closest('p, div') || document.body;",
+                "                    if ((block.textContent || '').trim() === '---') {{",
+                "                        e.preventDefault();",
+                "                        window.meridianRecordUndoSnapshot(true);",
+                "                        const hr = document.createElement('hr');",
+                "                        const nextP = document.createElement('p');",
+                "                        nextP.innerHTML = '<br>';",
+                "                        if (block && block !== document.body && block.parentNode) {{",
+                "                            block.parentNode.insertBefore(hr, block);",
+                "                            block.parentNode.replaceChild(nextP, block);",
+                "                        }} else {{",
+                "                            block.innerHTML = '';",
+                "                            document.execCommand('insertHorizontalRule', false, null);",
+                "                        }}",
+                "                        if (nextP.parentNode) {{",
+                "                            const nr = document.createRange();",
+                "                            nr.setStart(nextP, 0);",
+                "                            nr.collapse(true);",
+                "                            sel.removeAllRanges();",
+                "                            sel.addRange(nr);",
+                "                        }}",
+                "                        window.__meridianJustAutoFormatted = true;",
+                "                        window.meridianRecordUndoSnapshot(true);",
+                "                        if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "                        if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "                        return;",
+                "                    }}",
+                "                }}",
+                "            }}",
+                "        }} catch (err) {{}}",
+                "    }}",
+                "    if (!window.__plainTextMode && window.__meridianAutoFormatEnabled !== false && e.inputType === 'insertText') {{",
+                "        try {{",
+                "            const sel = window.getSelection();",
+                "            if (sel && sel.isCollapsed && sel.rangeCount > 0) {{",
+                "                const r = sel.getRangeAt(0);",
+                "                const node = r.startContainer;",
+                "                const parentEl = node.nodeType === 1 ? node : node.parentElement;",
+                "                if (parentEl && !parentEl.closest('pre, code')) {{",
+                "                    if (e.data === ' ' && node.nodeType === 3) {{",
+                "                        const block = parentEl.closest('p, div, h1, h2, h3, li') || document.body;",
+                "                        const preRange = document.createRange();",
+                "                        preRange.selectNodeContents(block);",
+                "                        preRange.setEnd(node, r.startOffset);",
+                "                        const prefix = preRange.toString().replace(/\\u200b/g, '');",
+                "                        let mdAction = null;",
+                "                        if (prefix === '-' || prefix === '*') mdAction = 'ul';",
+                "                        else if (prefix === '1.') mdAction = 'ol';",
+                "                        else if (prefix === '>') mdAction = 'blockquote';",
+                "                        else if (prefix === '#') mdAction = 'h1';",
+                "                        else if (prefix === '##') mdAction = 'h2';",
+                "                        else if (prefix === '###') mdAction = 'h3';",
+                "                        if (mdAction) {{",
+                "                            e.preventDefault();",
+                "                            window.meridianRecordUndoSnapshot(true);",
+                "                            preRange.deleteContents();",
+                "                            if (mdAction === 'h1' || mdAction === 'h2' || mdAction === 'h3') {{",
+                "                                const heading = document.createElement(mdAction);",
+                "                                if (block && block !== document.body && block.parentNode && block.tagName !== 'LI') {{",
+                "                                    while (block.firstChild) heading.appendChild(block.firstChild);",
+                "                                    if (isBlockEmpty(heading)) heading.innerHTML = '<br>';",
+                "                                    block.parentNode.replaceChild(heading, block);",
+                "                                }} else {{",
+                "                                    heading.innerHTML = '<br>';",
+                "                                    r.insertNode(heading);",
+                "                                }}",
+                "                                const nr = document.createRange();",
+                "                                nr.setStart(heading, 0);",
+                "                                nr.collapse(true);",
+                "                                sel.removeAllRanges();",
+                "                                sel.addRange(nr);",
+                "                            }} else if (mdAction === 'ul' || mdAction === 'ol') {{",
+                "                                const listEl = document.createElement(mdAction);",
+                "                                const li = document.createElement('li');",
+                "                                if (block && block !== document.body && block.parentNode && block.tagName !== 'LI') {{",
+                "                                    while (block.firstChild) li.appendChild(block.firstChild);",
+                "                                    if (isBlockEmpty(li)) li.innerHTML = '<br>';",
+                "                                    listEl.appendChild(li);",
+                "                                    block.parentNode.replaceChild(listEl, block);",
+                "                                }} else {{",
+                "                                    li.innerHTML = '<br>';",
+                "                                    listEl.appendChild(li);",
+                "                                    r.insertNode(listEl);",
+                "                                }}",
+                "                                const nr = document.createRange();",
+                "                                nr.setStart(li, 0);",
+                "                                nr.collapse(true);",
+                "                                sel.removeAllRanges();",
+                "                                sel.addRange(nr);",
+                "                            }} else if (mdAction === 'blockquote') {{",
+                "                                if (block && block !== document.body && isBlockEmpty(block)) {{",
+                "                                    block.innerHTML = '<br>';",
+                "                                    const brRange = document.createRange();",
+                "                                    brRange.setStart(block, 0);",
+                "                                    brRange.collapse(true);",
+                "                                    sel.removeAllRanges();",
+                "                                    sel.addRange(brRange);",
+                "                                }}",
+                "                                if (typeof window.meridianToggleBlockquote === 'function') window.meridianToggleBlockquote();",
+                "                            }}",
+                "                            window.__meridianJustAutoFormatted = true;",
+                "                            window.meridianRecordUndoSnapshot(true);",
+                "                            if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "                            if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "                            return;",
+                "                        }}",
+                "                    }} else if ((e.data === '`' || e.data === '*' || e.data === '~') && node.nodeType === 3) {{",
+                "                        const textBefore = (node.nodeValue || '').slice(0, r.startOffset);",
+                "                        let openIdx = -1;",
+                "                        let markerLen = 1;",
+                "                        let tagName = null;",
+                "                        let deleteEndOffset = r.startOffset;",
+                "                        if (e.data === '`') {{",
+                "                            openIdx = textBefore.lastIndexOf('`');",
+                "                            markerLen = 1;",
+                "                            tagName = 'code';",
+                "                        }} else if (e.data === '*' && textBefore.endsWith('*')) {{",
+                "                            const searchArea = textBefore.slice(0, -1);",
+                "                            const dblIdx = searchArea.lastIndexOf('**');",
+                "                            if (dblIdx !== -1 && dblIdx < searchArea.length - 2) {{",
+                "                                openIdx = dblIdx;",
+                "                                markerLen = 2;",
+                "                                tagName = 'strong';",
+                "                            }}",
+                "                        }} else if (e.data === '*' && !textBefore.endsWith('*')) {{",
+                "                            const singleIdx = textBefore.lastIndexOf('*');",
+                "                            if (singleIdx !== -1 && singleIdx < r.startOffset - 1 && (singleIdx === 0 || textBefore[singleIdx - 1] !== '*')) {{",
+                "                                openIdx = singleIdx;",
+                "                                markerLen = 1;",
+                "                                tagName = 'em';",
+                "                            }}",
+                "                        }} else if (e.data === '~' && textBefore.endsWith('~')) {{",
+                "                            const searchArea = textBefore.slice(0, -1);",
+                "                            const dblIdx = searchArea.lastIndexOf('~~');",
+                "                            if (dblIdx !== -1 && dblIdx < searchArea.length - 2) {{",
+                "                                openIdx = dblIdx;",
+                "                                markerLen = 2;",
+                "                                tagName = 's';",
+                "                            }}",
+                "                        }}",
+                "                        if (tagName && openIdx !== -1) {{",
+                "                            const innerEnd = markerLen === 2 ? (r.startOffset - 1) : r.startOffset;",
+                "                            const innerText = textBefore.slice(openIdx + markerLen, innerEnd);",
+                "                            if (innerText.trim().length > 0) {{",
+                "                                e.preventDefault();",
+                "                                window.meridianRecordUndoSnapshot(true);",
+                "                                const inlineRange = document.createRange();",
+                "                                inlineRange.setStart(node, openIdx);",
+                "                                inlineRange.setEnd(node, deleteEndOffset);",
+                "                                inlineRange.deleteContents();",
+                "                                const inlineEl = document.createElement(tagName);",
+                "                                inlineEl.textContent = innerText;",
+                "                                const zwspNode = document.createTextNode('\\u200b');",
+                "                                inlineRange.insertNode(zwspNode);",
+                "                                inlineRange.insertNode(inlineEl);",
+                "                                const afterRange = document.createRange();",
+                "                                afterRange.setStartAfter(zwspNode);",
+                "                                afterRange.collapse(true);",
+                "                                sel.removeAllRanges();",
+                "                                sel.addRange(afterRange);",
+                "                                window.__meridianJustAutoFormatted = true;",
+                "                                window.meridianRecordUndoSnapshot(true);",
+                "                                if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "                                if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "                                return;",
+                "                            }}",
+                "                        }}",
+                "                    }}",
+                "                }}",
+                "            }}",
+                "        }} catch (err) {{}}",
+                "    }}",
+                "    window.__meridianJustAutoFormatted = false;",
+                "}});",
+                "document.addEventListener('input', function() {{",
+                "    window.__meridianUserEdited = true;",
+                "    if (__meridianInputTimer) clearTimeout(__meridianInputTimer);",
+                "    __meridianInputTimer = setTimeout(function() {{",
+                "        __meridianInputTimer = null;",
+                "        window.meridianRecordUndoSnapshot(false);",
+                "    }}, 250);",
+                "}});",
+                "document.addEventListener('keydown', function(e) {{",
+                "    if (e.key === 'Backspace' && !e.ctrlKey && !e.metaKey && !e.altKey && window.__meridianJustAutoFormatted) {{",
+                "        window.__meridianJustAutoFormatted = false;",
+                "        e.preventDefault();",
+                "        e.stopPropagation();",
+                "        window.meridianUndo();",
+                "        return;",
+                "    }} else if (e.key !== 'Shift' && e.key !== 'Control' && e.key !== 'Alt' && e.key !== 'Meta') {{",
+                "        window.__meridianJustAutoFormatted = false;",
+                "    }}",
+                "    if (e.key === 'Backspace' && !e.ctrlKey && !e.metaKey && !e.altKey && !window.__plainTextMode) {{",
+                "        const sel = window.getSelection();",
+                "        if (sel && sel.isCollapsed && sel.rangeCount > 0) {{",
+                "            const r = sel.getRangeAt(0);",
+                "            let node = r.startContainer;",
+                "            if (node && node.nodeType === 3) node = node.parentElement;",
+                "            const bq = node && node.closest ? node.closest('blockquote') : null;",
+                "            if (bq && !(node && node.closest && node.closest('table, pre, ul, ol'))) {{",
+                "                while (bq.previousElementSibling && bq.previousElementSibling.tagName === 'BLOCKQUOTE') {{",
+                "                    const prevBq = bq.previousElementSibling;",
+                "                    while (prevBq.lastChild) bq.insertBefore(prevBq.lastChild, bq.firstChild);",
+                "                    prevBq.remove();",
+                "                }}",
+                "                while (bq.nextElementSibling && bq.nextElementSibling.tagName === 'BLOCKQUOTE') {{",
+                "                    const nextBq = bq.nextElementSibling;",
+                "                    while (nextBq.firstChild) bq.appendChild(nextBq.firstChild);",
+                "                    nextBq.remove();",
+                "                }}",
+                "                let lineP = node && node.closest ? node.closest('p, div') : null;",
+                "                if (!lineP || !bq.contains(lineP)) {{",
+                "                    const wrapperP = document.createElement('p');",
+                "                    while (bq.firstChild) wrapperP.appendChild(bq.firstChild);",
+                "                    bq.appendChild(wrapperP);",
+                "                    lineP = wrapperP;",
+                "                }}",
+                "                if (lineP === bq.firstElementChild) {{",
+                "                    let atStart = isBlockEmpty(lineP);",
+                "                    if (!atStart) {{",
+                "                        try {{",
+                "                            const pre = document.createRange();",
+                "                            pre.selectNodeContents(lineP);",
+                "                            pre.setEnd(r.startContainer, r.startOffset);",
+                "                            atStart = pre.toString().replace(/\\u200b/g, '').length === 0;",
+                "                        }} catch (err) {{}}",
+                "                    }}",
+                "                    if (atStart) {{",
+                "                        e.preventDefault();",
+                "                        e.stopPropagation();",
+                "                        window.meridianRecordUndoSnapshot(true);",
+                "                        const outP = document.createElement('p');",
+                "                        if (isBlockEmpty(lineP)) {{",
+                "                            outP.innerHTML = '<br>';",
+                "                        }} else {{",
+                "                            while (lineP.firstChild) outP.appendChild(lineP.firstChild);",
+                "                        }}",
+                "                        const parent = bq.parentNode || document.body;",
+                "                        parent.insertBefore(outP, bq);",
+                "                        lineP.remove();",
+                "                        if (bq.children.length === 0 || isBlockEmpty(bq)) {{",
+                "                            bq.remove();",
+                "                        }}",
+                "                        const nr = document.createRange();",
+                "                        nr.setStart(outP, 0);",
+                "                        nr.collapse(true);",
+                "                        sel.removeAllRanges();",
+                "                        sel.addRange(nr);",
+                "                        window.meridianRecordUndoSnapshot(true);",
+                "                        if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "                        if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "                        return;",
+                "                    }}",
+                "                }}",
+                "            }}",
+                "            const headingBlock = node && node.closest ? node.closest('h1, h2, h3, pre') : null;",
+                "            if (headingBlock && !(node && node.closest && node.closest('table, ul, ol'))) {{",
+                "                let atHeadingStart = isBlockEmpty(headingBlock);",
+                "                if (!atHeadingStart) {{",
+                "                    try {{",
+                "                        const pre = document.createRange();",
+                "                        pre.selectNodeContents(headingBlock);",
+                "                        pre.setEnd(r.startContainer, r.startOffset);",
+                "                        atHeadingStart = pre.toString().replace(/\\u200b/g, '').length === 0;",
+                "                    }} catch (err) {{}}",
+                "                }}",
+                "                if (atHeadingStart) {{",
+                "                    e.preventDefault();",
+                "                    e.stopPropagation();",
+                "                    window.meridianRecordUndoSnapshot(true);",
+                "                    const outP = document.createElement('p');",
+                "                    if (isBlockEmpty(headingBlock)) {{",
+                "                        outP.innerHTML = '<br>';",
+                "                    }} else {{",
+                "                        while (headingBlock.firstChild) outP.appendChild(headingBlock.firstChild);",
+                "                    }}",
+                "                    if (headingBlock.parentNode) {{",
+                "                        headingBlock.parentNode.replaceChild(outP, headingBlock);",
+                "                    }}",
+                "                    const nr = document.createRange();",
+                "                    nr.setStart(outP, 0);",
+                "                    nr.collapse(true);",
+                "                    sel.removeAllRanges();",
+                "                    sel.addRange(nr);",
+                "                    window.meridianRecordUndoSnapshot(true);",
+                "                    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "                    if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "                    return;",
+                "                }}",
+                "            }}",
+                "        }}",
+                "    }}",
+                "    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && !window.__plainTextMode) {{",
+                "        const sel = window.getSelection();",
+                "        if (sel && sel.rangeCount > 0) {{",
+                "            const r = sel.getRangeAt(0);",
+                "            let node = r.startContainer;",
+                "            if (node && node.nodeType === 3) node = node.parentElement;",
+                "            const headingBlock = node && node.closest ? node.closest('h1, h2, h3') : null;",
+                "            if (headingBlock && !(node && node.closest && node.closest('table, pre, ul, ol, blockquote'))) {{",
+                "                e.preventDefault();",
+                "                e.stopPropagation();",
+                "                window.meridianRecordUndoSnapshot(true);",
+                "                const parent = headingBlock.parentNode || document.body;",
+                "                if (isBlockEmpty(headingBlock)) {{",
+                "                    const normalP = document.createElement('p');",
+                "                    normalP.innerHTML = '<br>';",
+                "                    parent.replaceChild(normalP, headingBlock);",
+                "                    const nr = document.createRange();",
+                "                    nr.setStart(normalP, 0);",
+                "                    nr.collapse(true);",
+                "                    sel.removeAllRanges();",
+                "                    sel.addRange(nr);",
+                "                }} else {{",
+                "                    r.deleteContents();",
+                "                    const tailRange = document.createRange();",
+                "                    tailRange.selectNodeContents(headingBlock);",
+                "                    tailRange.setStart(r.endContainer, r.endOffset);",
+                "                    const tailFrag = tailRange.extractContents();",
+                "                    const nextP = document.createElement('p');",
+                "                    nextP.appendChild(tailFrag);",
+                "                    if (isBlockEmpty(nextP)) nextP.innerHTML = '<br>';",
+                "                    if (isBlockEmpty(headingBlock)) headingBlock.innerHTML = '<br>';",
+                "                    parent.insertBefore(nextP, headingBlock.nextSibling);",
+                "                    const nr = document.createRange();",
+                "                    nr.setStart(nextP, 0);",
+                "                    nr.collapse(true);",
+                "                    sel.removeAllRanges();",
+                "                    sel.addRange(nr);",
+                "                }}",
+                "                window.meridianRecordUndoSnapshot(true);",
+                "                if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "                if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "                return;",
+                "            }}",
+                "            const bq = node && node.closest ? node.closest('blockquote') : null;",
+                "            if (bq && !(node && node.closest && node.closest('table, pre, ul, ol'))) {{",
+                "                e.preventDefault();",
+                "                e.stopPropagation();",
+                "                window.meridianRecordUndoSnapshot(true);",
+                "                while (bq.previousElementSibling && bq.previousElementSibling.tagName === 'BLOCKQUOTE') {{",
+                "                    const prevBq = bq.previousElementSibling;",
+                "                    while (prevBq.lastChild) bq.insertBefore(prevBq.lastChild, bq.firstChild);",
+                "                    prevBq.remove();",
+                "                }}",
+                "                while (bq.nextElementSibling && bq.nextElementSibling.tagName === 'BLOCKQUOTE') {{",
+                "                    const nextBq = bq.nextElementSibling;",
+                "                    while (nextBq.firstChild) bq.appendChild(nextBq.firstChild);",
+                "                    nextBq.remove();",
+                "                }}",
+                "                let lineP = node && node.closest ? node.closest('p, div') : null;",
+                "                if (!lineP || !bq.contains(lineP)) {{",
+                "                    const wrapperP = document.createElement('p');",
+                "                    while (bq.firstChild) wrapperP.appendChild(bq.firstChild);",
+                "                    bq.appendChild(wrapperP);",
+                "                    lineP = wrapperP;",
+                "                }}",
+                "                if (isBlockEmpty(lineP)) {{",
+                "                    const exitP = document.createElement('p');",
+                "                    exitP.innerHTML = '<br>';",
+                "                    const parent = bq.parentNode || document.body;",
+                "                    const children = Array.from(bq.children);",
+                "                    if (children.length <= 1) {{",
+                "                        parent.replaceChild(exitP, bq);",
+                "                    }} else if (lineP === bq.lastElementChild) {{",
+                "                        lineP.remove();",
+                "                        parent.insertBefore(exitP, bq.nextSibling);",
+                "                    }} else if (lineP === bq.firstElementChild) {{",
+                "                        lineP.remove();",
+                "                        parent.insertBefore(exitP, bq);",
+                "                    }} else {{",
+                "                        const idx = children.indexOf(lineP);",
+                "                        const afterBq = bq.cloneNode(false);",
+                "                        children.slice(idx + 1).forEach(function(c) {{ afterBq.appendChild(c); }});",
+                "                        lineP.remove();",
+                "                        parent.insertBefore(afterBq, bq.nextSibling);",
+                "                        parent.insertBefore(exitP, afterBq);",
+                "                    }}",
+                "                    const nr = document.createRange();",
+                "                    nr.setStart(exitP, 0);",
+                "                    nr.collapse(true);",
+                "                    sel.removeAllRanges();",
+                "                    sel.addRange(nr);",
+                "                }} else {{",
+                "                    r.deleteContents();",
+                "                    const tailRange = document.createRange();",
+                "                    tailRange.selectNodeContents(lineP);",
+                "                    tailRange.setStart(r.endContainer, r.endOffset);",
+                "                    const tailFrag = tailRange.extractContents();",
+                "                    const nextP = document.createElement('p');",
+                "                    nextP.appendChild(tailFrag);",
+                "                    if (isBlockEmpty(nextP)) nextP.innerHTML = '<br>';",
+                "                    if (isBlockEmpty(lineP)) lineP.innerHTML = '<br>';",
+                "                    bq.insertBefore(nextP, lineP.nextSibling);",
+                "                    const nr = document.createRange();",
+                "                    nr.setStart(nextP, 0);",
+                "                    nr.collapse(true);",
+                "                    sel.removeAllRanges();",
+                "                    sel.addRange(nr);",
+                "                }}",
+                "                window.meridianRecordUndoSnapshot(true);",
+                "                if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "                if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "                return;",
+                "            }}",
+                "        }}",
+                "    }}",
+                "    if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey && !window.__plainTextMode) {{",
+                "        const sel = window.getSelection();",
+                "        if (sel && sel.rangeCount > 0) {{",
+                "            let node = sel.anchorNode;",
+                "            if (node && node.nodeType === 3) node = node.parentElement;",
+                "            const td = node && node.closest ? node.closest('td, th') : null;",
+                "            if (td) {{",
+                "                e.preventDefault();",
+                "                e.stopPropagation();",
+                "                const table = td.closest('table');",
+                "                if (table) {{",
+                "                    const cells = Array.from(table.querySelectorAll('td, th'));",
+                "                    const idx = cells.indexOf(td);",
+                "                    let targetCell = null;",
+                "                    if (e.shiftKey) {{",
+                "                        if (idx > 0) targetCell = cells[idx - 1];",
+                "                    }} else if (idx >= 0 && idx + 1 < cells.length) {{",
+                "                        targetCell = cells[idx + 1];",
+                "                    }} else if (!e.shiftKey && idx === cells.length - 1) {{",
+                "                        window.meridianModifyTable('addRow');",
+                "                        const updated = Array.from(table.querySelectorAll('td, th'));",
+                "                        if (idx + 1 < updated.length) targetCell = updated[idx + 1];",
+                "                    }}",
+                "                    if (targetCell) {{",
+                "                        const r = document.createRange();",
+                "                        r.selectNodeContents(targetCell);",
+                "                        r.collapse(true);",
+                "                        sel.removeAllRanges();",
+                "                        sel.addRange(r);",
+                "                    }}",
+                "                }}",
+                "                return;",
+                "            }}",
+                "            e.preventDefault();",
+                "            e.stopPropagation();",
+                "            if (e.shiftKey) {{",
+                "                window.meridianOutdent();",
+                "            }} else {{",
+                "                window.meridianIndent();",
+                "            }}",
+                "            return;",
+                "        }}",
+                "    }}",
+                "    if ((e.ctrlKey || e.metaKey) && !e.altKey) {{",
+                "        const k = (e.key || '').toLowerCase();",
+                "        if (k === 'z') {{",
+                "            e.preventDefault();",
+                "            e.stopPropagation();",
+                "            if (e.shiftKey) {{ window.meridianRedo(); }} else {{ window.meridianUndo(); }}",
+                "        }} else if (k === 'y' && !e.shiftKey) {{",
+                "            e.preventDefault();",
+                "            e.stopPropagation();",
+                "            window.meridianRedo();",
+                "        }} else if (k === 'c' && e.shiftKey) {{",
+                "            e.preventDefault();",
+                "            e.stopPropagation();",
+                "            window.meridianCopyStyle();",
+                "        }}",
+                "    }} else if ((e.ctrlKey || e.metaKey) && e.altKey && !e.shiftKey) {{",
+                "        const k = (e.key || '').toLowerCase();",
+                "        if (k === 'c') {{",
+                "            e.preventDefault();",
+                "            e.stopPropagation();",
+                "            window.meridianCopyStyle();",
+                "        }} else if (k === 'v') {{",
+                "            e.preventDefault();",
+                "            e.stopPropagation();",
+                "            window.meridianApplyCopiedStyle();",
+                "        }}",
+                "    }}",
+                "}}, true);",
+                "window.addEventListener('load', function() {{",
+                "    if (window.__meridianUndoStack.length === 0) window.meridianResetHistory();",
+                "}});",
+                "function notifyMeridianSelectionState() {{",
+                "    try {{",
+                "        if (typeof window.meridianUpdateTableUI === 'function') window.meridianUpdateTableUI();",
+                "        if (window.__meridianSuppressSelectionNotify) return;",
+                "        if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.meridianSelectionState) return;",
+                "        const sel = window.getSelection();",
+                "        const hasSelection = Boolean(sel && !sel.isCollapsed && sel.toString().trim().length > 0);",
+                "        let node = null;",
+                "        if (sel && sel.rangeCount > 0) {{",
+                "            const r = sel.getRangeAt(0);",
+                "            node = sel.focusNode || r.startContainer;",
+                "            if (node && node.nodeType === 1 && sel.focusOffset > 0 && sel.focusOffset <= node.childNodes.length) {{",
+                "                const candidate = node.childNodes[sel.focusOffset - 1];",
+                "                if (candidate) node = candidate;",
+                "            }} else if (node && node.nodeType === 1 && sel.focusOffset === 0 && node.childNodes.length > 0) {{",
+                "                const first = node.childNodes[0];",
+                "                if (first && first.nodeType === 1 && first.tagName !== 'BR') node = first;",
+                "            }}",
+                "            while (node && node.nodeType !== 1) {{",
+                "                node = node.parentElement || node.parentNode;",
+                "            }}",
+                "        }}",
+                "        if (node === document.body && document.body && document.body.firstElementChild) {{",
+                "            node = document.body.firstElementChild;",
                 "        }}",
                 "        const inBlockquote = Boolean(node && node.closest && node.closest('blockquote'));",
                 "        let blockTag = 'p';",
@@ -3592,7 +6178,11 @@ impl HtmlEditor {
                 "document.addEventListener('input', notifyMeridianContentChanged);",
                 "</script></head><body contenteditable='true'><p><br></p></body></html>"
             ),
-            html_theme_class, font_family, font_size
+            html_theme_class,
+            font_family,
+            font_size,
+            initial_custom_css,
+            initial_custom_map_json
         );
 
         let editor_weak_for_policy = self.downgrade();
@@ -3703,10 +6293,10 @@ impl HtmlEditor {
                 || state.contains(gdk::ModifierType::META_MASK);
             let alt = state.contains(gdk::ModifierType::ALT_MASK);
             let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+            let Some(editor) = editor_weak_for_keys.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
             if ctrl && !alt {
-                let Some(editor) = editor_weak_for_keys.upgrade() else {
-                    return glib::Propagation::Proceed;
-                };
                 match keyval {
                     gdk::Key::z | gdk::Key::Z => {
                         if shift {
@@ -3732,6 +6322,58 @@ impl HtmlEditor {
                         editor.toggle_underline();
                         return glib::Propagation::Stop;
                     }
+                    gdk::Key::k | gdk::Key::K if !shift => {
+                        editor.open_link_popover();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::x | gdk::Key::X if shift => {
+                        editor.toggle_strikethrough();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::backslash if !shift => {
+                        editor.clear_formatting();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::c | gdk::Key::C if shift => {
+                        editor.copy_formatting();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::v | gdk::Key::V if shift => {
+                        editor.paste_or_apply_formatting();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::_0 | gdk::Key::KP_0 if !shift => {
+                        editor.set_block_format_index(0);
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::_1 | gdk::Key::KP_1 if !shift => {
+                        editor.set_block_format_index(1);
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::_2 | gdk::Key::KP_2 if !shift => {
+                        editor.set_block_format_index(2);
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::_3 | gdk::Key::KP_3 if !shift => {
+                        editor.set_block_format_index(3);
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::_4 | gdk::Key::KP_4 if !shift => {
+                        editor.set_block_format_index(4);
+                        return glib::Propagation::Stop;
+                    }
+                    _ => {}
+                }
+            } else if ctrl && alt && !shift {
+                match keyval {
+                    gdk::Key::c | gdk::Key::C => {
+                        editor.copy_formatting();
+                        return glib::Propagation::Stop;
+                    }
+                    gdk::Key::v | gdk::Key::V => {
+                        editor.apply_copied_formatting();
+                        return glib::Propagation::Stop;
+                    }
                     _ => {}
                 }
             }
@@ -3740,6 +6382,10 @@ impl HtmlEditor {
         web_view.add_controller(wv_key_controller);
 
         *self.imp().web_view.borrow_mut() = Some(web_view.clone());
+        let initial_auto_fmt = AppSettings::try_new()
+            .map(|s| s.composer_auto_format())
+            .unwrap_or(true);
+        self.set_auto_format_enabled(initial_auto_fmt);
         let editor_weak = self.downgrade();
         web_view.connect_load_changed(move |_, event| {
             if event == webkit6::LoadEvent::Finished {
@@ -3838,6 +6484,14 @@ impl HtmlEditor {
             let id_font = settings.connect_changed(Some("mail-font-family"), move |s, _| {
                 let raw = s.string("mail-font-family").to_string();
                 let safe = crate::views::mail_viewer::safe_css_font_family(&raw);
+                if let Some(wv) = wv_weak.upgrade() {
+                    if let Some(wk_settings) = webkit6::prelude::WebViewExt::settings(&wv) {
+                        let desktop_font = crate::views::mail_viewer::detect_desktop_font_family();
+                        let primary_font = primary_webkit_font_family(&raw, &desktop_font);
+                        wk_settings.set_default_font_family(&primary_font);
+                        wk_settings.set_sans_serif_font_family(&primary_font);
+                    }
+                }
                 if let Some(editor) = editor_weak_font.upgrade() {
                     if let Some(dd) = editor.imp().dropdown_font_family.borrow().as_ref() {
                         let idx = font_family_index_for_css(&raw);
@@ -3847,13 +6501,23 @@ impl HtmlEditor {
                             editor.imp().suppress_toolbar_sync.set(false);
                         }
                     }
-                }
-                if let Some(wv) = wv_weak.upgrade() {
+                    let mut updated_custom = false;
+                    {
+                        let mut styles = editor.imp().custom_styles.borrow_mut();
+                        if let Some(p_style) = styles.get_mut("p") {
+                            p_style.font_family = raw.clone();
+                            save_custom_composer_styles(&styles);
+                            updated_custom = true;
+                        }
+                    }
+                    if updated_custom {
+                        editor.apply_custom_styles_to_dom();
+                    }
                     if let Ok(encoded) = serde_json::to_string(&safe) {
                         let js = format!(
-                            "if (document.documentElement) document.documentElement.style.fontFamily = {encoded}; if (document.body) document.body.style.fontFamily = {encoded};"
+                            "if (document.documentElement) document.documentElement.style.fontFamily = {encoded}; if (document.body) {{ document.body.style.fontFamily = {encoded}; if (!window.__meridianUserEdited) {{ document.body.querySelectorAll('p').forEach(p => {{ if (!p.closest('#_evolution_signature_, .evolution-signature')) p.style.removeProperty('font-family'); }}); }} }} if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();"
                         );
-                        wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+                        editor.evaluate_or_queue(js);
                     }
                 }
             });
@@ -3861,30 +6525,36 @@ impl HtmlEditor {
             let editor_weak_size = self.downgrade();
             let id_size = settings.connect_changed(Some("mail-font-size"), move |s, _| {
                 let sz = s.int("mail-font-size").clamp(8, 48) as u32;
+                if let Some(wv) = wv_weak_size.upgrade() {
+                    if let Some(wk_settings) = webkit6::prelude::WebViewExt::settings(&wv) {
+                        wk_settings.set_default_font_size(sz);
+                    }
+                }
                 if let Some(editor) = editor_weak_size.upgrade() {
                     if let Some(dd) = editor.imp().dropdown_font_size.borrow().as_ref() {
-                        let idx = match sz {
-                            10 => 1,
-                            12 => 2,
-                            14 => 3,
-                            16 => 4,
-                            18 => 5,
-                            24 => 6,
-                            32 => 7,
-                            _ => 0,
-                        };
+                        let idx = font_size_index_for_px(sz);
                         if dd.selected() != idx {
                             editor.imp().suppress_toolbar_sync.set(true);
                             dd.set_selected(idx);
                             editor.imp().suppress_toolbar_sync.set(false);
                         }
                     }
-                }
-                if let Some(wv) = wv_weak_size.upgrade() {
+                    let mut updated_custom = false;
+                    {
+                        let mut styles = editor.imp().custom_styles.borrow_mut();
+                        if let Some(p_style) = styles.get_mut("p") {
+                            p_style.font_size_px = sz;
+                            save_custom_composer_styles(&styles);
+                            updated_custom = true;
+                        }
+                    }
+                    if updated_custom {
+                        editor.apply_custom_styles_to_dom();
+                    }
                     let js = format!(
-                        "if (document.documentElement) document.documentElement.style.fontSize = '{sz}px'; if (document.body) document.body.style.fontSize = '{sz}px';"
+                        "if (document.documentElement) document.documentElement.style.fontSize = '{sz}px'; if (document.body) {{ document.body.style.fontSize = '{sz}px'; if (!window.__meridianUserEdited) {{ document.body.querySelectorAll('p').forEach(p => {{ if (!p.closest('#_evolution_signature_, .evolution-signature')) p.style.removeProperty('font-size'); }}); }} }} if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();"
                     );
-                    wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+                    editor.evaluate_or_queue(js);
                 }
             });
             self.imp().spelling_handler_ids.borrow_mut().push(id_font);
@@ -3922,6 +6592,17 @@ impl HtmlEditor {
         });
         web_view.add_controller(motion_leave);
 
+        let click_dismiss_popovers = gtk::GestureClick::new();
+        click_dismiss_popovers.set_propagation_phase(gtk::PropagationPhase::Capture);
+        click_dismiss_popovers.set_button(0);
+        let editor_for_click_dismiss = self.downgrade();
+        click_dismiss_popovers.connect_pressed(move |_, _, _, _| {
+            if let Some(editor) = editor_for_click_dismiss.upgrade() {
+                editor.popdown_toolbar_popovers();
+            }
+        });
+        web_view.add_controller(click_dismiss_popovers);
+
         vbox.append(&editor_overlay);
         vbox.set_parent(self);
 
@@ -3947,33 +6628,19 @@ impl HtmlEditor {
             }
         });
 
-        btn_strikethrough.connect_clicked(glib::clone!(
-            #[weak]
-            web_view,
-            move |_| {
-                web_view.evaluate_javascript(
-                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('strikethrough', false, null); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
-                    None,
-                    None,
-                    None::<&gio::Cancellable>,
-                    |_| {},
-                );
+        let editor_for_strike = self.downgrade();
+        btn_strikethrough.connect_clicked(move |_| {
+            if let Some(editor) = editor_for_strike.upgrade() {
+                editor.toggle_strikethrough();
             }
-        ));
+        });
 
-        btn_clear.connect_clicked(glib::clone!(
-            #[weak]
-            web_view,
-            move |_| {
-                web_view.evaluate_javascript(
-                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('removeFormat', false, null); if (typeof window.meridianUnwrapBlockquote === 'function') { while (window.meridianUnwrapBlockquote()) {} } document.execCommand('formatBlock', false, 'p'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
-                    None,
-                    None,
-                    None::<&gio::Cancellable>,
-                    |_| {},
-                );
+        let editor_for_clear = self.downgrade();
+        btn_clear.connect_clicked(move |_| {
+            if let Some(editor) = editor_for_clear.upgrade() {
+                editor.clear_formatting();
             }
-        ));
+        });
 
         let editor_for_format = self.downgrade();
         dropdown_format.connect_selected_notify(glib::clone!(
@@ -3983,6 +6650,7 @@ impl HtmlEditor {
                 let Some(editor) = editor_for_format.upgrade() else {
                     return;
                 };
+                editor.sync_typography_popover_ui();
                 if editor.imp().suppress_toolbar_sync.get() {
                     return;
                 }
@@ -3994,11 +6662,49 @@ impl HtmlEditor {
                     4 => "pre",
                     _ => "p",
                 };
-                let script = if selected == 0 {
-                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.meridianUnwrapBlockquote === 'function') { while (window.meridianUnwrapBlockquote()) {} } document.execCommand('formatBlock', false, 'p'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string()
-                } else {
-                    format!("if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('formatBlock', false, '{tag}'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();")
-                };
+                let script = format!(
+                    r#"(() => {{
+    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
+    const tag = '{tag}';
+    if (tag === 'p' && typeof window.meridianUnwrapBlockquote === 'function') {{
+        while (window.meridianUnwrapBlockquote()) {{}}
+    }}
+    const sel = window.getSelection();
+    if (sel && sel.isCollapsed && sel.rangeCount > 0) {{
+        let node = sel.anchorNode || sel.getRangeAt(0).startContainer;
+        if (node && node.nodeType === 3) node = node.parentElement;
+        if (node === document.body && document.body.firstElementChild) node = document.body.firstElementChild;
+        const sig = document.getElementById('_evolution_signature_') || document.querySelector('.evolution-signature');
+        const block = node && node.closest ? node.closest('p, div, h1, h2, h3, pre') : null;
+        if (block && block !== sig && !(sig && sig.contains(block)) && block.parentNode) {{
+            const nextEl = document.createElement(tag);
+            while (block.firstChild) nextEl.appendChild(block.firstChild);
+            if (isBlockEmpty(nextEl)) nextEl.innerHTML = '<br>';
+            block.parentNode.replaceChild(nextEl, block);
+            const nr = document.createRange();
+            if (isBlockEmpty(nextEl)) {{
+                nr.setStart(nextEl, 0);
+                nr.collapse(true);
+            }} else {{
+                nr.selectNodeContents(nextEl);
+                nr.collapse(false);
+            }}
+            sel.removeAllRanges();
+            sel.addRange(nr);
+        }} else {{
+            document.execCommand('formatBlock', false, tag);
+        }}
+    }} else {{
+        document.execCommand('formatBlock', false, tag);
+        if (tag === 'p' && sel && !sel.isCollapsed) {{
+            document.execCommand('removeFormat', false, null);
+        }}
+    }}
+    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
+    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();
+    if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();
+}})()"#
+                );
                 web_view.evaluate_javascript(
                     &script,
                     None,
@@ -4017,9 +6723,10 @@ impl HtmlEditor {
                 let Some(editor) = editor_for_font.upgrade() else {
                     return;
                 };
+                editor.sync_typography_popover_ui();
                 if editor.imp().suppress_toolbar_sync.get() {
                     return;
-                }
+                };
                 let idx = dropdown.selected() as usize;
                 let css_family = COMPOSER_FONT_FAMILIES
                     .get(idx)
@@ -4032,11 +6739,55 @@ impl HtmlEditor {
                 } else {
                     css_family.to_string()
                 };
-                let Ok(encoded) = serde_json::to_string(&css_family) else {
+                let safe_family = crate::views::mail_viewer::safe_css_font_family(&css_family);
+                let Ok(encoded) = serde_json::to_string(&safe_family) else {
                     return;
                 };
                 let script = format!(
-                    "(() => {{ if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); const sel = window.getSelection(); document.execCommand('styleWithCSS', false, true); if (sel && !sel.isCollapsed) {{ document.execCommand('fontName', false, {encoded}); }} else {{ document.body.style.fontFamily = {encoded}; document.execCommand('fontName', false, {encoded}); }} if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState(); }})()"
+                    r#"(() => {{
+    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
+    window.__meridianSuppressSelectionNotify = true;
+    try {{
+        const sel = window.getSelection();
+        document.execCommand('styleWithCSS', false, true);
+        if (sel && !sel.isCollapsed) {{
+            document.execCommand('fontName', false, {encoded});
+        }} else {{
+            let node = sel && sel.rangeCount > 0 ? (sel.focusNode || sel.getRangeAt(0).startContainer) : null;
+            if (node && node.nodeType === 3) node = node.parentElement;
+            if (node === document.body && document.body && document.body.firstElementChild) {{
+                node = document.body.firstElementChild;
+            }}
+            const block = node && node.closest ? node.closest('p, div, li, h1, h2, h3, pre, blockquote') : null;
+            if (node && node.tagName === 'SPAN' && node.textContent === '\u200b') {{
+                node.style.fontFamily = {encoded};
+            }} else if (block && typeof isBlockEmpty === 'function' && isBlockEmpty(block)) {{
+                block.style.fontFamily = {encoded};
+                if (!window.__meridianUserEdited) {{
+                    document.documentElement.style.fontFamily = {encoded};
+                    document.body.style.fontFamily = {encoded};
+                }}
+            }} else if (sel && sel.rangeCount > 0) {{
+                const range = sel.getRangeAt(0);
+                const span = document.createElement('span');
+                span.style.fontFamily = {encoded};
+                span.textContent = '\u200b';
+                range.insertNode(span);
+                range.setStart(span.firstChild, 1);
+                range.collapse(true);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }} else {{
+                document.body.style.fontFamily = {encoded};
+            }}
+        }}
+    }} finally {{
+        window.__meridianSuppressSelectionNotify = false;
+    }}
+    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
+    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();
+    if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();
+}})()"#
                 );
                 web_view.evaluate_javascript(
                     &script,
@@ -4056,38 +6807,76 @@ impl HtmlEditor {
                 let Some(editor) = editor_for_size.upgrade() else {
                     return;
                 };
+                editor.sync_typography_popover_ui();
                 if editor.imp().suppress_toolbar_sync.get() {
                     return;
                 }
-                let size = match dropdown.selected() {
-                    1 => 10,
-                    2 => 12,
-                    3 => 14,
-                    4 => 16,
-                    5 => 18,
-                    6 => 24,
-                    7 => 32,
-                    _ => 0,
-                };
+                let size = font_size_px_for_index(dropdown.selected());
                 let script = if size == 0 {
                     "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.execCommand('styleWithCSS', false, true); document.execCommand('fontSize', false, '3'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();".to_string()
                 } else {
                     format!(
-                        concat!(
-                            "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
-                            "document.execCommand('styleWithCSS', false, true);",
-                            "document.execCommand('fontSize', false, '7');",
-                            "(function() {{",
-                            "    var spans = document.querySelectorAll('span[style*=\"-webkit-xxx-large\"], font[size=\"7\"]');",
-                            "    for (var i = 0; i < spans.length; i++) {{",
-                            "        spans[i].removeAttribute('size');",
-                            "        spans[i].style.fontSize = '{size}px';",
-                            "    }}",
-                            "    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);",
-                            "    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
-                            "    if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
-                            "}})();"
-                        ),
+                        r#"(() => {{
+    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
+    window.__meridianSuppressSelectionNotify = true;
+    try {{
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed) {{
+            document.execCommand('styleWithCSS', false, false);
+            document.execCommand('fontSize', false, '7');
+            const markers = document.querySelectorAll('font[size="7"], span[style*="xxx-large"], [style*="-webkit-xxx-large"]');
+            for (let i = 0; i < markers.length; i++) {{
+                const el = markers[i];
+                if (el.tagName === 'FONT') {{
+                    const sp = document.createElement('span');
+                    sp.style.fontSize = '{size}px';
+                    while (el.firstChild) sp.appendChild(el.firstChild);
+                    if (el.parentNode) el.parentNode.replaceChild(sp, el);
+                }} else {{
+                    el.removeAttribute('size');
+                    el.style.fontSize = '{size}px';
+                }}
+            }}
+        }} else {{
+            let node = sel && sel.rangeCount > 0 ? (sel.focusNode || sel.getRangeAt(0).startContainer) : null;
+            if (node && node.nodeType === 3) node = node.parentElement;
+            if (node === document.body && document.body && document.body.firstElementChild) {{
+                node = document.body.firstElementChild;
+            }}
+            const block = node && node.closest ? node.closest('p, div, li, h1, h2, h3, pre, blockquote') : null;
+            if (node && node.tagName === 'SPAN' && node.textContent === '\u200b') {{
+                node.style.fontSize = '{size}px';
+            }} else if (block && typeof isBlockEmpty === 'function' && isBlockEmpty(block)) {{
+                block.style.fontSize = '{size}px';
+                const innerSpans = block.querySelectorAll('span[style*="font-size"]');
+                for (let j = 0; j < innerSpans.length; j++) {{
+                    innerSpans[j].style.fontSize = '{size}px';
+                }}
+                if (!window.__meridianUserEdited) {{
+                    document.documentElement.style.fontSize = '{size}px';
+                    document.body.style.fontSize = '{size}px';
+                }}
+            }} else if (sel && sel.rangeCount > 0) {{
+                const range = sel.getRangeAt(0);
+                const span = document.createElement('span');
+                span.style.fontSize = '{size}px';
+                span.textContent = '\u200b';
+                range.insertNode(span);
+                range.setStart(span.firstChild, 1);
+                range.collapse(true);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }} else {{
+                document.body.style.fontSize = '{size}px';
+            }}
+        }}
+    }} finally {{
+        window.__meridianSuppressSelectionNotify = false;
+    }}
+    if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true);
+    if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();
+    if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();
+}})()"#,
                         size = size
                     )
                 };
@@ -4134,7 +6923,7 @@ impl HtmlEditor {
             web_view,
             move |_| {
                 web_view.evaluate_javascript(
-                    "if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (!(typeof window.meridianUnwrapBlockquote === 'function' && window.meridianUnwrapBlockquote())) { document.execCommand('formatBlock', false, 'blockquote'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState(); }",
+                    "if (typeof window.meridianToggleBlockquote === 'function') { window.meridianToggleBlockquote(); } else { if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (!(typeof window.meridianUnwrapBlockquote === 'function' && window.meridianUnwrapBlockquote())) { document.execCommand('formatBlock', false, 'blockquote'); if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState(); } }",
                     None,
                     None,
                     None::<&gio::Cancellable>,
@@ -4664,7 +7453,8 @@ mod tests {
 
         assert_eq!(dd_format.selected(), 2); // Heading 2
         assert_eq!(dd_font.selected(), font_family_index_for_css("Georgia, serif"));
-        assert_eq!(dd_size.selected(), 5); // 18 pt
+        assert_eq!(dd_size.selected(), font_size_index_for_px(18)); // 18 px
+        assert_eq!(font_size_px_for_index(font_size_index_for_px(11)), 11); // 11 px available!
 
         // Updating selection state must not queue formatting commands back into the WebView
         assert!(editor.imp().pending_scripts.borrow().is_empty());
@@ -4688,6 +7478,203 @@ mod tests {
         assert_eq!(scripts.len(), 2);
         assert!(scripts[0].contains("window.meridianUndo"));
         assert!(scripts[1].contains("window.meridianRedo"));
+    }
+
+    #[test]
+    fn test_compact_typography_color_and_align_popovers_in_toolbar() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let editor = HtmlEditor::new();
+        let toolbar = editor
+            .imp()
+            .format_toolbar
+            .borrow()
+            .clone()
+            .expect("format_toolbar initialized");
+        let btn_typography = editor
+            .imp()
+            .btn_typography
+            .borrow()
+            .clone()
+            .expect("btn_typography initialized");
+        let btn_color = editor
+            .imp()
+            .btn_color
+            .borrow()
+            .clone()
+            .expect("btn_color initialized");
+        let btn_align = editor
+            .imp()
+            .btn_align
+            .borrow()
+            .clone()
+            .expect("btn_align initialized");
+
+        assert!(btn_typography.popover().is_some());
+        assert!(btn_color.popover().is_some());
+        assert!(btn_align.popover().is_some());
+
+        // Minimalist productivity layout: Style, Font, and Size dropdowns are grouped cleanly on the main toolbar
+        let dd_format = editor.imp().dropdown_format.borrow().clone().unwrap();
+        let dd_font = editor.imp().dropdown_font_family.borrow().clone().unwrap();
+        let dd_size = editor.imp().dropdown_font_size.borrow().clone().unwrap();
+        let btn_blockquote = editor.imp().btn_blockquote.borrow().clone().unwrap();
+        let btn_link = editor.imp().btn_link.borrow().clone().unwrap();
+        let btn_table = editor.imp().btn_table.borrow().clone().unwrap();
+        let btn_rule = toolbar
+            .last_child()
+            .and_then(|w| w.downcast::<gtk::Button>().ok())
+            .expect("last toolbar widget is btn_rule");
+        assert_eq!(dd_format.parent().as_ref(), Some(toolbar.upcast_ref()));
+        assert_eq!(dd_font.parent().as_ref(), Some(toolbar.upcast_ref()));
+        assert_eq!(dd_size.parent().as_ref(), Some(toolbar.upcast_ref()));
+        assert_eq!(btn_table.parent().as_ref(), Some(toolbar.upcast_ref()));
+        assert!(btn_table.popover().is_some());
+        assert!(btn_typography.parent().is_none());
+        assert_eq!(
+            btn_blockquote.icon_name().as_deref(),
+            Some("meridian-format-quote-symbolic")
+        );
+        assert_eq!(
+            btn_link.icon_name().as_deref(),
+            Some("meridian-insert-link-symbolic")
+        );
+        assert_eq!(
+            btn_table.icon_name().as_deref(),
+            Some("meridian-insert-table-symbolic")
+        );
+        assert_eq!(
+            btn_rule.icon_name().as_deref(),
+            Some("meridian-horizontal-rule-symbolic")
+        );
+    }
+
+    #[test]
+    fn test_copy_and_apply_formatting_and_paste_match_style_queue_commands() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        let editor = HtmlEditor::new();
+        editor.imp().pending_scripts.borrow_mut().clear();
+
+        editor.copy_formatting();
+        editor.apply_copied_formatting();
+        editor.insert_plain_text_matching_style("Hello Clean Paste");
+        editor.set_text_color("#3584e4");
+        editor.set_highlight_color("rgba(249, 240, 107, 0.45)");
+        editor.set_text_alignment("justifyCenter");
+        editor.set_text_alignment("indent");
+        editor.set_text_alignment("outdent");
+        editor.insert_table(3, 4);
+        editor.modify_table("addRow");
+
+        let scripts = editor.imp().pending_scripts.borrow().clone();
+        assert_eq!(scripts.len(), 10);
+        assert!(scripts[0].contains("window.meridianCopyStyle"));
+        assert!(scripts[1].contains("window.meridianApplyCopiedStyle"));
+        assert!(scripts[2].contains("window.meridianInsertPlainTextMatchStyle"));
+        assert!(scripts[2].contains("Hello Clean Paste"));
+        assert!(scripts[3].contains("foreColor") && scripts[3].contains("#3584e4"));
+        assert!(scripts[4].contains("hiliteColor"));
+        assert!(scripts[5].contains("justifyCenter"));
+        assert!(scripts[6].contains("window.meridianIndent"));
+        assert!(scripts[7].contains("window.meridianOutdent"));
+        assert!(scripts[8].contains("window.meridianInsertTable(3, 4)"));
+        assert!(scripts[9].contains("window.meridianModifyTable('addRow')"));
+    }
+
+    #[test]
+    fn test_font_sizes_include_11px_and_custom_styles_can_be_saved_and_reset() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+        assert!(COMPOSER_FONT_SIZES.contains(&11));
+        assert!(COMPOSER_FONT_SIZES.windows(2).all(|w| w[0] < w[1]));
+        for (expected_idx, &px) in COMPOSER_FONT_SIZES.iter().enumerate() {
+            let idx = font_size_index_for_px(px);
+            assert_eq!(idx, expected_idx as u32);
+            assert_eq!(font_size_px_for_index(idx), px);
+        }
+
+        let editor = HtmlEditor::new();
+        editor.imp().pending_scripts.borrow_mut().clear();
+
+        // Select Heading 1, Inter font, 20 px, bold
+        if let Some(dd) = editor.imp().dropdown_format.borrow().as_ref() {
+            editor.imp().suppress_toolbar_sync.set(true);
+            dd.set_selected(1); // h1
+            editor.imp().suppress_toolbar_sync.set(false);
+        }
+        if let Some(dd) = editor.imp().dropdown_font_family.borrow().as_ref() {
+            editor.imp().suppress_toolbar_sync.set(true);
+            dd.set_selected(font_family_index_for_css("Inter, sans-serif"));
+            editor.imp().suppress_toolbar_sync.set(false);
+        }
+        if let Some(dd) = editor.imp().dropdown_font_size.borrow().as_ref() {
+            editor.imp().suppress_toolbar_sync.set(true);
+            dd.set_selected(font_size_index_for_px(20));
+            editor.imp().suppress_toolbar_sync.set(false);
+        }
+        if let Some(btn_bold) = editor.imp().btn_bold.borrow().as_ref() {
+            btn_bold.add_css_class("suggested-action");
+        }
+
+        editor.save_current_style_preset();
+        {
+            let styles = editor.imp().custom_styles.borrow();
+            let h1 = styles.get("h1").expect("h1 custom style saved");
+            assert_eq!(h1.font_size_px, 20);
+            assert_eq!(h1.bold, Some(true));
+            let css = build_custom_styles_css(&styles);
+            assert!(css.contains("h1 {"));
+            assert!(css.contains("font-size: 20px;"));
+        }
+
+        editor.reset_current_style_preset();
+        assert!(!editor.imp().custom_styles.borrow().contains_key("h1"));
+
+        editor.set_auto_format_enabled(false);
+        assert!(!editor.auto_format_enabled());
+        assert!(editor
+            .imp()
+            .pending_scripts
+            .borrow()
+            .iter()
+            .any(|s| s.contains("__meridianAutoFormatEnabled = false")));
+
+        editor.set_block_format_index(2);
+        assert_eq!(
+            editor
+                .imp()
+                .dropdown_format
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .selected(),
+            2
+        );
+
+        for (expected_idx, (_, css_family)) in COMPOSER_FONT_FAMILIES.iter().enumerate() {
+            let safe_css = crate::views::mail_viewer::safe_css_font_family(css_family);
+            assert_eq!(
+                font_family_index_for_css(&safe_css),
+                expected_idx as u32,
+                "Font family '{}' (safe '{}') must round-trip to index {}",
+                css_family,
+                safe_css,
+                expected_idx
+            );
+        }
     }
 }
 

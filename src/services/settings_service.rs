@@ -744,6 +744,10 @@ thread_local! {
     static SHARED_SETTINGS: std::cell::RefCell<Option<gio::Settings>> = const { std::cell::RefCell::new(None) };
 }
 
+#[cfg(test)]
+static COMPOSER_AUTO_FORMAT_FALLBACK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
 impl AppSettings {
     /// Open the application schema if it is available in the current process.
     pub fn try_new() -> Option<Self> {
@@ -2280,6 +2284,57 @@ impl AppSettings {
 
     pub fn set_composer_inline_spelling(&self, value: bool) {
         self.set_boolean("composer-inline-spelling", value);
+    }
+
+    pub fn composer_auto_format(&self) -> bool {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("composer-auto-format"))
+        {
+            return self.settings.boolean("composer-auto-format");
+        }
+        #[cfg(test)]
+        {
+            return COMPOSER_AUTO_FORMAT_FALLBACK.load(std::sync::atomic::Ordering::Relaxed);
+        }
+        #[cfg(not(test))]
+        {
+            let path = glib::user_config_dir()
+                .join("meridian")
+                .join("composer_auto_format.json");
+            if let Ok(raw) = std::fs::read_to_string(&path)
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
+                && let Some(enabled) = val.get("enabled").and_then(|v| v.as_bool())
+            {
+                return enabled;
+            }
+            true
+        }
+    }
+
+    pub fn set_composer_auto_format(&self, value: bool) {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("composer-auto-format"))
+        {
+            self.set_boolean("composer-auto-format", value);
+        }
+        #[cfg(test)]
+        {
+            COMPOSER_AUTO_FORMAT_FALLBACK.store(value, std::sync::atomic::Ordering::Relaxed);
+        }
+        #[cfg(not(test))]
+        {
+            let path = glib::user_config_dir()
+                .join("meridian")
+                .join("composer_auto_format.json");
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&path, format!(r#"{{"enabled":{value}}}"#));
+        }
     }
 
     pub fn composer_reply_style(&self) -> String {

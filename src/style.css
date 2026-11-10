@@ -1575,21 +1575,93 @@ button.attachment-save-all-btn:active {
 
 /* Global fix for flat suggested-action buttons (prevent white text on transparent light background) */
 button.flat.suggested-action,
-button.suggested-action.flat {
+button.suggested-action.flat,
+menubutton.flat.suggested-action > button {
   color: @accent_color;
   background-color: alpha(@accent_color, 0.12);
 }
 
 button.flat.suggested-action:hover,
-button.suggested-action.flat:hover {
+button.suggested-action.flat:hover,
+menubutton.flat.suggested-action > button:hover {
   background-color: alpha(@accent_color, 0.22);
   color: @accent_color;
 }
 
 button.flat.suggested-action:active,
-button.suggested-action.flat:active {
+button.suggested-action.flat:active,
+menubutton.flat.suggested-action > button:active {
   background-color: alpha(@accent_color, 0.32);
   color: @accent_color;
+}
+
+.composer-format-toolbar > button.composer-toolbar-step-btn,
+.composer-format-toolbar > menubutton.composer-style-menu-btn > button {
+  min-width: 22px;
+  min-height: 26px;
+  padding: 2px 2px;
+}
+
+.composer-format-toolbar > dropdown > button {
+  min-width: 0;
+  min-height: 26px;
+  padding: 2px 4px;
+}
+
+.composer-format-toolbar > dropdown > button > box {
+  border-spacing: 2px;
+}
+
+button.composer-color-swatch {
+  min-width: 24px;
+  max-width: 24px;
+  min-height: 24px;
+  max-height: 24px;
+  padding: 0;
+  margin: 0;
+  border-radius: 999px;
+  background: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  transition: box-shadow 120ms ease, background-color 120ms ease;
+}
+
+button.composer-color-swatch:hover {
+  background-color: alpha(@window_fg_color, 0.08);
+  box-shadow: 0 0 0 2px alpha(@window_fg_color, 0.22);
+}
+
+button.composer-color-custom-btn {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  margin: 1px;
+  border-radius: 999px;
+  background-color: alpha(@window_fg_color, 0.07);
+  border: 1px solid alpha(@window_fg_color, 0.18);
+  color: @window_fg_color;
+}
+
+button.composer-color-custom-btn:hover {
+  background-color: alpha(@window_fg_color, 0.14);
+}
+
+label.composer-color-btn-glyph {
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1;
+}
+
+button.composer-popover-action {
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+button.composer-popover-action > label {
+  xalign: 0;
 }
 
 .attachment-row-entry {
@@ -1970,27 +2042,39 @@ dropdown.composer-dropdown popover row:selected:hover {
 }
 
 /* Formatting toolbar: Flat, borderless, clean icons matching GNOME HIG */
-.composer-format-toolbar button {
+.composer-format-toolbar > button,
+.composer-format-toolbar > menubutton > button {
   background: transparent;
   border: none;
   box-shadow: none;
   border-radius: 6px;
-  padding: 4px 6px;
-  min-height: 28px;
-  min-width: 28px;
+  padding: 2px 4px;
+  min-height: 26px;
+  min-width: 26px;
   color: @window_fg_color;
   transition: background-color 120ms ease, color 120ms ease;
 }
 
-.composer-format-toolbar button:hover {
+.composer-format-toolbar > button:hover,
+.composer-format-toolbar > menubutton > button:hover {
   background-color: alpha(currentColor, 0.08);
   color: @window_fg_color;
 }
 
-.composer-format-toolbar button:active,
-.composer-format-toolbar button.active {
-  background-color: alpha(@accent_color, 0.14);
-  color: @accent_color;
+.composer-format-toolbar > button:active,
+.composer-format-toolbar > button.active,
+.composer-format-toolbar > button.suggested-action,
+.composer-format-toolbar > menubutton > button:active,
+.composer-format-toolbar > menubutton > button:checked,
+.composer-format-toolbar > menubutton.suggested-action > button {
+  background-color: alpha(@window_fg_color, 0.13);
+  color: @window_fg_color;
+}
+
+.composer-format-toolbar > button.suggested-action:hover,
+.composer-format-toolbar > menubutton > button:checked:hover {
+  background-color: alpha(@window_fg_color, 0.18);
+  color: @window_fg_color;
 }
 
 .composer-format-toolbar dropdown > button,
@@ -1999,10 +2083,10 @@ dropdown.composer-dropdown popover row:selected:hover {
   border: none;
   box-shadow: none;
   border-radius: 6px;
-  padding: 3px 8px;
-  min-height: 28px;
+  padding: 2px 5px;
+  min-height: 26px;
   color: @window_fg_color;
-  font-size: 0.84rem;
+  font-size: 0.81rem;
   font-weight: 500;
   transition: background-color 120ms ease;
 }
@@ -2020,7 +2104,7 @@ dropdown.composer-dropdown popover row:selected:hover {
 }
 
 .composer-format-toolbar separator {
-  margin: 4px 6px;
+  margin: 4px 3px;
   min-width: 1px;
   background-color: alpha(@borders, 0.40);
 }
@@ -7399,21 +7483,43 @@ row.compact-grouped-combo popover listview > row {
   min-height: 22px;
 }
 
-/* Subtle header-bar Offline Mode pill indicator */
+/* Subtle header-bar Offline Mode pill indicator (strictly <= 24px so HeaderBar height never shifts) */
+headerbar button.offline-header-badge,
 button.offline-header-badge {
   min-height: 24px;
-  padding: 2px 9px;
-  margin-top: 4px;
-  margin-bottom: 4px;
+  min-width: 0;
+  padding: 0 8px;
+  margin-top: 0;
+  margin-bottom: 0;
   border-radius: 999px;
   background-color: alpha(@window_fg_color, 0.08);
   color: alpha(@window_fg_color, 0.78);
   font-weight: 600;
 }
 
+headerbar button.offline-header-badge:hover,
 button.offline-header-badge:hover {
   background-color: alpha(@window_fg_color, 0.14);
   color: @window_fg_color;
 }
+
+button.composer-table-grid-cell {
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0;
+  margin: 0;
+  border-radius: 3px;
+  border: 1px solid alpha(@window_fg_color, 0.18);
+  background-color: alpha(@window_fg_color, 0.04);
+  box-shadow: none;
+}
+
+button.composer-table-grid-cell.active,
+button.composer-table-grid-cell:hover {
+  border-color: alpha(@accent_color, 0.75);
+  background-color: alpha(@accent_bg_color, 0.22);
+}
+
+
 
 
