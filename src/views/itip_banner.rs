@@ -139,6 +139,7 @@ pub struct ItipBanner {
     btn_update: gtk::Button,
     btn_import: gtk::Button,
     btn_import_as_event: gtk::Button,
+    btn_propose_time: gtk::Button,
     lbl_import_hint: gtk::Label,
     action_box_request: gtk::Box,
     action_box_cancel: gtk::Box,
@@ -785,6 +786,12 @@ impl ItipBanner {
             .active(true)
             .build();
 
+        let btn_propose_time = gtk::Button::builder()
+            .label(gettext("Propose New Time…"))
+            .css_classes(["flat"])
+            .halign(gtk::Align::Start)
+            .build();
+
         let btn_import_as_event = gtk::Button::builder()
             .label(gettext("Import as Event"))
             .css_classes(["flat"])
@@ -1084,10 +1091,16 @@ impl ItipBanner {
         let sep_pop2 = gtk::Separator::new(gtk::Orientation::Horizontal);
         pop_box.append(&sep_pop2);
 
+        pop_box.append(&btn_propose_time);
         pop_box.append(&btn_import_as_event);
         pop_box.append(&lbl_import_hint);
 
         more_popover.set_child(Some(&pop_box));
+
+        let pop_close_propose = more_popover.clone();
+        btn_propose_time.connect_clicked(move |_| {
+            pop_close_propose.popdown();
+        });
 
         let pop_close = more_popover.clone();
         btn_import_as_event.connect_clicked(move |_| {
@@ -1621,6 +1634,7 @@ impl ItipBanner {
             btn_update,
             btn_import,
             btn_import_as_event,
+            btn_propose_time,
             lbl_import_hint,
             action_box_request,
             action_box_cancel,
@@ -2449,6 +2463,26 @@ impl ItipBanner {
                 self.btn_import_as_event.set_visible(false);
                 self.lbl_import_hint.set_visible(false);
             }
+            ItipMethod::Counter => {
+                self.icon.set_icon_name(Some("appointment-new-symbolic"));
+                self.icon.add_css_class("accent");
+                self.lbl_method.set_text(&gettext("Proposed New Meeting Time"));
+                self.lbl_header_prompt.set_text(&gettext("Proposed New Meeting Time"));
+                self.action_box_request.set_visible(false);
+                self.action_box_cancel.set_visible(false);
+                self.action_box_reply.set_visible(true);
+                self.action_box_publish.set_visible(false);
+                self.secondary_bar_box.set_visible(true);
+                self.btn_target_calendar.set_visible(true);
+                self.btn_toggle_comment.set_visible(false);
+                self.sep_footer_inner.set_visible(false);
+                self.chk_send_reply.set_visible(false);
+                self.comment_view.set_visible(false);
+                self.chk_show_free.set_visible(false);
+                self.chk_preserve_reminder.set_visible(false);
+                self.btn_import_as_event.set_visible(false);
+                self.lbl_import_hint.set_visible(false);
+            }
             ItipMethod::Publish => {
                 self.icon.set_icon_name(Some("x-office-calendar-symbolic"));
                 self.icon.add_css_class("accent");
@@ -2773,9 +2807,229 @@ impl ItipBanner {
         });
 
         let this = self.clone();
+        self.btn_propose_time.connect_clicked(move |_| {
+            this.present_propose_new_time_dialog();
+        });
+
+        let this = self.clone();
         self.btn_open_calendar.connect_clicked(move |_| {
             this.handle_open_calendar();
         });
+    }
+
+    fn present_propose_new_time_dialog(&self) {
+        let Some(invitation) = self.current_invitation.borrow().clone() else {
+            return;
+        };
+        let now_local = chrono::Local::now();
+        let initial_date = invitation
+            .event
+            .start
+            .get(..10)
+            .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+            .unwrap_or_else(|| now_local.date_naive());
+        let initial_start = invitation
+            .event
+            .start
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| chrono::NaiveTime::parse_from_str(s, "%H:%M").ok())
+            .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+        let initial_end = invitation
+            .event
+            .end
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| chrono::NaiveTime::parse_from_str(s, "%H:%M").ok())
+            .unwrap_or_else(|| initial_start + chrono::Duration::hours(1));
+
+        let sheet = adw::Dialog::builder()
+            .title(gettext("Propose New Time"))
+            .content_width(460)
+            .content_height(420)
+            .follows_content_size(false)
+            .build();
+        let toolbar_view = adw::ToolbarView::new();
+        let header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .build();
+        let btn_cancel = gtk::Button::with_label(&gettext("Cancel"));
+        let sheet_weak = sheet.downgrade();
+        btn_cancel.connect_clicked(move |_| {
+            if let Some(s) = sheet_weak.upgrade() {
+                s.close();
+            }
+        });
+        let btn_send = gtk::Button::builder()
+            .label(gettext("Compose Proposal"))
+            .css_classes(["suggested-action"])
+            .build();
+        header.pack_start(&btn_cancel);
+        header.pack_end(&btn_send);
+        toolbar_view.add_top_bar(&header);
+
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::builder()
+            .title(gettext("Proposed Schedule"))
+            .build();
+        let row_date = adw::EntryRow::builder()
+            .title(gettext("Date (YYYY-MM-DD)"))
+            .text(initial_date.format("%Y-%m-%d").to_string())
+            .build();
+        let row_start = adw::EntryRow::builder()
+            .title(gettext("Start Time (HH:MM)"))
+            .text(initial_start.format("%H:%M").to_string())
+            .build();
+        let row_end = adw::EntryRow::builder()
+            .title(gettext("End Time (HH:MM)"))
+            .text(initial_end.format("%H:%M").to_string())
+            .build();
+        let row_note = adw::EntryRow::builder()
+            .title(gettext("Reason / Note"))
+            .build();
+        group.add(&row_date);
+        group.add(&row_start);
+        group.add(&row_end);
+        group.add(&row_note);
+        page.add(&group);
+        toolbar_view.set_content(Some(&page));
+        sheet.set_child(Some(&toolbar_view));
+
+        let this = self.clone();
+        let sheet_for_submit = sheet.downgrade();
+        btn_send.connect_clicked(move |_| {
+            let Ok(date) = chrono::NaiveDate::parse_from_str(row_date.text().trim(), "%Y-%m-%d")
+            else {
+                if let Some(toast) = this.on_action_toast.borrow().as_ref() {
+                    toast(gettext("Date must use YYYY-MM-DD format"));
+                }
+                return;
+            };
+            let Ok(start_t) = chrono::NaiveTime::parse_from_str(row_start.text().trim(), "%H:%M")
+            else {
+                if let Some(toast) = this.on_action_toast.borrow().as_ref() {
+                    toast(gettext("Start time must use HH:MM format"));
+                }
+                return;
+            };
+            let Ok(end_t) = chrono::NaiveTime::parse_from_str(row_end.text().trim(), "%H:%M")
+            else {
+                if let Some(toast) = this.on_action_toast.borrow().as_ref() {
+                    toast(gettext("End time must use HH:MM format"));
+                }
+                return;
+            };
+            let Some(start_local) = chrono::TimeZone::from_local_datetime(
+                &chrono::Local,
+                &date.and_time(start_t),
+            )
+            .single() else {
+                return;
+            };
+            let end_date = if end_t <= start_t {
+                date + chrono::Duration::days(1)
+            } else {
+                date
+            };
+            let Some(end_local) = chrono::TimeZone::from_local_datetime(
+                &chrono::Local,
+                &end_date.and_time(end_t),
+            )
+            .single() else {
+                return;
+            };
+
+            let profiles = crate::services::account_config_service::AccountConfigStore::default().load();
+            let fallback_email = this
+                .last_user_emails
+                .borrow()
+                .first()
+                .cloned()
+                .or_else(|| profiles.iter().find(|p| p.enabled).map(|p| p.email.clone()))
+                .unwrap_or_else(|| "attendee@localhost".to_string());
+            let source_uid = profiles
+                .iter()
+                .find(|p| p.enabled)
+                .map(|p| p.id.clone())
+                .unwrap_or_default();
+
+            let dtstart_utc = start_local
+                .with_timezone(&chrono::Utc)
+                .format("%Y%m%dT%H%M%SZ")
+                .to_string();
+            let dtend_utc = end_local
+                .with_timezone(&chrono::Utc)
+                .format("%Y%m%dT%H%M%SZ")
+                .to_string();
+            let note = row_note.text().trim().to_string();
+            let comment_opt = (!note.is_empty()).then_some(note.as_str());
+
+            match crate::services::itip_service::build_counter_component(
+                &invitation,
+                &fallback_email,
+                &dtstart_utc,
+                &dtend_utc,
+                comment_opt,
+            ) {
+                Ok(counter_ics) => {
+                    let organizer_addr =
+                        crate::services::itip_service::strip_mailto_prefix(&invitation.organizer)
+                            .to_string();
+                    let subject = format!(
+                        "Counter Proposal: {}",
+                        if invitation.event.summary.trim().is_empty() {
+                            "Meeting"
+                        } else {
+                            invitation.event.summary.trim()
+                        }
+                    );
+                    let body_html = format!(
+                        "<p>Proposed new time: <b>{} {} – {}</b></p>{}",
+                        date.format("%Y-%m-%d"),
+                        start_t.format("%H:%M"),
+                        end_t.format("%H:%M"),
+                        if note.is_empty() {
+                            String::new()
+                        } else {
+                            format!("<p>{}</p>", glib::markup_escape_text(&note))
+                        }
+                    );
+                    let draft = crate::services::draft_store_service::DraftMessage {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        from: fallback_email,
+                        reply_to: String::new(),
+                        source_uid,
+                        to: organizer_addr,
+                        cc: String::new(),
+                        bcc: String::new(),
+                        subject,
+                        html_body: body_html,
+                        plain_text: false,
+                        updated_at: chrono::Utc::now().to_rfc3339(),
+                        attachments: Vec::new(),
+                        calendar_method: Some("COUNTER".to_string()),
+                        calendar_component: Some(counter_ics),
+                        pgp_sign: false,
+                        pgp_encrypt: false,
+                        pgp_key: String::new(),
+                        smime_options: None,
+                    };
+                    if let Some(s) = sheet_for_submit.upgrade() {
+                        s.close();
+                    }
+                    let composer = crate::dialogs::ComposeDialog::from_draft(&draft);
+                    composer.present_standalone();
+                }
+                Err(err) => {
+                    if let Some(toast) = this.on_action_toast.borrow().as_ref() {
+                        toast(err);
+                    }
+                }
+            }
+        });
+
+        sheet.present(Some(&self.revealer));
     }
 
     fn handle_response_action(&self, status: ItipReplyStatus) {

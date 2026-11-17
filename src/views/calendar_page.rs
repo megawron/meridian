@@ -3598,6 +3598,19 @@ impl CalendarPage {
                     if is_memos_win {
                         win.add_css_class("memos-detached-window");
                     }
+                    if adw::StyleManager::default().is_dark() {
+                        win.add_css_class("dark");
+                    }
+                    let win_for_theme = win.downgrade();
+                    adw::StyleManager::default().connect_dark_notify(move |sm| {
+                        if let Some(win) = win_for_theme.upgrade() {
+                            if sm.is_dark() {
+                                win.add_css_class("dark");
+                            } else {
+                                win.remove_css_class("dark");
+                            }
+                        }
+                    });
                     if let Some(root) = self.root().and_then(|r| r.downcast::<gtk::Window>().ok()) {
                         win.set_transient_for(Some(&root));
                     }
@@ -22208,14 +22221,8 @@ pub(crate) fn draw_memopad_canvas(
     selected_idx: Option<usize>,
     is_dark: bool,
 ) {
-    // Soft warm paper background with clear contrast for memo cards
-    if is_dark {
-        cr.set_source_rgb(0.110, 0.098, 0.071);
-    } else {
-        cr.set_source_rgb(0.988, 0.976, 0.925);
-    }
-    cr.paint().ok();
-
+    // Keep the canvas background transparent so Memopad blends seamlessly into
+    // the native Libadwaita sidebar / window surface without a tinted block.
     for (idx, item) in layout.items.iter().enumerate() {
         if item.y + item.height < 0.0 || item.y > height {
             continue;
@@ -22227,36 +22234,40 @@ pub(crate) fn draw_memopad_canvas(
         let card_y = (item.y + 2.0).round();
         let card_w = (width - 12.0).max(10.0);
         let card_h = (item.height - 4.0).max(18.0);
+        let is_team_memo =
+            crate::services::calendar_store_service::memo_is_team_shared(&item.record);
 
-        // Flat borderless Libadwaita Post-it pill card
+        // Borderless GNOME PDF-Preview sticky-note card:
+        // Always warm GNOME sticky-note yellow (#f8d43a light, #f5c211 dark) with crisp dark ink;
+        // Private vs. Team is distinguished cleanly by the leading icon glyph.
         let fill_rgba = if is_selected {
             if is_dark {
-                (0.96, 0.76, 0.07, 0.34)
+                (0.980, 0.831, 0.247, 1.0)
             } else {
-                (0.92, 0.68, 0.04, 0.36)
+                (0.933, 0.725, 0.008, 1.0)
             }
         } else if is_hovered {
             if is_dark {
-                (0.96, 0.76, 0.07, 0.25)
+                (0.973, 0.800, 0.157, 1.0)
             } else {
-                (0.92, 0.68, 0.04, 0.28)
+                (0.961, 0.784, 0.086, 1.0)
             }
         } else if is_dark {
-            (0.96, 0.76, 0.07, 0.17)
+            (0.961, 0.761, 0.067, 1.0)
         } else {
-            (0.92, 0.68, 0.04, 0.19)
+            (0.973, 0.831, 0.227, 1.0)
         };
         cr.set_source_rgba(fill_rgba.0, fill_rgba.1, fill_rgba.2, fill_rgba.3);
         draw_cairo_rounded_rect(cr, card_x, card_y, card_w, card_h, 8.0);
         cr.fill().ok();
+
+        let (ink_r, ink_g, ink_b) = (0.110, 0.086, 0.016);
 
         // Scope icon glyph (channel-secure-symbolic for private memo, system-users-symbolic for team memo)
         thread_local! {
             static MEMO_PRIVATE_ICON: RefCell<Option<gtk::cairo::ImageSurface>> = const { RefCell::new(None) };
             static MEMO_TEAM_ICON: RefCell<Option<gtk::cairo::ImageSurface>> = const { RefCell::new(None) };
         }
-        let is_team_memo =
-            crate::services::calendar_store_service::memo_is_team_shared(&item.record);
         let icon_surf = if is_team_memo {
             MEMO_TEAM_ICON.with(|cell| {
                 let mut opt = cell.borrow_mut();
@@ -22280,13 +22291,9 @@ pub(crate) fn draw_memopad_canvas(
                 opt.clone()
             })
         };
-        let icon_x = 12.0;
+        let icon_x = 13.0;
         let icon_y = (item.y + (item.height - 13.0) / 2.0).round();
-        if is_dark {
-            cr.set_source_rgba(0.98, 0.80, 0.08, 0.90);
-        } else {
-            cr.set_source_rgba(0.68, 0.45, 0.02, 0.90);
-        }
+        cr.set_source_rgba(ink_r, ink_g, ink_b, 0.88);
         if let Some(surf) = icon_surf {
             cr.mask_surface(&surf, icon_x, icon_y).ok();
         }
@@ -22298,21 +22305,17 @@ pub(crate) fn draw_memopad_canvas(
             cr.set_font_size(10.0);
             if let Ok(extents) = cr.text_extents(&item.subtitle) {
                 let sub_w = extents.width();
-                let sub_x = width - sub_w - 11.0;
+                let sub_x = width - sub_w - 12.0;
                 let sub_y = item.y + (item.height / 2.0) + 4.0;
-                if is_dark {
-                    cr.set_source_rgba(0.95, 0.90, 0.68, 0.72);
-                } else {
-                    cr.set_source_rgba(0.44, 0.28, 0.05, 0.72);
-                }
+                cr.set_source_rgba(ink_r, ink_g, ink_b, 0.64);
                 cr.move_to(sub_x, sub_y);
                 cr.show_text(&item.subtitle).ok();
                 right_reserve = sub_w + 18.0;
             }
         }
 
-        // Title: Bold primary memo note + muted secondary email subject
-        let title_x = 30.0;
+        // Title: Bold primary memo note + crisp readable secondary email subject
+        let title_x = 31.0;
         let title_max_w = (width - title_x - right_reserve).max(20.0);
         let title_y = item.y + (item.height / 2.0) + 4.0;
 
@@ -22323,11 +22326,7 @@ pub(crate) fn draw_memopad_canvas(
                 gtk::cairo::FontWeight::Bold,
             );
             cr.set_font_size(12.0);
-            if is_dark {
-                cr.set_source_rgba(0.99, 0.96, 0.82, 0.98);
-            } else {
-                cr.set_source_rgba(0.18, 0.11, 0.01, 0.98);
-            }
+            cr.set_source_rgba(ink_r, ink_g, ink_b, 0.94);
             let display_note = truncate_cairo_text(cr, note_part, title_max_w);
             cr.move_to(title_x, title_y);
             cr.show_text(&display_note).ok();
@@ -22345,11 +22344,7 @@ pub(crate) fn draw_memopad_canvas(
                         gtk::cairo::FontWeight::Normal,
                     );
                     cr.set_font_size(11.5);
-                    if is_dark {
-                        cr.set_source_rgba(0.94, 0.88, 0.68, 0.60);
-                    } else {
-                        cr.set_source_rgba(0.36, 0.24, 0.05, 0.64);
-                    }
+                    cr.set_source_rgba(ink_r, ink_g, ink_b, 0.68);
                     let suffix = format!("  ·  {subj_part}");
                     let display_subj = truncate_cairo_text(cr, &suffix, rem_w);
                     cr.move_to(title_x + note_w, title_y);
@@ -22363,11 +22358,7 @@ pub(crate) fn draw_memopad_canvas(
                 gtk::cairo::FontWeight::Bold,
             );
             cr.set_font_size(12.0);
-            if is_dark {
-                cr.set_source_rgba(0.99, 0.96, 0.82, 0.98);
-            } else {
-                cr.set_source_rgba(0.18, 0.11, 0.01, 0.98);
-            }
+            cr.set_source_rgba(ink_r, ink_g, ink_b, 0.94);
             let display_title = truncate_cairo_text(cr, &item.title, title_max_w);
             cr.move_to(title_x, title_y);
             cr.show_text(&display_title).ok();

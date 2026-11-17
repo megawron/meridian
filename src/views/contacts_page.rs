@@ -204,50 +204,75 @@ pub(crate) fn prepare_contact_table_layout_with_columns(
     columns: &[(ContactTableColumn, f64)],
 ) -> PreparedContactTableLayout {
     let row_height = 34.0;
-    let mut filtered_contacts: Vec<&EBookContactRecord> = contacts
+    let filtered_contacts: Vec<&EBookContactRecord> = contacts
         .iter()
         .filter(|rec| {
+            if !rec.source_uid.is_empty()
+                && !crate::services::eds_service::is_source_enabled_for_service(
+                    &rec.source_uid,
+                    crate::services::eds_service::EdsSourceKind::AddressBook,
+                )
+            {
+                return false;
+            }
             if let Some(visible) = visible_filter {
-                if !visible.is_empty() {
-                    return visible.contains(&ContactIdentity::new(&rec.source_uid, &rec.uid));
-                }
+                return visible.contains(&ContactIdentity::new(&rec.source_uid, &rec.uid));
             }
             true
         })
         .collect();
 
-    match sort_col {
-        ContactTableColumn::Company => {
-            filtered_contacts.sort_by_cached_key(|rec| clean_contact_org(&rec.contact.org));
-            if sort_desc {
-                filtered_contacts.reverse();
-            }
-        }
-        ContactTableColumn::Categories => {
-            filtered_contacts.sort_by_cached_key(|rec| rec.contact.categories.join(", "));
-            if sort_desc {
-                filtered_contacts.reverse();
-            }
-        }
-        _ => {
-            filtered_contacts.sort_by(|a, b| {
-                let ord = match sort_col {
-                    ContactTableColumn::Name => a.contact.fn_name.cmp(&b.contact.fn_name),
-                    ContactTableColumn::Title => a.contact.title.cmp(&b.contact.title),
-                    ContactTableColumn::Email => a.contact.email.cmp(&b.contact.email),
-                    ContactTableColumn::Phone => a.contact.tel.cmp(&b.contact.tel),
-                    ContactTableColumn::Company | ContactTableColumn::Categories => {
-                        std::cmp::Ordering::Equal
+    let mut keyed: Vec<(bool, String, String, String, &EBookContactRecord)> = filtered_contacts
+        .into_iter()
+        .map(|rec| {
+            let primary = match sort_col {
+                ContactTableColumn::Name => {
+                    let n = rec.contact.fn_name.trim();
+                    if n.is_empty() {
+                        rec.contact.email.trim().to_lowercase()
+                    } else {
+                        n.to_lowercase()
                     }
-                };
-                if sort_desc {
-                    ord.reverse()
-                } else {
-                    ord
                 }
-            });
+                ContactTableColumn::Company => clean_contact_org(&rec.contact.org).to_lowercase(),
+                ContactTableColumn::Title => rec.contact.title.trim().to_lowercase(),
+                ContactTableColumn::Email => rec.contact.email.trim().to_lowercase(),
+                ContactTableColumn::Phone => rec.contact.tel.trim().to_lowercase(),
+                ContactTableColumn::Categories => rec
+                    .contact
+                    .categories
+                    .iter()
+                    .map(|c| c.trim())
+                    .filter(|c| !c.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+                    .to_lowercase(),
+            };
+            let is_empty = primary.is_empty();
+            let fallback_name = rec.contact.fn_name.trim().to_lowercase();
+            let fallback_email = rec.contact.email.trim().to_lowercase();
+            (is_empty, primary, fallback_name, fallback_email, rec)
+        })
+        .collect();
+
+    keyed.sort_by(|a, b| {
+        // Keep rows missing the sorted column value at the bottom regardless of sort direction
+        match a.0.cmp(&b.0) {
+            std::cmp::Ordering::Equal => {}
+            non_eq => return non_eq,
         }
-    }
+        let ord = a
+            .1
+            .cmp(&b.1)
+            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.3.cmp(&b.3))
+            .then_with(|| a.4.source_uid.cmp(&b.4.source_uid))
+            .then_with(|| a.4.uid.cmp(&b.4.uid));
+        if sort_desc { ord.reverse() } else { ord }
+    });
+
+    let filtered_contacts: Vec<&EBookContactRecord> =
+        keyed.into_iter().map(|(_, _, _, _, rec)| rec).collect();
 
     let mut rows = Vec::with_capacity(filtered_contacts.len());
     for (i, rec) in filtered_contacts.iter().enumerate() {
@@ -846,6 +871,7 @@ mod imp {
         pub contact_table_hovered_row: Cell<Option<usize>>,
         pub(crate) contact_table_hovered_header: Cell<Option<ContactTableColumn>>,
         pub contact_table_anchor_row: Cell<Option<usize>>,
+        pub contact_table_cursor_row: Cell<Option<usize>>,
         pub(crate) contact_sort_col: Cell<ContactTableColumn>,
         pub contact_sort_desc: Cell<bool>,
         pub(crate) stored_contacts: RefCell<Option<Rc<RefCell<Vec<EBookContactRecord>>>>>,
@@ -855,14 +881,20 @@ mod imp {
         pub alphabet_box: RefCell<Option<gtk::ListBox>>,
         pub alphabet_scroll: RefCell<Option<gtk::ScrolledWindow>>,
         pub list_scroll: RefCell<Option<gtk::ScrolledWindow>>,
+        pub detail_stack: RefCell<Option<gtk::Stack>>,
         pub detail_categories_box: RefCell<Option<gtk::Box>>,
+        pub email_group: RefCell<Option<adw::PreferencesGroup>>,
+        pub email_list: RefCell<Option<gtk::ListBox>>,
         pub phone_group: RefCell<Option<adw::PreferencesGroup>>,
-        pub phone_box: RefCell<Option<gtk::Box>>,
+        pub phone_list: RefCell<Option<gtk::ListBox>>,
         pub details_group: RefCell<Option<adw::PreferencesGroup>>,
-        pub details_box: RefCell<Option<gtk::Box>>,
+        pub details_list: RefCell<Option<gtk::ListBox>>,
+        pub members_group: RefCell<Option<adw::PreferencesGroup>>,
+        pub members_list: RefCell<Option<gtk::ListBox>>,
         pub address_group: RefCell<Option<adw::PreferencesGroup>>,
-        pub address_box: RefCell<Option<gtk::Box>>,
+        pub address_list: RefCell<Option<gtk::ListBox>>,
         pub map_box: RefCell<Option<gtk::Box>>,
+        pub last_map_uri: RefCell<Option<String>>,
         #[cfg(target_os = "linux")]
         pub map_webview: RefCell<Option<webkit6::WebView>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
@@ -1227,6 +1259,12 @@ impl ContactsPage {
                 page.imp().contact_sort_desc.set(new_desc);
                 page.refresh_contact_column_header();
                 page.refresh_table_canvas();
+                if let (Some(list), Some(search)) = (
+                    page.imp().contact_list.borrow().clone(),
+                    page.imp().search_state.borrow().clone(),
+                ) {
+                    update_alphabet_pane(&page, &list, &search);
+                }
             }
         });
 
@@ -2007,6 +2045,7 @@ impl ContactsPage {
                 let Some(col) = ContactTableColumn::from_id(column_id) else { continue };
                 let label_text = col.label();
                 let row = adw::ActionRow::builder()
+                    .use_markup(false)
                     .title(&label_text)
                     .subtitle(column_id)
                     .build();
@@ -3294,21 +3333,7 @@ impl ContactsPage {
             .margin_bottom(0)
             .css_classes(["contact-list-view"])
             .build();
-        contact_list.set_sort_func(|left, right| unsafe {
-            let value = |row: &gtk::ListBoxRow, key: &str| {
-                row.data::<String>(key)
-                    .map(|value| value.as_ref().clone())
-                    .unwrap_or_default()
-            };
-            value(left, "contact-sort-key")
-                .cmp(&value(right, "contact-sort-key"))
-                .then_with(|| value(left, "contact-email").cmp(&value(right, "contact-email")))
-                .then_with(|| {
-                    value(left, "contact-source-uid").cmp(&value(right, "contact-source-uid"))
-                })
-                .then_with(|| value(left, "contact-id").cmp(&value(right, "contact-id")))
-                .into()
-        });
+        attach_contact_list_sort_func(&contact_list);
         self.imp().contact_list.replace(Some(contact_list.clone()));
 
         let stored_contacts = Rc::new(RefCell::new(Vec::<EBookContactRecord>::new()));
@@ -3710,58 +3735,97 @@ impl ContactsPage {
             });
         }
 
-        // Canvas Click Gesture
+        // Canvas Primary Click Gesture (never hold `contact_table_layout` borrow across GTK selection signals!)
         {
             let canvas_click = gtk::GestureClick::new();
+            canvas_click.set_button(1);
             let page_weak = self.downgrade();
             let contact_list_clone = contact_list.clone();
             let canvas_clone = contact_table_canvas.clone();
             canvas_click.connect_pressed(move |gesture, n_press, _x, y| {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
                 let Some(page) = page_weak.upgrade() else { return; };
-                let layout_ref = page.imp().contact_table_layout.borrow();
-                let Some(layout) = layout_ref.as_ref() else { return; };
-                let Some(row_idx) = hit_test_contact_table(layout, y) else { return; };
-                let Some(row) = layout.rows.get(row_idx) else { return; };
-
-                canvas_clone.grab_focus();
-
-                if n_press >= 2 {
-                    select_contact_row(&contact_list_clone, &row.identity.source_uid, &row.identity.uid);
-                    if page.imp().is_mobile.get() {
-                        page.imp().is_detail_shown.set(true);
-                        page.sync_contacts_layout_visibility();
-                        if let Some(win) = crate::window::find_meridian_window(&page) {
-                            win.sync_back_button();
-                        }
-                    } else if let Some(selected_row) = contact_list_clone.selected_row() {
-                        selected_row.activate();
-                    }
-                    return;
-                }
 
                 let state = gesture.current_event_state();
                 let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
                 let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK)
                     || state.contains(gdk::ModifierType::META_MASK);
 
-                if shift {
-                    let anchor = page.imp().contact_table_anchor_row.get().unwrap_or(row_idx);
-                    let start = anchor.min(row_idx);
-                    let end = anchor.max(row_idx);
-                    contact_list_clone.unselect_all();
-                    for i in start..=end {
-                        if let Some(r) = layout.rows.get(i) {
-                            select_contact_row_ext(&contact_list_clone, &r.identity.source_uid, &r.identity.uid, false, false);
+                let hit_snapshot = {
+                    let Ok(layout_ref) = page.imp().contact_table_layout.try_borrow() else {
+                        return;
+                    };
+                    let Some(layout) = layout_ref.as_ref() else { return; };
+                    let Some(row_idx) = hit_test_contact_table(layout, y) else { return; };
+                    let Some(row) = layout.rows.get(row_idx) else { return; };
+                    let range_ids = if shift && n_press < 2 {
+                        let anchor = page.imp().contact_table_anchor_row.get().unwrap_or(row_idx);
+                        let start = anchor.min(row_idx);
+                        let end = anchor.max(row_idx);
+                        layout
+                            .rows
+                            .get(start..=end)
+                            .map(|slice| {
+                                slice
+                                    .iter()
+                                    .map(|r| r.identity.clone())
+                                    .collect::<HashSet<_>>()
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        HashSet::new()
+                    };
+                    (row_idx, row.identity.clone(), range_ids)
+                };
+
+                let (row_idx, target_identity, range_ids) = hit_snapshot;
+                canvas_clone.grab_focus();
+
+                if n_press >= 2 {
+                    select_contact_row(
+                        &contact_list_clone,
+                        &target_identity.source_uid,
+                        &target_identity.uid,
+                    );
+                    page.imp().contact_table_anchor_row.set(Some(row_idx));
+                    page.imp().contact_table_cursor_row.set(Some(row_idx));
+                    if page.imp().is_mobile.get() {
+                        page.imp().is_detail_shown.set(true);
+                        page.sync_contacts_layout_visibility();
+                        if let Some(win) = crate::window::find_meridian_window(&page) {
+                            win.sync_back_button();
                         }
+                    } else if let Some(edit_btn) = page.imp().edit_button.borrow().clone() {
+                        edit_btn.emit_clicked();
                     }
-                } else if ctrl {
-                    select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, false, true);
-                    page.imp().contact_table_anchor_row.set(Some(row_idx));
-                } else {
-                    select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
-                    page.imp().contact_table_anchor_row.set(Some(row_idx));
+                    return;
                 }
+
+                if shift {
+                    page.imp().contact_table_cursor_row.set(Some(row_idx));
+                    select_contact_identities_batch(&page, &contact_list_clone, &range_ids);
+                } else if ctrl {
+                    select_contact_row_ext(
+                        &contact_list_clone,
+                        &target_identity.source_uid,
+                        &target_identity.uid,
+                        false,
+                        true,
+                    );
+                    page.imp().contact_table_anchor_row.set(Some(row_idx));
+                    page.imp().contact_table_cursor_row.set(Some(row_idx));
+                } else {
+                    select_contact_row_ext(
+                        &contact_list_clone,
+                        &target_identity.source_uid,
+                        &target_identity.uid,
+                        true,
+                        false,
+                    );
+                    page.imp().contact_table_anchor_row.set(Some(row_idx));
+                    page.imp().contact_table_cursor_row.set(Some(row_idx));
+                }
+
                 if !shift && !ctrl && page.imp().is_mobile.get() {
                     page.imp().is_detail_shown.set(true);
                     page.sync_contacts_layout_visibility();
@@ -3780,8 +3844,14 @@ impl ContactsPage {
             let canvas_clone = contact_table_canvas.clone();
             canvas_motion.connect_motion(move |_, _x, y| {
                 let Some(page) = page_weak.upgrade() else { return; };
-                let layout_ref = page.imp().contact_table_layout.borrow();
-                let row_idx = layout_ref.as_ref().and_then(|l| hit_test_contact_table(l, y));
+                let row_idx = page
+                    .imp()
+                    .contact_table_layout
+                    .try_borrow()
+                    .ok()
+                    .and_then(|layout_ref| {
+                        layout_ref.as_ref().and_then(|l| hit_test_contact_table(l, y))
+                    });
                 if page.imp().contact_table_hovered_row.get() != row_idx {
                     page.imp().contact_table_hovered_row.set(row_idx);
                     canvas_clone.queue_draw();
@@ -3799,7 +3869,7 @@ impl ContactsPage {
             contact_table_canvas.add_controller(canvas_motion);
         }
 
-        // Canvas Key Controller
+        // Canvas Key Controller (never hold `contact_table_layout` borrow across GTK selection signals!)
         {
             let key_controller = gtk::EventControllerKey::new();
             let page_weak = self.downgrade();
@@ -3807,16 +3877,98 @@ impl ContactsPage {
             let list_scroll_clone = list_scroll.clone();
             key_controller.connect_key_pressed(move |ctrl, keyval, _keycode, state| {
                 let Some(page) = page_weak.upgrade() else { return glib::Propagation::Proceed; };
-                let layout_ref = page.imp().contact_table_layout.borrow();
-                let Some(layout) = layout_ref.as_ref() else { return glib::Propagation::Proceed; };
-                if layout.rows.is_empty() {
-                    return glib::Propagation::Proceed;
+                if matches!(keyval, gdk::Key::Return | gdk::Key::KP_Enter) {
+                    if page.imp().is_mobile.get() {
+                        if !contact_list_clone.selected_rows().is_empty() {
+                            page.imp().is_detail_shown.set(true);
+                            page.sync_contacts_layout_visibility();
+                            if let Some(win) = crate::window::find_meridian_window(&page) {
+                                win.sync_back_button();
+                            }
+                        }
+                    } else if let Some(edit_btn) = page.imp().edit_button.borrow().clone() {
+                        if edit_btn.is_sensitive() {
+                            edit_btn.emit_clicked();
+                        }
+                    }
+                    return glib::Propagation::Stop;
                 }
 
                 let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
-                let current_anchor = page.imp().contact_table_anchor_row.get().unwrap_or(0).min(layout.rows.len() - 1);
 
-                let announce_row = |row: &PreparedContactTableRow| {
+                let nav_plan = {
+                    let Ok(layout_ref) = page.imp().contact_table_layout.try_borrow() else {
+                        return glib::Propagation::Proceed;
+                    };
+                    let Some(layout) = layout_ref.as_ref() else { return glib::Propagation::Proceed; };
+                    if layout.rows.is_empty() {
+                        return glib::Propagation::Proceed;
+                    }
+                    let last_idx = layout.rows.len() - 1;
+                    let anchor = page
+                        .imp()
+                        .contact_table_anchor_row
+                        .get()
+                        .unwrap_or(0)
+                        .min(last_idx);
+                    let cursor = page
+                        .imp()
+                        .contact_table_cursor_row
+                        .get()
+                        .unwrap_or(anchor)
+                        .min(last_idx);
+
+                    let (next_idx, allow_shift_range) = match keyval {
+                        gdk::Key::Up => (cursor.saturating_sub(1), shift),
+                        gdk::Key::Down => ((cursor + 1).min(last_idx), shift),
+                        gdk::Key::Page_Up => (cursor.saturating_sub(10), shift),
+                        gdk::Key::Page_Down => ((cursor + 10).min(last_idx), shift),
+                        gdk::Key::Home => (0, shift),
+                        gdk::Key::End => (last_idx, shift),
+                        _ => return glib::Propagation::Proceed,
+                    };
+
+                    let target_row = layout.rows.get(next_idx).cloned();
+                    let range_ids = if allow_shift_range {
+                        let start = anchor.min(next_idx);
+                        let end = anchor.max(next_idx);
+                        layout
+                            .rows
+                            .get(start..=end)
+                            .map(|slice| {
+                                slice
+                                    .iter()
+                                    .map(|r| r.identity.clone())
+                                    .collect::<HashSet<_>>()
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        HashSet::new()
+                    };
+                    Some((anchor, next_idx, allow_shift_range, target_row, range_ids))
+                };
+
+                let Some((anchor, next_idx, allow_shift_range, target_row, range_ids)) = nav_plan else {
+                    return glib::Propagation::Proceed;
+                };
+
+                if allow_shift_range {
+                    page.imp().contact_table_anchor_row.set(Some(anchor));
+                    page.imp().contact_table_cursor_row.set(Some(next_idx));
+                    select_contact_identities_batch(&page, &contact_list_clone, &range_ids);
+                } else if let Some(ref row) = target_row {
+                    page.imp().contact_table_anchor_row.set(Some(next_idx));
+                    page.imp().contact_table_cursor_row.set(Some(next_idx));
+                    select_contact_row_ext(
+                        &contact_list_clone,
+                        &row.identity.source_uid,
+                        &row.identity.uid,
+                        true,
+                        false,
+                    );
+                }
+
+                if let Some(row) = target_row {
                     if let Some(w) = ctrl.widget() {
                         let speech = if !row.email.is_empty() {
                             format!("{}, {}", row.name, row.email)
@@ -3824,109 +3976,20 @@ impl ContactsPage {
                             row.name.clone()
                         };
                         set_accessible_description(&w, &speech);
-                        announce_to_screen_reader(&w, &speech, gtk::AccessibleAnnouncementPriority::Medium);
+                        announce_to_screen_reader(
+                            &w,
+                            &speech,
+                            gtk::AccessibleAnnouncementPriority::Medium,
+                        );
                     }
-                };
-
-                let scroll_to_row = |idx: usize| {
-                    if let Some(row) = layout.rows.get(idx) {
-                        let vadj = list_scroll_clone.vadjustment();
-                        if row.y < vadj.value() {
-                            vadj.set_value(row.y);
-                        } else if row.y + row.height > vadj.value() + vadj.page_size() {
-                            vadj.set_value(row.y + row.height - vadj.page_size());
-                        }
+                    let vadj = list_scroll_clone.vadjustment();
+                    if row.y < vadj.value() {
+                        vadj.set_value(row.y);
+                    } else if row.y + row.height > vadj.value() + vadj.page_size() {
+                        vadj.set_value(row.y + row.height - vadj.page_size());
                     }
-                };
-
-                match keyval {
-                    gdk::Key::Up => {
-                        let next_idx = current_anchor.saturating_sub(1);
-                        if shift {
-                            let anchor = page.imp().contact_table_anchor_row.get().unwrap_or(0);
-                            let start = anchor.min(next_idx);
-                            let end = anchor.max(next_idx);
-                            contact_list_clone.unselect_all();
-                            for i in start..=end {
-                                if let Some(r) = layout.rows.get(i) {
-                                    select_contact_row_ext(&contact_list_clone, &r.identity.source_uid, &r.identity.uid, false, false);
-                                }
-                            }
-                        } else if let Some(row) = layout.rows.get(next_idx) {
-                            page.imp().contact_table_anchor_row.set(Some(next_idx));
-                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
-                            announce_row(row);
-                        }
-                        scroll_to_row(next_idx);
-                        glib::Propagation::Stop
-                    }
-                    gdk::Key::Down => {
-                        let next_idx = (current_anchor + 1).min(layout.rows.len() - 1);
-                        if shift {
-                            let anchor = page.imp().contact_table_anchor_row.get().unwrap_or(0);
-                            let start = anchor.min(next_idx);
-                            let end = anchor.max(next_idx);
-                            contact_list_clone.unselect_all();
-                            for i in start..=end {
-                                if let Some(r) = layout.rows.get(i) {
-                                    select_contact_row_ext(&contact_list_clone, &r.identity.source_uid, &r.identity.uid, false, false);
-                                }
-                            }
-                        } else if let Some(row) = layout.rows.get(next_idx) {
-                            page.imp().contact_table_anchor_row.set(Some(next_idx));
-                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
-                            announce_row(row);
-                        }
-                        scroll_to_row(next_idx);
-                        glib::Propagation::Stop
-                    }
-                    gdk::Key::Page_Up => {
-                        let next_idx = current_anchor.saturating_sub(10);
-                        page.imp().contact_table_anchor_row.set(Some(next_idx));
-                        if let Some(row) = layout.rows.get(next_idx) {
-                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
-                            announce_row(row);
-                        }
-                        scroll_to_row(next_idx);
-                        glib::Propagation::Stop
-                    }
-                    gdk::Key::Page_Down => {
-                        let next_idx = (current_anchor + 10).min(layout.rows.len() - 1);
-                        page.imp().contact_table_anchor_row.set(Some(next_idx));
-                        if let Some(row) = layout.rows.get(next_idx) {
-                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
-                            announce_row(row);
-                        }
-                        scroll_to_row(next_idx);
-                        glib::Propagation::Stop
-                    }
-                    gdk::Key::Home => {
-                        page.imp().contact_table_anchor_row.set(Some(0));
-                        if let Some(row) = layout.rows.first() {
-                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
-                            announce_row(row);
-                        }
-                        scroll_to_row(0);
-                        glib::Propagation::Stop
-                    }
-                    gdk::Key::End => {
-                        let last_idx = layout.rows.len().saturating_sub(1);
-                        page.imp().contact_table_anchor_row.set(Some(last_idx));
-                        if let Some(row) = layout.rows.get(last_idx) {
-                            select_contact_row_ext(&contact_list_clone, &row.identity.source_uid, &row.identity.uid, true, false);
-                            announce_row(row);
-                        }
-                        scroll_to_row(last_idx);
-                        glib::Propagation::Stop
-                    }
-                    gdk::Key::Return | gdk::Key::KP_Enter => {
-                        if let Some(selected_row) = contact_list_clone.selected_row() {
-                            selected_row.activate();
-                        }
-                        glib::Propagation::Stop
-                    }
-                    _ => glib::Propagation::Proceed,
                 }
+                glib::Propagation::Stop
             });
             contact_table_canvas.add_controller(key_controller);
         }
@@ -4343,6 +4406,7 @@ impl ContactsPage {
             .replace(Some(contact_actions_pill.clone()));
 
         let email_row1 = adw::ActionRow::builder()
+            .use_markup(false)
             .title(gettext("No email address"))
             .subtitle(gettext("No contact selected"))
             .build();
@@ -4638,6 +4702,10 @@ impl ContactsPage {
                                     *selected_contact_for_action.borrow_mut() = Some(merged.clone());
                                     if let Some(page) = page_weak_for_result.upgrade() {
                                         page.update_contact_address_and_map(Some(&merged.contact));
+                                        page.update_contact_structured_details(Some(&merged));
+                                        if let Some(stack) = page.imp().detail_stack.borrow().as_ref() {
+                                            stack.set_visible_child_name("content");
+                                        }
                                         page.imp().selected_identity.replace(Some(
                                             ContactIdentity::new(
                                                 merged.source_uid.clone(),
@@ -4727,7 +4795,7 @@ impl ContactsPage {
                 filter_vcf.add_pattern("*.vcard");
 
                 let filter_csv = gtk::FileFilter::new();
-                filter_csv.set_name(Some("Kommagetrennte Werte (*.csv)"));
+                filter_csv.set_name(Some(&gettext("Comma-Separated Values (*.csv)")));
                 filter_csv.add_pattern("*.csv");
 
                 let filter_ldif = gtk::FileFilter::new();
@@ -5204,175 +5272,254 @@ impl ContactsPage {
             }
         ));
 
-        // Match Evolution's contact-row context menu with the actions already
-        // exposed in the detail header.  Selecting the row first also makes
-        // the menu useful when the split view is collapsed on a narrow window.
-        let email_btn_for_context = email_btn.clone();
-        let edit_btn_for_context = edit_btn.clone();
-        let export_btn_for_context = export_btn.clone();
-        let print_btn_for_context = print_btn.clone();
-        let copy_to_book_btn_for_context = copy_to_book_btn.clone();
-        let move_to_book_btn_for_context = move_to_book_btn.clone();
-        let merge_btn_for_context = merge_btn.clone();
-        let delete_btn_for_context = delete_btn.clone();
-        let selected_contact_for_context = Rc::clone(&selected_contact);
-        let stored_contacts_for_context = Rc::clone(&stored_contacts);
+        // Match Evolution's contact-row context menu across BOTH List View and Table View.
+        // Preserves multi-selection when secondary-clicking an already selected contact so
+        // batch actions (Email, Export, Print, Copy/Move to Book, Delete) work seamlessly.
+        let open_contact_context_menu: Rc<dyn Fn(&gtk::Widget, f64, f64)> = {
+            let contact_list_for_ctx = contact_list.clone();
+            let stored_contacts_for_ctx = Rc::clone(&stored_contacts);
+            let email_btn_for_context = email_btn.clone();
+            let edit_btn_for_context = edit_btn.clone();
+            let export_btn_for_context = export_btn.clone();
+            let print_btn_for_context = print_btn.clone();
+            let copy_to_book_btn_for_context = copy_to_book_btn.clone();
+            let move_to_book_btn_for_context = move_to_book_btn.clone();
+            let merge_btn_for_context = merge_btn.clone();
+            let delete_btn_for_context = delete_btn.clone();
+            Rc::new(move |parent_widget: &gtk::Widget, x: f64, y: f64| {
+                let selected_records = selected_contact_records_checked(
+                    &contact_list_for_ctx,
+                    &stored_contacts_for_ctx,
+                )
+                .unwrap_or_default();
+                if selected_records.is_empty() {
+                    return;
+                }
+                let sel_state = contact_selection_action_state(
+                    &selected_records,
+                    &stored_contacts_for_ctx.borrow(),
+                );
+                let multi = sel_state.selection_count > 1;
+
+                let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+                let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
+
+                let email = crate::views::create_context_menu_button(
+                    None,
+                    &gettext("Send email"),
+                    false,
+                );
+                let popover_for_email = popover.clone();
+                let email_button_for_menu = email_btn_for_context.clone();
+                email.connect_clicked(move |_| {
+                    popover_for_email.popdown();
+                    email_button_for_menu.emit_clicked();
+                });
+                menu_box.append(&email);
+
+                let edit = crate::views::create_context_menu_button(
+                    None,
+                    &gettext("Edit contact"),
+                    false,
+                );
+                let popover_for_edit = popover.clone();
+                let edit_button_for_menu = edit_btn_for_context.clone();
+                edit.connect_clicked(move |_| {
+                    popover_for_edit.popdown();
+                    edit_button_for_menu.emit_clicked();
+                });
+                menu_box.append(&edit);
+
+                let export = crate::views::create_context_menu_button(
+                    None,
+                    &gettext("Export (vCard, CSV, LDIF)…"),
+                    false,
+                );
+                let popover_for_export = popover.clone();
+                let export_button_for_menu = export_btn_for_context.clone();
+                export.connect_clicked(move |_| {
+                    popover_for_export.popdown();
+                    export_button_for_menu.emit_clicked();
+                });
+                menu_box.append(&export);
+
+                let print = crate::views::create_context_menu_button(
+                    None,
+                    &gettext("Print…"),
+                    false,
+                );
+                let popover_for_print = popover.clone();
+                let print_button_for_menu = print_btn_for_context.clone();
+                print.connect_clicked(move |_| {
+                    popover_for_print.popdown();
+                    print_button_for_menu.emit_clicked();
+                });
+                menu_box.append(&print);
+
+                menu_box.append(&crate::views::create_context_menu_separator());
+
+                let copy_to_book = crate::views::create_context_menu_button(
+                    None,
+                    &gettext("Copy to address book…"),
+                    false,
+                );
+                let popover_for_copy_to_book = popover.clone();
+                let copy_to_book_button_for_menu = copy_to_book_btn_for_context.clone();
+                copy_to_book.connect_clicked(move |_| {
+                    popover_for_copy_to_book.popdown();
+                    copy_to_book_button_for_menu.emit_clicked();
+                });
+                menu_box.append(&copy_to_book);
+
+                let move_to_book = crate::views::create_context_menu_button(
+                    None,
+                    &gettext("Move to address book…"),
+                    false,
+                );
+                let popover_for_move_to_book = popover.clone();
+                let move_to_book_button_for_menu = move_to_book_btn_for_context.clone();
+                move_to_book.connect_clicked(move |_| {
+                    popover_for_move_to_book.popdown();
+                    move_to_book_button_for_menu.emit_clicked();
+                });
+                menu_box.append(&move_to_book);
+
+                let merge = crate::views::create_context_menu_button(
+                    None,
+                    &gettext("Merge duplicates"),
+                    false,
+                );
+                let popover_for_merge = popover.clone();
+                let merge_button_for_menu = merge_btn_for_context.clone();
+                merge.connect_clicked(move |_| {
+                    popover_for_merge.popdown();
+                    merge_button_for_menu.emit_clicked();
+                });
+                menu_box.append(&merge);
+
+                menu_box.append(&crate::views::create_context_menu_separator());
+
+                let delete_label = if multi {
+                    gettext("Delete selected contacts")
+                } else {
+                    gettext("Delete contact")
+                };
+                let delete = crate::views::create_context_menu_button(
+                    None,
+                    &delete_label,
+                    true,
+                );
+                let popover_for_delete = popover.clone();
+                let delete_button_for_menu = delete_btn_for_context.clone();
+                delete.connect_clicked(move |_| {
+                    popover_for_delete.popdown();
+                    delete_button_for_menu.emit_clicked();
+                });
+                menu_box.append(&delete);
+
+                email.set_sensitive(sel_state.email);
+                export.set_sensitive(sel_state.export);
+                edit.set_sensitive(sel_state.edit);
+                merge.set_sensitive(sel_state.merge);
+                delete.set_sensitive(sel_state.delete);
+                print.set_sensitive(sel_state.print);
+                copy_to_book.set_sensitive(sel_state.transfer_copy);
+                move_to_book.set_sensitive(sel_state.transfer_move);
+
+                popover.set_parent(parent_widget);
+                let popover_weak = popover.downgrade();
+                popover.connect_closed(move |_| {
+                    if let Some(popover) = popover_weak.upgrade() {
+                        popover.unparent();
+                    }
+                });
+                popover.popup();
+            })
+        };
+
         let context_click = gtk::GestureClick::builder().button(3).build();
         let contact_list_weak_for_context = contact_list.downgrade();
-        context_click.connect_pressed(move |_, _, x, y| {
+        let open_ctx_for_list = Rc::clone(&open_contact_context_menu);
+        context_click.connect_pressed(move |gesture, _, x, y| {
             let Some(contact_list_for_context) = contact_list_weak_for_context.upgrade() else {
                 return;
             };
             let Some(row) = contact_list_for_context.row_at_y(y as i32) else {
                 return;
             };
-            // A context menu targets its clicked contact.  Do not leave a
-            // stale multi-selection attached to a menu made for one row.
-            contact_list_for_context.unselect_all();
-            contact_list_for_context.select_row(Some(&row));
-
-            let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
-            let (popover, menu_box) = crate::views::create_context_popover(Some(&rect));
-
-            let email = crate::views::create_context_menu_button(
-                None,
-                &gettext("Send email"),
-                false,
-            );
-            let popover_for_email = popover.clone();
-            let email_button_for_menu = email_btn_for_context.clone();
-            email.connect_clicked(move |_| {
-                popover_for_email.popdown();
-                email_button_for_menu.emit_clicked();
-            });
-            menu_box.append(&email);
-
-            let edit = crate::views::create_context_menu_button(
-                None,
-                &gettext("Edit contact"),
-                false,
-            );
-            let popover_for_edit = popover.clone();
-            let edit_button_for_menu = edit_btn_for_context.clone();
-            edit.connect_clicked(move |_| {
-                popover_for_edit.popdown();
-                edit_button_for_menu.emit_clicked();
-            });
-            menu_box.append(&edit);
-
-            let export = crate::views::create_context_menu_button(
-                None,
-                &gettext("Export (vCard, CSV, LDIF)…"),
-                false,
-            );
-            let popover_for_export = popover.clone();
-            let export_button_for_menu = export_btn_for_context.clone();
-            export.connect_clicked(move |_| {
-                popover_for_export.popdown();
-                export_button_for_menu.emit_clicked();
-            });
-            menu_box.append(&export);
-
-            let print = crate::views::create_context_menu_button(
-                None,
-                &gettext("Print…"),
-                false,
-            );
-            let popover_for_print = popover.clone();
-            let print_button_for_menu = print_btn_for_context.clone();
-            print.connect_clicked(move |_| {
-                popover_for_print.popdown();
-                print_button_for_menu.emit_clicked();
-            });
-            menu_box.append(&print);
-
-            menu_box.append(&crate::views::create_context_menu_separator());
-
-            let copy_to_book = crate::views::create_context_menu_button(
-                None,
-                &gettext("Copy to address book…"),
-                false,
-            );
-            let popover_for_copy_to_book = popover.clone();
-            let copy_to_book_button_for_menu = copy_to_book_btn_for_context.clone();
-            copy_to_book.connect_clicked(move |_| {
-                popover_for_copy_to_book.popdown();
-                copy_to_book_button_for_menu.emit_clicked();
-            });
-            menu_box.append(&copy_to_book);
-
-            let move_to_book = crate::views::create_context_menu_button(
-                None,
-                &gettext("Move to address book…"),
-                false,
-            );
-            let popover_for_move_to_book = popover.clone();
-            let move_to_book_button_for_menu = move_to_book_btn_for_context.clone();
-            move_to_book.connect_clicked(move |_| {
-                popover_for_move_to_book.popdown();
-                move_to_book_button_for_menu.emit_clicked();
-            });
-            menu_box.append(&move_to_book);
-
-            let merge = crate::views::create_context_menu_button(
-                None,
-                &gettext("Merge duplicates"),
-                false,
-            );
-            let popover_for_merge = popover.clone();
-            let merge_button_for_menu = merge_btn_for_context.clone();
-            merge.connect_clicked(move |_| {
-                popover_for_merge.popdown();
-                merge_button_for_menu.emit_clicked();
-            });
-            menu_box.append(&merge);
-
-            menu_box.append(&crate::views::create_context_menu_separator());
-
-            let delete = crate::views::create_context_menu_button(
-                None,
-                &gettext("Delete contact"),
-                true,
-            );
-            let popover_for_delete = popover.clone();
-            let delete_button_for_menu = delete_btn_for_context.clone();
-            delete.connect_clicked(move |_| {
-                popover_for_delete.popdown();
-                delete_button_for_menu.emit_clicked();
-            });
-            menu_box.append(&delete);
-
-            // Context actions use the same selection/source capability
-            // calculation as the header.  This is deliberately applied only
-            // after the row was selected, so imported/read-only records fail
-            // closed in both action surfaces.
-            let action_state = context_action_state(
-                selected_contact_for_context.borrow().as_ref(),
-                &stored_contacts_for_context.borrow(),
-            );
-            apply_contact_action_state(
-                action_state,
-                &email,
-                &export,
-                &edit,
-                &merge,
-                &delete,
-                Some(&print),
-                None,
-                Some(&copy_to_book),
-                Some(&move_to_book),
-            );
-
-            popover.set_parent(&contact_list_for_context);
-            let popover_weak = popover.downgrade();
-            popover.connect_closed(move |_| {
-                if let Some(popover) = popover_weak.upgrade() {
-                    popover.unparent();
-                }
-            });
-            popover.popup();
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if !row.is_selected() {
+                contact_list_for_context.unselect_all();
+                contact_list_for_context.select_row(Some(&row));
+            }
+            open_ctx_for_list(contact_list_for_context.upcast_ref(), x, y);
         });
         contact_list.add_controller(context_click);
+
+        // Right-click & touch long-press context menu on Table View canvas
+        {
+            let table_context_click = gtk::GestureClick::builder().button(3).build();
+            let page_weak_tctx = self.downgrade();
+            let contact_list_tctx = contact_list.clone();
+            let canvas_weak_tctx = contact_table_canvas.downgrade();
+            let open_ctx_for_table = Rc::clone(&open_contact_context_menu);
+            table_context_click.connect_pressed(move |gesture, _, x, y| {
+                let (Some(page), Some(canvas)) = (page_weak_tctx.upgrade(), canvas_weak_tctx.upgrade()) else {
+                    return;
+                };
+                let hit = {
+                    let Ok(layout_ref) = page.imp().contact_table_layout.try_borrow() else {
+                        return;
+                    };
+                    let Some(layout) = layout_ref.as_ref() else { return; };
+                    let Some(row_idx) = hit_test_contact_table(layout, y) else { return; };
+                    layout.rows.get(row_idx).map(|r| (row_idx, r.identity.clone(), r.selected))
+                };
+                let Some((row_idx, identity, already_selected)) = hit else {
+                    return;
+                };
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                canvas.grab_focus();
+                if !already_selected {
+                    select_contact_row(&contact_list_tctx, &identity.source_uid, &identity.uid);
+                    page.imp().contact_table_anchor_row.set(Some(row_idx));
+                    page.imp().contact_table_cursor_row.set(Some(row_idx));
+                }
+                open_ctx_for_table(canvas.upcast_ref(), x, y);
+            });
+            contact_table_canvas.add_controller(table_context_click);
+
+            let table_long_press = gtk::GestureLongPress::new();
+            let page_weak_tlp = self.downgrade();
+            let contact_list_tlp = contact_list.clone();
+            let canvas_weak_tlp = contact_table_canvas.downgrade();
+            let open_ctx_for_tlp = Rc::clone(&open_contact_context_menu);
+            table_long_press.connect_pressed(move |gesture, x, y| {
+                let (Some(page), Some(canvas)) = (page_weak_tlp.upgrade(), canvas_weak_tlp.upgrade()) else {
+                    return;
+                };
+                let hit = {
+                    let Ok(layout_ref) = page.imp().contact_table_layout.try_borrow() else {
+                        return;
+                    };
+                    let Some(layout) = layout_ref.as_ref() else { return; };
+                    let Some(row_idx) = hit_test_contact_table(layout, y) else { return; };
+                    layout.rows.get(row_idx).map(|r| (row_idx, r.identity.clone(), r.selected))
+                };
+                let Some((row_idx, identity, already_selected)) = hit else {
+                    return;
+                };
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                canvas.grab_focus();
+                if !already_selected {
+                    select_contact_row(&contact_list_tlp, &identity.source_uid, &identity.uid);
+                    page.imp().contact_table_anchor_row.set(Some(row_idx));
+                    page.imp().contact_table_cursor_row.set(Some(row_idx));
+                }
+                open_ctx_for_tlp(canvas.upcast_ref(), x, y);
+            });
+            contact_table_canvas.add_controller(table_long_press);
+        }
 
         let sidebar_visible = AppSettings::try_new()
             .map(|s| s.mail_show_sidebar())
@@ -5412,6 +5559,7 @@ impl ContactsPage {
 
         let list_key_controller = gtk::EventControllerKey::new();
         let delete_btn_for_key = delete_btn.clone();
+        let edit_btn_for_key = edit_btn.clone();
         let print_btn_for_key = print_btn.clone();
         let print_list_btn_for_key = print_list_btn.clone();
         let contact_list_for_key = contact_list.clone();
@@ -5432,6 +5580,13 @@ impl ContactsPage {
             {
                 contact_list_for_key.select_all();
                 return glib::Propagation::Stop;
+            } else if (key == gtk::gdk::Key::e || key == gtk::gdk::Key::E)
+                && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+            {
+                if edit_btn_for_key.is_sensitive() {
+                    edit_btn_for_key.emit_clicked();
+                    return glib::Propagation::Stop;
+                }
             } else if (key == gtk::gdk::Key::p || key == gtk::gdk::Key::P)
                 && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
             {
@@ -5491,7 +5646,10 @@ impl ContactsPage {
         edit_btn.set_child(Some(&gtk::Image::from_icon_name("document-edit-symbolic")));
         delete_btn.set_child(Some(&gtk::Image::from_icon_name("user-trash-symbolic")));
 
+        // Standardized GNOME HIG text-only action popover (no icons for verb actions per DESIGN.md §7)
         let more_popover = gtk::Popover::new();
+        more_popover.add_css_class("menu");
+        more_popover.add_css_class("context-menu");
         let more_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(2)
@@ -5499,62 +5657,41 @@ impl ContactsPage {
             .margin_end(4)
             .margin_top(4)
             .margin_bottom(4)
-            .width_request(220)
+            .width_request(210)
             .build();
 
-        let make_popover_item = |btn: &gtk::Button, icon: &'static str, label_text: &str| {
-            let item_box = gtk::Box::builder()
-                .orientation(gtk::Orientation::Horizontal)
-                .spacing(10)
-                .margin_start(4)
-                .margin_end(4)
-                .build();
-            let img = gtk::Image::from_icon_name(icon);
+        let make_popover_item = |btn: &gtk::Button, label_text: &str, destructive: bool| {
             let lbl = gtk::Label::builder()
                 .label(label_text)
                 .halign(gtk::Align::Start)
+                .xalign(0.0)
                 .hexpand(true)
                 .build();
-            item_box.append(&img);
-            item_box.append(&lbl);
-            btn.set_child(Some(&item_box));
+            btn.set_child(Some(&lbl));
             btn.set_halign(gtk::Align::Fill);
             btn.add_css_class("flat");
+            btn.add_css_class("context-menu-item");
             btn.remove_css_class("circular");
+            if destructive {
+                btn.add_css_class("destructive-action");
+            }
         };
 
         let more_email_btn = gtk::Button::builder().visible(false).build();
         let more_edit_btn = gtk::Button::builder().visible(false).build();
-        let more_delete_btn = gtk::Button::builder()
-            .visible(false)
-            .css_classes(["destructive-action"])
-            .build();
-        let more_compact_sep = gtk::Separator::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .visible(false)
-            .build();
+        let more_delete_btn = gtk::Button::builder().visible(false).build();
+        let more_compact_sep = crate::views::create_context_menu_separator();
+        more_compact_sep.set_visible(false);
 
-        make_popover_item(
-            &more_email_btn,
-            "mail-message-new-symbolic",
-            &gettext("Send Email"),
-        );
-        make_popover_item(
-            &more_edit_btn,
-            "document-edit-symbolic",
-            &gettext("Edit Contact…"),
-        );
-        make_popover_item(
-            &more_delete_btn,
-            "user-trash-symbolic",
-            &gettext("Delete Contact"),
-        );
-        make_popover_item(&print_btn, "document-print-symbolic", &gettext("Print Contact…"));
-        make_popover_item(&export_btn, "document-save-symbolic", &gettext("Export Contact…"));
-        make_popover_item(&merge_btn, "object-select-symbolic", &gettext("Merge Duplicates…"));
-        make_popover_item(&copy_to_book_btn, "edit-copy-symbolic", &gettext("Copy to Address Book…"));
-        make_popover_item(&move_to_book_btn, "folder-move-symbolic", &gettext("Move to Address Book…"));
-        make_popover_item(&print_list_btn, "document-print-preview-symbolic", &gettext("Print Contact List…"));
+        make_popover_item(&more_email_btn, &gettext("Send Email"), false);
+        make_popover_item(&more_edit_btn, &gettext("Edit Contact…"), false);
+        make_popover_item(&more_delete_btn, &gettext("Delete Contact"), true);
+        make_popover_item(&print_btn, &gettext("Print Contact…"), false);
+        make_popover_item(&export_btn, &gettext("Export Contact…"), false);
+        make_popover_item(&merge_btn, &gettext("Merge Duplicates…"), false);
+        make_popover_item(&copy_to_book_btn, &gettext("Copy to Address Book…"), false);
+        make_popover_item(&move_to_book_btn, &gettext("Move to Address Book…"), false);
+        make_popover_item(&print_list_btn, &gettext("Print Contact List…"), false);
 
         let _ = email_btn
             .bind_property("sensitive", &more_email_btn, "sensitive")
@@ -5620,7 +5757,7 @@ impl ContactsPage {
         more_box.append(&merge_btn);
         more_box.append(&copy_to_book_btn);
         more_box.append(&move_to_book_btn);
-        more_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        more_box.append(&crate::views::create_context_menu_separator());
         more_box.append(&print_list_btn);
 
         more_popover.set_child(Some(&more_box));
@@ -5662,13 +5799,16 @@ impl ContactsPage {
             .valign(gtk::Align::Center)
             .build();
 
-        search_entry.set_width_chars(32);
+        search_entry.set_width_chars(28);
         search_entry.set_valign(gtk::Align::Center);
         quick_mode.set_valign(gtk::Align::Center);
+        category_selector.set_margin_bottom(0);
+        category_selector.set_valign(gtk::Align::Center);
         advanced_search_button.set_valign(gtk::Align::Center);
 
         search_content_box.append(&search_entry);
         search_content_box.append(&quick_mode);
+        search_content_box.append(&category_selector);
         search_content_box.append(&advanced_search_button);
         contacts_search_bar.set_child(Some(&search_content_box));
 
@@ -5712,11 +5852,12 @@ impl ContactsPage {
             .orientation(gtk::Orientation::Vertical)
             .spacing(6)
             .build();
-        sec_view_box.append(&gtk::Label::builder()
-            .label(gettext("View"))
-            .halign(gtk::Align::Start)
-            .css_classes(["dim-label", "caption"])
-            .build()
+        sec_view_box.append(
+            &gtk::Label::builder()
+                .label(gettext("View"))
+                .halign(gtk::Align::Start)
+                .css_classes(["dim-label", "caption"])
+                .build(),
         );
 
         let view_mode_box = gtk::Box::builder()
@@ -5763,18 +5904,51 @@ impl ContactsPage {
             }
         });
 
-        // 2. Column Customization Section
+        // 2. Filter Section (Duplicates & Uncategorized)
         popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        let btn_cols = gtk::Button::builder()
-            .icon_name("view-column-symbolic")
-            .label(gettext("Customize Column Order…"))
-            .css_classes(["flat"])
-            .halign(gtk::Align::Fill)
+        let sec_filter_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
             .build();
+        sec_filter_box.append(
+            &gtk::Label::builder()
+                .label(gettext("Filter"))
+                .halign(gtk::Align::Start)
+                .css_classes(["dim-label", "caption"])
+                .build(),
+        );
+        duplicate_filter_row.set_margin_bottom(0);
+        unmatched_category_row.set_margin_bottom(0);
+        sec_filter_box.append(&duplicate_filter_row);
+        sec_filter_box.append(&unmatched_category_row);
+        popover_box.append(&sec_filter_box);
+
+        // 3. Actions & Column Customization Section
+        popover_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let btn_new_list = crate::views::create_context_menu_button(
+            None,
+            &gettext("New Contact List…"),
+            false,
+        );
+        let btn_cols = crate::views::create_context_menu_button(
+            None,
+            &gettext("Customize Column Order…"),
+            false,
+        );
         set_accessible_label(&btn_cols, &gettext("Customize Column Order"));
 
         let options_popover = gtk::Popover::builder().child(&popover_box).build();
         options_popover.add_css_class("view-options-popover");
+
+        let page_for_new_list = self.downgrade();
+        let pop_for_new_list = options_popover.clone();
+        btn_new_list.connect_clicked(move |_| {
+            pop_for_new_list.popdown();
+            if let Some(page) = page_for_new_list.upgrade() {
+                page.present_new_contact_list();
+            }
+        });
+        popover_box.append(&btn_new_list);
 
         let page_for_cols = self.downgrade();
         let pop_for_cols = options_popover.clone();
@@ -5826,20 +6000,248 @@ impl ContactsPage {
 
         self.sync_view_split_button();
 
+        // Optional classic toolbar (toggled via View -> Show Toolbar / `contact-show-toolbar`)
         let contacts_toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(4)
+            .css_classes(["unified-mail-toolbar"])
             .visible(false)
             .build();
+        {
+            let tb_new_contact = gtk::Button::builder()
+                .icon_name("contact-new-symbolic")
+                .tooltip_text(gettext("Create new contact (Ctrl+N)"))
+                .css_classes(["flat", "mail-list-bar-btn"])
+                .build();
+            set_button_icon_with_fallback(&tb_new_contact, "contact-new-symbolic", "document-new-symbolic");
+            let new_btn_ref = new_contact_btn.downgrade();
+            tb_new_contact.connect_clicked(move |_| {
+                if let Some(b) = new_btn_ref.upgrade() {
+                    b.emit_clicked();
+                }
+            });
+
+            let tb_new_list = gtk::Button::builder()
+                .icon_name("contact-group-symbolic")
+                .tooltip_text(gettext("New Contact List"))
+                .css_classes(["flat", "mail-list-bar-btn"])
+                .build();
+            set_button_icon_with_fallback(&tb_new_list, "contact-group-symbolic", "view-list-symbolic");
+            let new_list_ref = new_list_btn.downgrade();
+            tb_new_list.connect_clicked(move |_| {
+                if let Some(b) = new_list_ref.upgrade() {
+                    b.emit_clicked();
+                }
+            });
+
+            let tb_email = gtk::Button::builder()
+                .icon_name("mail-message-new-symbolic")
+                .tooltip_text(gettext("Send email"))
+                .css_classes(["flat", "mail-list-bar-btn"])
+                .build();
+            let _ = email_btn
+                .bind_property("sensitive", &tb_email, "sensitive")
+                .sync_create()
+                .build();
+            let email_ref = email_btn.downgrade();
+            tb_email.connect_clicked(move |_| {
+                if let Some(b) = email_ref.upgrade() {
+                    b.emit_clicked();
+                }
+            });
+
+            let tb_edit = gtk::Button::builder()
+                .icon_name("document-edit-symbolic")
+                .tooltip_text(gettext("Edit contact (Ctrl+E)"))
+                .css_classes(["flat", "mail-list-bar-btn"])
+                .build();
+            let _ = edit_btn
+                .bind_property("sensitive", &tb_edit, "sensitive")
+                .sync_create()
+                .build();
+            let edit_ref = edit_btn.downgrade();
+            tb_edit.connect_clicked(move |_| {
+                if let Some(b) = edit_ref.upgrade() {
+                    b.emit_clicked();
+                }
+            });
+
+            let tb_delete = gtk::Button::builder()
+                .icon_name("user-trash-symbolic")
+                .tooltip_text(gettext("Delete contact (Delete)"))
+                .css_classes(["flat", "mail-list-bar-btn"])
+                .build();
+            let _ = delete_btn
+                .bind_property("sensitive", &tb_delete, "sensitive")
+                .sync_create()
+                .build();
+            let delete_ref = delete_btn.downgrade();
+            tb_delete.connect_clicked(move |_| {
+                if let Some(b) = delete_ref.upgrade() {
+                    b.emit_clicked();
+                }
+            });
+
+            let tb_find_duplicates = gtk::Button::builder()
+                .icon_name("edit-find-replace-symbolic")
+                .tooltip_text(gettext("Find Duplicate Contacts…"))
+                .css_classes(["flat", "mail-list-bar-btn"])
+                .build();
+            {
+                let page_weak_dup = self.downgrade();
+                let stored_for_dup = Rc::clone(&stored_contacts);
+                let contact_list_for_dup = contact_list.clone();
+                let empty_for_dup = empty_state.clone();
+                let sel_for_dup = Rc::clone(&selected_contact);
+                let cat_model_for_dup = category_model.clone();
+                let cat_sel_for_dup = category_selector.clone();
+                let sel_cat_for_dup = Rc::clone(&selected_category);
+                let ref_gen_for_dup = Rc::clone(&refresh_generation);
+                let search_for_dup = Rc::clone(&search_state);
+                tb_find_duplicates.connect_clicked(move |_| {
+                    let Some(page) = page_weak_dup.upgrade() else {
+                        return;
+                    };
+                    let snapshot = stored_for_dup.borrow().clone();
+                    let mut visited = HashSet::new();
+                    let mut groups: Vec<(EBookContactRecord, Vec<EBookContactRecord>)> = Vec::new();
+                    for (i, candidate) in snapshot.iter().enumerate() {
+                        let key_i = format!("{}:{}", candidate.source_uid, candidate.uid);
+                        if visited.contains(&key_i) || !contact_source_is_writable(&candidate.source_uid) {
+                            continue;
+                        }
+                        let mut dups = Vec::new();
+                        for other in snapshot.iter().skip(i + 1) {
+                            let key_j = format!("{}:{}", other.source_uid, other.uid);
+                            if !visited.contains(&key_j)
+                                && contact_records_are_duplicates(candidate, other)
+                            {
+                                visited.insert(key_j);
+                                dups.push(other.clone());
+                            }
+                        }
+                        if !dups.is_empty() {
+                            visited.insert(key_i);
+                            groups.push((candidate.clone(), dups));
+                        }
+                    }
+                    if groups.is_empty() {
+                        page.show_toast(&gettext("No duplicate contacts found"));
+                        return;
+                    }
+                    let dlg = adw::Dialog::builder()
+                        .title(gettext("Duplicate Contacts"))
+                        .content_width(520)
+                        .content_height(420)
+                        .build();
+                    let tv = adw::ToolbarView::new();
+                    tv.add_top_bar(&adw::HeaderBar::new());
+                    let pref_page = adw::PreferencesPage::new();
+                    let grp = adw::PreferencesGroup::builder()
+                        .title(gettext("Detected Duplicates"))
+                        .build();
+                    for (primary, dups) in groups {
+                        let row = adw::ActionRow::builder()
+                            .title(&primary.contact.fn_name)
+                            .subtitle(&format!(
+                                "{} · +{} {}",
+                                primary.contact.email,
+                                dups.len(),
+                                gettext("duplicate(s)")
+                            ))
+                            .use_markup(false)
+                            .build();
+                        let btn_merge_one = gtk::Button::builder()
+                            .label(gettext("Merge"))
+                            .css_classes(["suggested-action"])
+                            .valign(gtk::Align::Center)
+                            .build();
+                        let cl = contact_list_for_dup.clone();
+                        let sc = Rc::clone(&stored_for_dup);
+                        let es = empty_for_dup.clone();
+                        let selc = Rc::clone(&sel_for_dup);
+                        let cm = cat_model_for_dup.clone();
+                        let cs = cat_sel_for_dup.clone();
+                        let scat = Rc::clone(&sel_cat_for_dup);
+                        let rg = Rc::clone(&ref_gen_for_dup);
+                        let ss = Rc::clone(&search_for_dup);
+                        let pw_inner = page.downgrade();
+                        let row_weak = row.downgrade();
+                        btn_merge_one.connect_clicked(move |b| {
+                            b.set_sensitive(false);
+                            let prim = primary.clone();
+                            let dp = dups.clone();
+                            let (tx, rx) = async_channel::bounded(1);
+                            std::thread::spawn(move || {
+                                let res = EBookService::new().merge_contacts(&prim, &dp);
+                                let _ = tx.send_blocking(res);
+                            });
+                            let cl2 = cl.clone();
+                            let sc2 = Rc::clone(&sc);
+                            let es2 = es.clone();
+                            let selc2 = Rc::clone(&selc);
+                            let cm2 = cm.clone();
+                            let cs2 = cs.clone();
+                            let scat2 = Rc::clone(&scat);
+                            let rg2 = Rc::clone(&rg);
+                            let ss2 = Rc::clone(&ss);
+                            let pw2 = pw_inner.clone();
+                            let rw2 = row_weak.clone();
+                            glib::spawn_future_local(async move {
+                                if let Ok(Ok(_)) = rx.recv().await {
+                                    if let Some(r) = rw2.upgrade() {
+                                        r.set_sensitive(false);
+                                    }
+                                    refresh_contacts(
+                                        cl2, sc2, es2, selc2, cm2, cs2, scat2, rg2, pw2, ss2,
+                                    );
+                                }
+                            });
+                        });
+                        row.add_suffix(&btn_merge_one);
+                        grp.add(&row);
+                    }
+                    pref_page.add(&grp);
+                    tv.set_content(Some(&pref_page));
+                    dlg.set_child(Some(&tv));
+                    dlg.present(Some(&page));
+                });
+            }
+
+            contacts_toolbar.append(&tb_new_contact);
+            contacts_toolbar.append(&tb_new_list);
+            contacts_toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+            contacts_toolbar.append(&tb_email);
+            contacts_toolbar.append(&tb_edit);
+            contacts_toolbar.append(&tb_find_duplicates);
+            contacts_toolbar.append(&tb_delete);
+        }
         self.imp()
             .toolbar
-            .replace(Some(contacts_toolbar.upcast()));
+            .replace(Some(contacts_toolbar.clone().upcast()));
 
-        detail_box.append(&header_box);
-        detail_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        // Empty-selection StatusPage & populated detail content inside `detail_stack`
+        let detail_empty_page = adw::StatusPage::builder()
+            .icon_name("avatar-default-symbolic")
+            .title(gettext("No Contact Selected"))
+            .description(gettext("Select a contact to view details."))
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+
+        let detail_content_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .vexpand(true)
+            .hexpand(true)
+            .overflow(gtk::Overflow::Hidden)
+            .build();
+        detail_content_box.append(&header_box);
+        detail_content_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
         let info_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
             .min_content_width(0)
             .propagate_natural_width(false)
             .vexpand(true)
@@ -5849,14 +6251,30 @@ impl ContactsPage {
         let info_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(16)
-            .margin_start(12)
-            .margin_end(12)
+            .margin_start(14)
+            .margin_end(14)
             .margin_top(16)
-            .margin_bottom(20)
+            .margin_bottom(24)
             .overflow(gtk::Overflow::Hidden)
             .build();
 
-        let email_group = adw::PreferencesGroup::builder().title(gettext("Email")).build();
+        let info_clamp = adw::Clamp::builder()
+            .maximum_size(680)
+            .tightening_threshold(480)
+            .child(&info_box)
+            .build();
+
+        let email_group = adw::PreferencesGroup::builder()
+            .title(gettext("Email"))
+            .visible(false)
+            .build();
+        let email_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["boxed-list"])
+            .build();
+        email_group.add(&email_list);
+        self.imp().email_group.replace(Some(email_group.clone()));
+        self.imp().email_list.replace(Some(email_list.clone()));
 
         let copy_btn1 = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
@@ -5897,62 +6315,84 @@ impl ContactsPage {
         ));
         email_row1.add_prefix(&gtk::Image::from_icon_name("mail-unread-symbolic"));
         email_row1.add_suffix(&copy_btn1);
-        email_group.add(&email_row1);
 
         let phone_group = adw::PreferencesGroup::builder()
             .title(gettext("Phone"))
             .visible(false)
             .build();
-        let phone_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(6)
+        let phone_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["boxed-list"])
             .build();
-        phone_group.add(&phone_box);
+        phone_group.add(&phone_list);
         self.imp().phone_group.replace(Some(phone_group.clone()));
-        self.imp().phone_box.replace(Some(phone_box.clone()));
+        self.imp().phone_list.replace(Some(phone_list.clone()));
 
         let address_group = adw::PreferencesGroup::builder()
             .title(gettext("Address"))
             .visible(false)
             .build();
-
-        let address_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(6)
+        let address_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["boxed-list"])
             .build();
-        address_group.add(&address_box);
+        address_group.add(&address_list);
 
         let map_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(8)
-            .margin_top(8)
+            .margin_top(10)
             .visible(false)
             .build();
         address_group.add(&map_box);
 
         self.imp().address_group.replace(Some(address_group.clone()));
-        self.imp().address_box.replace(Some(address_box.clone()));
+        self.imp().address_list.replace(Some(address_list.clone()));
         self.imp().map_box.replace(Some(map_box.clone()));
+
+        let members_group = adw::PreferencesGroup::builder()
+            .title(gettext("Members"))
+            .visible(false)
+            .build();
+        let members_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["boxed-list"])
+            .build();
+        members_group.add(&members_list);
+        self.imp().members_group.replace(Some(members_group.clone()));
+        self.imp().members_list.replace(Some(members_list.clone()));
 
         let details_group = adw::PreferencesGroup::builder()
             .title(gettext("Details"))
             .visible(false)
             .build();
-        let details_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(6)
+        let details_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["boxed-list"])
             .build();
-        details_group.add(&details_box);
+        details_group.add(&details_list);
         self.imp().details_group.replace(Some(details_group.clone()));
-        self.imp().details_box.replace(Some(details_box.clone()));
+        self.imp().details_list.replace(Some(details_list.clone()));
 
         info_box.append(&email_group);
         info_box.append(&phone_group);
         info_box.append(&address_group);
+        info_box.append(&members_group);
         info_box.append(&details_group);
         info_box.append(&detail_extra);
-        info_scroll.set_child(Some(&info_box));
-        detail_box.append(&info_scroll);
+        info_scroll.set_child(Some(&info_clamp));
+        detail_content_box.append(&info_scroll);
+
+        let detail_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        detail_stack.add_named(&detail_empty_page, Some("empty"));
+        detail_stack.add_named(&detail_content_box, Some("content"));
+        detail_stack.set_visible_child_name("empty");
+        self.imp().detail_stack.replace(Some(detail_stack.clone()));
+        detail_box.append(&detail_stack);
 
         // The detail pane intentionally describes exactly one contact, while
         // the surrounding actions retain Evolution's 0/1/n selection model.
@@ -6043,6 +6483,8 @@ impl ContactsPage {
                     if let Some(win) = crate::window::find_meridian_window(&page) {
                         win.sync_back_button();
                     }
+                } else if let Some(edit_btn) = page.imp().edit_button.borrow().clone() {
+                    edit_btn.emit_clicked();
                 }
             }
         });
@@ -6237,8 +6679,8 @@ impl ContactsPage {
         preview_paned.set_end_child(Some(&detail_box));
         preview_paned.set_resize_start_child(true);
         preview_paned.set_resize_end_child(true);
-        preview_paned.set_shrink_start_child(false);
-        preview_paned.set_shrink_end_child(false);
+        preview_paned.set_shrink_start_child(true);
+        preview_paned.set_shrink_end_child(true);
 
         let sync_contact_header_compact: Rc<dyn Fn(&gtk::Paned)> = {
             let email_btn = email_btn.clone();
@@ -6509,6 +6951,7 @@ impl ContactsPage {
             .vexpand(true)
             .hexpand(true)
             .build();
+        root_box.append(&contacts_toolbar);
         root_box.append(&paned);
         root_box.set_parent(self);
     }
@@ -6525,11 +6968,11 @@ impl ContactsPage {
 
     pub(crate) fn update_contact_address_and_map(&self, contact: Option<&VCardContact>) {
         let Some(group) = self.imp().address_group.borrow().clone() else { return; };
-        let Some(addr_box) = self.imp().address_box.borrow().clone() else { return; };
+        let Some(addr_list) = self.imp().address_list.borrow().clone() else { return; };
         let Some(map_box) = self.imp().map_box.borrow().clone() else { return; };
 
-        while let Some(child) = addr_box.first_child() {
-            addr_box.remove(&child);
+        while let Some(child) = addr_list.first_child() {
+            addr_list.remove(&child);
         }
 
         let Some(contact) = contact else {
@@ -6543,7 +6986,7 @@ impl ContactsPage {
             .unwrap_or(false);
         let show_maps = AppSettings::try_new()
             .map(|s| s.contact_preview_show_maps())
-            .unwrap_or(true);
+            .unwrap_or(false);
         let target = AppSettings::try_new()
             .map(|s| s.contact_open_map_target())
             .unwrap_or_else(|| "openstreetmap".to_string());
@@ -6561,11 +7004,10 @@ impl ContactsPage {
         group.set_visible(true);
 
         for addr in &ordered_addrs {
-            let row = adw::ActionRow::builder()
-                .title(addr)
-                .selectable(false)
-                .css_classes(["property"])
-                .build();
+            let row = adw::ActionRow::new();
+            row.set_use_markup(false);
+            row.set_selectable(false);
+            row.set_title(addr);
             let prefix_icon = gtk::Image::from_icon_name("mark-location-symbolic");
             row.add_prefix(&prefix_icon);
 
@@ -6599,14 +7041,19 @@ impl ContactsPage {
                     &target_clone,
                     prefer_local,
                 );
-                if gio::AppInfo::launch_default_for_uri(&primary, None::<&gio::AppLaunchContext>).is_err() {
+                if gio::AppInfo::launch_default_for_uri(&primary, None::<&gio::AppLaunchContext>)
+                    .is_err()
+                {
                     if let Some(fb) = fallback {
-                        let _ = gio::AppInfo::launch_default_for_uri(&fb, None::<&gio::AppLaunchContext>);
+                        let _ = gio::AppInfo::launch_default_for_uri(
+                            &fb,
+                            None::<&gio::AppLaunchContext>,
+                        );
                     }
                 }
             });
             row.add_suffix(&open_map_btn);
-            addr_box.append(&row);
+            addr_list.append(&row);
         }
 
         if show_maps {
@@ -6628,10 +7075,17 @@ impl ContactsPage {
                     self.imp().map_webview.replace(Some(view));
                 }
                 if let Some(view) = self.imp().map_webview.borrow().as_ref() {
-                    let primary_addr = &ordered_addrs[0];
-                    let encoded_query = url_encode(primary_addr);
-                    let embed_url = format!("https://www.openstreetmap.org/export/embed.html?layer=mapnik&q={encoded_query}");
-                    view.load_uri(&embed_url);
+                    let embed_url = build_osm_preview_url(&ordered_addrs[0], &contact.geo);
+                    let changed = self
+                        .imp()
+                        .last_map_uri
+                        .borrow()
+                        .as_deref()
+                        != Some(embed_url.as_str());
+                    if changed {
+                        self.imp().last_map_uri.replace(Some(embed_url.clone()));
+                        view.load_uri(&embed_url);
+                    }
                 }
             }
         } else {
@@ -6668,57 +7122,100 @@ impl ContactsPage {
             }
         }
 
-        if let (Some(phone_group), Some(phone_box)) = (
-            self.imp().phone_group.borrow().clone(),
-            self.imp().phone_box.borrow().clone(),
+        // 1. Email Card (`email_group` + `email_list`)
+        if let (Some(email_group), Some(email_list)) = (
+            self.imp().email_group.borrow().clone(),
+            self.imp().email_list.borrow().clone(),
         ) {
-            while let Some(child) = phone_box.first_child() {
-                phone_box.remove(&child);
+            while let Some(child) = email_list.first_child() {
+                email_list.remove(&child);
+            }
+            if let Some(rec) = record.filter(|r| !r.contact.is_list) {
+                let emails = contact_card_emails(&rec.contact);
+                if emails.is_empty() {
+                    email_group.set_visible(false);
+                } else {
+                    email_group.set_visible(true);
+                    let display_name = rec.contact.fn_name.trim().to_string();
+                    for item in emails {
+                        let row = adw::ActionRow::new();
+                        row.set_use_markup(false);
+                        row.set_selectable(false);
+                        row.set_title(&item.address);
+                        if !item.label.is_empty() {
+                            row.set_subtitle(&item.label);
+                        }
+                        row.add_prefix(&gtk::Image::from_icon_name("mail-unread-symbolic"));
+
+                        let compose_btn = gtk::Button::builder()
+                            .icon_name("mail-message-new-symbolic")
+                            .valign(gtk::Align::Center)
+                            .css_classes(["flat"])
+                            .tooltip_text(gettext("Send email"))
+                            .build();
+                        let recipient = if display_name.is_empty() {
+                            item.address.clone()
+                        } else {
+                            format!("{display_name} <{}>", item.address)
+                        };
+                        let page_weak_compose = self.downgrade();
+                        compose_btn.connect_clicked(move |_| {
+                            let dialog = crate::dialogs::ComposeDialog::to_recipient(&recipient);
+                            if let Some(page) = page_weak_compose.upgrade() {
+                                if let Some(window) = page.root().and_downcast::<gtk::Window>() {
+                                    dialog.set_transient_for(Some(&window));
+                                }
+                            }
+                            dialog.present();
+                        });
+                        row.add_suffix(&compose_btn);
+
+                        let copy_btn = gtk::Button::builder()
+                            .icon_name("edit-copy-symbolic")
+                            .valign(gtk::Align::Center)
+                            .css_classes(["flat"])
+                            .tooltip_text(gettext("Copy email address"))
+                            .build();
+                        let email_copy = item.address.clone();
+                        let page_weak_copy = self.downgrade();
+                        copy_btn.connect_clicked(move |btn| {
+                            btn.display().clipboard().set_text(&email_copy);
+                            if let Some(p) = page_weak_copy.upgrade() {
+                                p.show_toast(&gettext("Email address copied"));
+                            }
+                        });
+                        row.add_suffix(&copy_btn);
+                        email_list.append(&row);
+                    }
+                }
+            } else {
+                email_group.set_visible(false);
+            }
+        }
+
+        // 2. Phone Card (`phone_group` + `phone_list`)
+        if let (Some(phone_group), Some(phone_list)) = (
+            self.imp().phone_group.borrow().clone(),
+            self.imp().phone_list.borrow().clone(),
+        ) {
+            while let Some(child) = phone_list.first_child() {
+                phone_list.remove(&child);
             }
             if let Some(rec) = record {
-                let c = &rec.contact;
-                let mut phones: Vec<(String, String)> = Vec::new();
-                for prop in &c.phone_properties {
-                    let num = prop.value.trim();
-                    if num.is_empty() || phones.iter().any(|(existing, _)| existing == num) {
-                        continue;
-                    }
-                    let prop_upper = prop.property.to_ascii_uppercase();
-                    let kind_label = if prop_upper.contains("CELL") || prop_upper.contains("MOBILE") {
-                        gettext("Mobile")
-                    } else if prop_upper.contains("WORK") {
-                        gettext("Work")
-                    } else if prop_upper.contains("HOME") {
-                        gettext("Home")
-                    } else {
-                        gettext("Phone")
-                    };
-                    phones.push((num.to_string(), kind_label));
-                }
-                for num in &c.phones {
-                    let trimmed = num.trim();
-                    if !trimmed.is_empty() && !phones.iter().any(|(existing, _)| existing == trimmed) {
-                        phones.push((trimmed.to_string(), gettext("Phone")));
-                    }
-                }
-                if !c.tel.trim().is_empty()
-                    && !phones.iter().any(|(num, _)| num == c.tel.trim())
-                {
-                    phones.push((c.tel.trim().to_string(), gettext("Primary")));
-                }
-
+                let phones = contact_card_phones(&rec.contact);
                 if phones.is_empty() {
                     phone_group.set_visible(false);
                 } else {
                     phone_group.set_visible(true);
-                    for (num, kind_label) in phones {
-                        let row = adw::ActionRow::builder()
-                            .title(&num)
-                            .subtitle(&kind_label)
-                            .selectable(false)
-                            .css_classes(["property"])
-                            .build();
-                        row.add_prefix(&gtk::Image::from_icon_name("call-start-symbolic"));
+                    for phone in phones {
+                        let row = adw::ActionRow::new();
+                        row.set_use_markup(false);
+                        row.set_selectable(false);
+                        row.set_title(&phone.number);
+                        if !phone.label.is_empty() {
+                            row.set_subtitle(&phone.label);
+                        }
+                        row.add_prefix(&gtk::Image::from_icon_name(phone.icon));
 
                         let copy_btn = gtk::Button::builder()
                             .icon_name("edit-copy-symbolic")
@@ -6726,7 +7223,7 @@ impl ContactsPage {
                             .css_classes(["flat"])
                             .tooltip_text(gettext("Copy"))
                             .build();
-                        let num_copy = num.clone();
+                        let num_copy = phone.number.clone();
                         let page_weak = self.downgrade();
                         copy_btn.connect_clicked(move |btn| {
                             btn.display().clipboard().set_text(&num_copy);
@@ -6735,7 +7232,7 @@ impl ContactsPage {
                             }
                         });
                         row.add_suffix(&copy_btn);
-                        phone_box.append(&row);
+                        phone_list.append(&row);
                     }
                 }
             } else {
@@ -6743,76 +7240,161 @@ impl ContactsPage {
             }
         }
 
-        if let (Some(details_group), Some(details_box)) = (
-            self.imp().details_group.borrow().clone(),
-            self.imp().details_box.borrow().clone(),
+        // 3. Distribution List Members Card (`members_group` + `members_list`)
+        if let (Some(members_group), Some(members_list)) = (
+            self.imp().members_group.borrow().clone(),
+            self.imp().members_list.borrow().clone(),
         ) {
-            while let Some(child) = details_box.first_child() {
-                details_box.remove(&child);
+            while let Some(child) = members_list.first_child() {
+                members_list.remove(&child);
+            }
+            if let Some(rec) = record.filter(|r| r.contact.is_list && !r.contact.list_members.is_empty()) {
+                members_group.set_visible(true);
+                let show_addr = rec.contact.list_show_addresses;
+                for member in &rec.contact.list_members {
+                    let title = member.display_text(show_addr);
+                    let row = adw::ActionRow::new();
+                    row.set_use_markup(false);
+                    row.set_selectable(false);
+                    row.set_title(&title);
+                    let icon = match member.kind {
+                        VCardListMemberKind::NestedList => "contact-group-symbolic",
+                        _ => "avatar-default-symbolic",
+                    };
+                    row.add_prefix(&gtk::Image::from_icon_name(icon));
+                    if show_addr && !member.email.trim().is_empty() {
+                        let copy_btn = gtk::Button::builder()
+                            .icon_name("edit-copy-symbolic")
+                            .valign(gtk::Align::Center)
+                            .css_classes(["flat"])
+                            .tooltip_text(gettext("Copy email address"))
+                            .build();
+                        let email_copy = member.email.trim().to_string();
+                        let page_weak = self.downgrade();
+                        copy_btn.connect_clicked(move |btn| {
+                            btn.display().clipboard().set_text(&email_copy);
+                            if let Some(p) = page_weak.upgrade() {
+                                p.show_toast(&gettext("Email address copied"));
+                            }
+                        });
+                        row.add_suffix(&copy_btn);
+                    }
+                    members_list.append(&row);
+                }
+            } else {
+                members_group.set_visible(false);
+            }
+        }
+
+        // 4. Details Card (`details_group` + `details_list`)
+        if let (Some(details_group), Some(details_list)) = (
+            self.imp().details_group.borrow().clone(),
+            self.imp().details_list.borrow().clone(),
+        ) {
+            while let Some(child) = details_list.first_child() {
+                details_list.remove(&child);
             }
             if let Some(rec) = record {
                 let c = &rec.contact;
                 let mut has_rows = false;
-                let mut add_detail_row = |icon: &str, label: &str, value: &str| {
-                    let trimmed = value.trim();
-                    if trimmed.is_empty() {
-                        return;
-                    }
-                    has_rows = true;
-                    let row = adw::ActionRow::builder()
-                        .title(label)
-                        .subtitle(trimmed)
-                        .selectable(false)
-                        .css_classes(["property"])
-                        .build();
-                    row.add_prefix(&gtk::Image::from_icon_name(icon));
-
-                    let copy_btn = gtk::Button::builder()
-                        .icon_name("edit-copy-symbolic")
-                        .valign(gtk::Align::Center)
-                        .css_classes(["flat"])
-                        .tooltip_text(gettext("Copy"))
-                        .build();
-                    let val_copy = trimmed.to_string();
-                    let page_weak = self.downgrade();
-                    copy_btn.connect_clicked(move |btn| {
-                        btn.display().clipboard().set_text(&val_copy);
-                        if let Some(p) = page_weak.upgrade() {
-                            p.show_toast(&gettext("Copied to clipboard"));
+                let mut add_detail_row =
+                    |icon: &str, label: &str, value: &str, open_uri: Option<String>| {
+                        let trimmed = value.trim();
+                        if trimmed.is_empty() {
+                            return;
                         }
-                    });
-                    row.add_suffix(&copy_btn);
-                    details_box.append(&row);
-                };
+                        has_rows = true;
+                        let row = adw::ActionRow::new();
+                        row.set_use_markup(false);
+                        row.set_selectable(false);
+                        row.add_css_class("property");
+                        row.set_title(label);
+                        row.set_subtitle(trimmed);
+                        row.add_prefix(&gtk::Image::from_icon_name(icon));
+
+                        if let Some(uri) = open_uri {
+                            let open_btn = gtk::Button::builder()
+                                .icon_name("web-browser-symbolic")
+                                .valign(gtk::Align::Center)
+                                .css_classes(["flat"])
+                                .tooltip_text(gettext("Open Website"))
+                                .build();
+                            open_btn.connect_clicked(move |_| {
+                                let _ = gio::AppInfo::launch_default_for_uri(
+                                    &uri,
+                                    None::<&gio::AppLaunchContext>,
+                                );
+                            });
+                            row.add_suffix(&open_btn);
+                        }
+
+                        let copy_btn = gtk::Button::builder()
+                            .icon_name("edit-copy-symbolic")
+                            .valign(gtk::Align::Center)
+                            .css_classes(["flat"])
+                            .tooltip_text(gettext("Copy"))
+                            .build();
+                        let val_copy = trimmed.to_string();
+                        let page_weak = self.downgrade();
+                        copy_btn.connect_clicked(move |btn| {
+                            btn.display().clipboard().set_text(&val_copy);
+                            if let Some(p) = page_weak.upgrade() {
+                                p.show_toast(&gettext("Copied to clipboard"));
+                            }
+                        });
+                        row.add_suffix(&copy_btn);
+                        details_list.append(&row);
+                    };
 
                 let clean_org = clean_contact_org(&c.org);
-                add_detail_row("x-office-address-book-symbolic", &gettext("Organization"), &clean_org);
-                add_detail_row("avatar-default-symbolic", &gettext("Job Title"), &c.title);
-                add_detail_row("avatar-default-symbolic", &gettext("Role"), &c.role);
-                add_detail_row("avatar-default-symbolic", &gettext("Nickname"), &c.nickname);
-                if !c.urls.is_empty() {
-                    add_detail_row("web-browser-symbolic", &gettext("Website"), &c.urls.join(", "));
+                add_detail_row(
+                    "x-office-address-book-symbolic",
+                    &gettext("Organization"),
+                    &clean_org,
+                    None,
+                );
+                add_detail_row("avatar-default-symbolic", &gettext("Job Title"), &c.title, None);
+                add_detail_row("avatar-default-symbolic", &gettext("Role"), &c.role, None);
+                add_detail_row("avatar-default-symbolic", &gettext("Nickname"), &c.nickname, None);
+                for url in c.urls.iter().map(|u| u.trim()).filter(|u| !u.is_empty()) {
+                    let launch_uri = if url.starts_with("http://") || url.starts_with("https://") {
+                        Some(url.to_string())
+                    } else if !url.contains("://") {
+                        Some(format!("https://{url}"))
+                    } else {
+                        None
+                    };
+                    add_detail_row("web-browser-symbolic", &gettext("Website"), url, launch_uri);
                 }
-                add_detail_row("x-office-calendar-symbolic", &gettext("Birthday"), &c.birthday);
-                add_detail_row("x-office-calendar-symbolic", &gettext("Anniversary"), &c.anniversary);
+                add_detail_row(
+                    "x-office-calendar-symbolic",
+                    &gettext("Birthday"),
+                    &c.birthday,
+                    None,
+                );
+                add_detail_row(
+                    "x-office-calendar-symbolic",
+                    &gettext("Anniversary"),
+                    &c.anniversary,
+                    None,
+                );
                 if !c.impps.is_empty() {
-                    add_detail_row("user-available-symbolic", &gettext("Chat"), &c.impps.join(", "));
-                }
-                add_detail_row("document-edit-symbolic", &gettext("Notes"), &c.note);
-
-                if c.is_list && !c.list_members.is_empty() {
-                    let members_str = c
-                        .list_members
-                        .iter()
-                        .map(|m| m.display_text(c.list_show_addresses))
-                        .collect::<Vec<_>>()
-                        .join(", ");
                     add_detail_row(
-                        "system-users-symbolic",
-                        &gettext("Members"),
-                        &members_str,
+                        "user-available-symbolic",
+                        &gettext("Chat"),
+                        &c.impps.join(", "),
+                        None,
                     );
                 }
+                if !c.related.is_empty() {
+                    add_detail_row(
+                        "system-users-symbolic",
+                        &gettext("Related"),
+                        &c.related.join(", "),
+                        None,
+                    );
+                }
+                add_detail_row("document-edit-symbolic", &gettext("Notes"), &c.note, None);
 
                 details_group.set_visible(has_rows);
             } else {
@@ -6824,6 +7406,68 @@ impl ContactsPage {
 
 pub(crate) fn contact_url_encode(input: &str) -> String {
     url_encode(input)
+}
+
+fn parse_vcard_geo_coords(geo: &str) -> Option<(f64, f64)> {
+    let raw = geo.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let stripped = raw
+        .strip_prefix("geo:")
+        .or_else(|| raw.strip_prefix("GEO:"))
+        .unwrap_or(raw);
+    let core = stripped.split(';').take(2).collect::<Vec<_>>();
+    let (lat_s, lon_s) = if core.len() == 2 && !stripped.contains(',') {
+        (core[0].trim(), core[1].trim())
+    } else {
+        let before_params = stripped.split(';').next().unwrap_or(stripped);
+        let (a, b) = before_params.split_once(',')?;
+        (a.trim(), b.trim())
+    };
+    let lat: f64 = lat_s.parse().ok()?;
+    let lon: f64 = lon_s.parse().ok()?;
+    if lat.is_finite()
+        && lon.is_finite()
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
+    {
+        Some((lat, lon))
+    } else {
+        None
+    }
+}
+
+pub(crate) fn build_osm_preview_url(address: &str, geo: &str) -> String {
+    if let Some((lat, lon)) = parse_vcard_geo_coords(geo) {
+        let min_lon = (lon - 0.008).clamp(-180.0, 180.0);
+        let max_lon = (lon + 0.008).clamp(-180.0, 180.0);
+        let min_lat = (lat - 0.005).clamp(-90.0, 90.0);
+        let max_lat = (lat + 0.005).clamp(-90.0, 90.0);
+        return format!(
+            "https://www.openstreetmap.org/export/embed.html?bbox={min_lon:.5}%2C{min_lat:.5}%2C{max_lon:.5}%2C{max_lat:.5}&layer=mapnik&marker={lat:.5}%2C{lon:.5}"
+        );
+    }
+    let encoded_query = url_encode(address);
+    format!("https://www.openstreetmap.org/search?query={encoded_query}")
+}
+
+fn attach_contact_list_sort_func(contact_list: &gtk::ListBox) {
+    contact_list.set_sort_func(|left, right| unsafe {
+        let value = |row: &gtk::ListBoxRow, key: &str| -> &str {
+            row.data::<String>(key)
+                .map(|v| v.as_ref().as_str())
+                .unwrap_or("")
+        };
+        value(left, "contact-sort-key")
+            .cmp(value(right, "contact-sort-key"))
+            .then_with(|| value(left, "contact-email").cmp(value(right, "contact-email")))
+            .then_with(|| {
+                value(left, "contact-source-uid").cmp(value(right, "contact-source-uid"))
+            })
+            .then_with(|| value(left, "contact-id").cmp(value(right, "contact-id")))
+            .into()
+    });
 }
 
 fn url_encode(input: &str) -> String {
@@ -7005,14 +7649,26 @@ fn refresh_contacts(
                 if let Some(page) = page_weak.upgrade() {
                     page.imp().is_syncing_selection.set(true);
                 }
+                contact_list.unset_sort_func();
+                contact_list.unset_filter_func();
                 while let Some(row) = contact_list.row_at_index(0) {
                     contact_list.remove(&row);
                 }
-                let contacts = result.contacts;
+                let mut contacts = result.contacts;
+                contacts.sort_by_cached_key(|rec| {
+                    (
+                        contact_sort_key(&rec.contact),
+                        rec.contact.email.clone(),
+                        rec.source_uid.clone(),
+                        rec.uid.clone(),
+                    )
+                });
                 *stored_contacts.borrow_mut() = contacts.clone();
                 for record in &contacts {
                     append_contact_row(&contact_list, record);
                 }
+                attach_contact_list_sort_func(&contact_list);
+                set_contact_filter(&contact_list, Rc::clone(&search_state));
                 if let Some(page) = page_weak.upgrade() {
                     page.imp().is_syncing_selection.set(false);
                 }
@@ -7114,6 +7770,32 @@ fn contact_status_needs_visibility(contact_count: usize, warning: Option<&str>) 
 
 fn select_contact_row(contact_list: &gtk::ListBox, source_uid: &str, uid: &str) -> bool {
     select_contact_row_ext(contact_list, source_uid, uid, true, false)
+}
+
+fn select_contact_identities_batch(
+    page: &ContactsPage,
+    contact_list: &gtk::ListBox,
+    targets: &HashSet<ContactIdentity>,
+) {
+    let was_syncing = page.imp().is_syncing_selection.replace(true);
+    let mut child = contact_list.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Ok(row) = widget.downcast::<gtk::ListBoxRow>() else {
+            continue;
+        };
+        let want_selected = row_contact_identity(&row)
+            .is_some_and(|identity| targets.contains(&identity));
+        if want_selected && !row.is_selected() {
+            contact_list.select_row(Some(&row));
+        } else if !want_selected && row.is_selected() {
+            contact_list.unselect_row(&row);
+        }
+    }
+    page.imp().is_syncing_selection.set(was_syncing);
+    if !was_syncing {
+        contact_list.emit_by_name::<()>("selected-rows-changed", &[]);
+    }
 }
 
 fn select_contact_row_ext(
@@ -8500,6 +9182,9 @@ fn sync_contact_selection(
             detail_extra.set_visible(false);
             page.update_contact_address_and_map(None);
             page.update_contact_structured_details(None);
+            if let Some(stack) = page.imp().detail_stack.borrow().as_ref() {
+                stack.set_visible_child_name("empty");
+            }
             if let Some(pill) = page.imp().contact_actions_pill.borrow().as_ref() {
                 pill.set_visible(false);
             }
@@ -8545,6 +9230,9 @@ fn sync_contact_selection(
             detail_extra.set_visible(false);
             page.update_contact_address_and_map(None);
             page.update_contact_structured_details(None);
+            if let Some(stack) = page.imp().detail_stack.borrow().as_ref() {
+                stack.set_visible_child_name("empty");
+            }
         }
         [record] => {
             *selected_contact.borrow_mut() = Some(record.clone());
@@ -8565,6 +9253,9 @@ fn sync_contact_selection(
             detail_extra.set_visible(false);
             page.update_contact_address_and_map(Some(&record.contact));
             page.update_contact_structured_details(Some(record));
+            if let Some(stack) = page.imp().detail_stack.borrow().as_ref() {
+                stack.set_visible_child_name("content");
+            }
         }
         records => {
             *selected_contact.borrow_mut() = None;
@@ -8596,12 +9287,17 @@ fn sync_contact_selection(
             detail_extra.set_visible(true);
             page.update_contact_address_and_map(None);
             page.update_contact_structured_details(None);
+            if let Some(stack) = page.imp().detail_stack.borrow().as_ref() {
+                stack.set_visible_child_name("content");
+            }
         }
     }
     let selected_ids = current_contact_selected_identities(contact_list);
-    if let Some(layout) = page.imp().contact_table_layout.borrow_mut().as_mut() {
-        for row in layout.rows.iter_mut() {
-            row.selected = selected_ids.contains(&row.identity);
+    if let Ok(mut layout_guard) = page.imp().contact_table_layout.try_borrow_mut() {
+        if let Some(layout) = layout_guard.as_mut() {
+            for row in layout.rows.iter_mut() {
+                row.selected = selected_ids.contains(&row.identity);
+            }
         }
     }
     page.queue_contacts_table_draw();
@@ -8625,12 +9321,17 @@ fn sync_contact_selection(
 fn clear_contact_selection(page: &ContactsPage, contact_list: &gtk::ListBox) {
     contact_list.unselect_all();
     page.imp().selected_identity.replace(None);
+    if let Some(stack) = page.imp().detail_stack.borrow().as_ref() {
+        stack.set_visible_child_name("empty");
+    }
     if let Some(pill) = page.imp().contact_actions_pill.borrow().as_ref() {
         pill.set_visible(false);
     }
-    if let Some(layout) = page.imp().contact_table_layout.borrow_mut().as_mut() {
-        for row in layout.rows.iter_mut() {
-            row.selected = false;
+    if let Ok(mut layout_guard) = page.imp().contact_table_layout.try_borrow_mut() {
+        if let Some(layout) = layout_guard.as_mut() {
+            for row in layout.rows.iter_mut() {
+                row.selected = false;
+            }
         }
     }
     page.queue_contacts_table_draw();
@@ -8706,7 +9407,9 @@ fn update_alphabet_pane(
         let button = gtk::Button::builder()
             .label(letter.to_string())
             .css_classes(["contacts-alphabet-btn"])
-            .tooltip_text(format!("Zu '{letter}' springen"))
+            .tooltip_text(
+                gettext("Jump to '{letter}'").replace("{letter}", &letter.to_string()),
+            )
             .halign(gtk::Align::End)
             .build();
 
@@ -8734,16 +9437,40 @@ fn update_alphabet_pane(
                 .unwrap_or_else(|| glib::GString::from("simple"));
 
             if current_view == "table" {
-                if let Some(scroll) = page.imp().list_scroll.borrow().as_ref() {
-                    if let Some(layout) = page.imp().contact_table_layout.borrow().as_ref() {
-                        let letter_upper: String = letter.to_uppercase().collect();
-                        if let Some(r) = layout.rows.iter().find(|r| {
-                            r.name.to_uppercase().starts_with(&letter_upper)
-                                || r.company.to_uppercase().starts_with(&letter_upper)
-                        }) {
-                            let vadj = scroll.vadjustment();
-                            vadj.set_value(r.y.clamp(vadj.lower(), (vadj.upper() - vadj.page_size()).max(vadj.lower())));
+                let target_pos = page
+                    .imp()
+                    .contact_table_layout
+                    .try_borrow()
+                    .ok()
+                    .and_then(|layout_ref| {
+                        let layout = layout_ref.as_ref()?;
+                        if let Some((idx, r)) = layout
+                            .rows
+                            .iter()
+                            .enumerate()
+                            .find(|(_, r)| r.identity.source_uid == s_uid && r.identity.uid == u_id)
+                        {
+                            return Some((idx, r.y));
                         }
+                        let letter_upper: String = letter.to_uppercase().collect();
+                        layout
+                            .rows
+                            .iter()
+                            .enumerate()
+                            .find(|(_, r)| {
+                                r.name.to_uppercase().starts_with(&letter_upper)
+                                    || r.company.to_uppercase().starts_with(&letter_upper)
+                            })
+                            .map(|(idx, r)| (idx, r.y))
+                    });
+                if let Some((idx, y)) = target_pos {
+                    page.imp().contact_table_anchor_row.set(Some(idx));
+                    page.imp().contact_table_cursor_row.set(Some(idx));
+                    if let Some(scroll) = page.imp().list_scroll.borrow().as_ref() {
+                        let vadj = scroll.vadjustment();
+                        vadj.set_value(
+                            y.clamp(vadj.lower(), (vadj.upper() - vadj.page_size()).max(vadj.lower())),
+                        );
                     }
                 }
             } else {
@@ -9098,9 +9825,9 @@ fn mark_duplicate_rows(
             row.set_data("contact-duplicate", duplicate);
         }
         if duplicate {
-            row.add_css_class("warning");
+            row.add_css_class("contact-duplicate-row");
         } else {
-            row.remove_css_class("warning");
+            row.remove_css_class("contact-duplicate-row");
         }
     }
     contact_list.invalidate_filter();
@@ -9430,9 +10157,61 @@ pub(crate) fn contact_card_phones(contact: &VCardContact) -> Vec<ContactCardPhon
         });
     }
 
-    // If there is only one phone number overall and its label is generic "Telefon", clear it
-    if result.len() == 1 && result[0].label == "Telefon" {
+    // If there is only one phone number overall and its label is generic "Phone", clear it
+    if result.len() == 1 && result[0].label == gettext("Phone") {
         result[0].label.clear();
+    }
+
+    result
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContactCardEmail {
+    pub label: String,
+    pub address: String,
+}
+
+pub(crate) fn contact_card_emails(contact: &VCardContact) -> Vec<ContactCardEmail> {
+    if contact.is_list {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let mut seen_lower = std::collections::HashSet::new();
+
+    for prop in &contact.email_properties {
+        let addr = prop.value.trim();
+        if addr.is_empty() || !seen_lower.insert(addr.to_ascii_lowercase()) {
+            continue;
+        }
+        let prop_upper = prop.property.to_ascii_uppercase();
+        let label = if prop_upper.contains("WORK") || prop_upper.contains("BUSINESS") {
+            gettext("Business")
+        } else if prop_upper.contains("HOME") || prop_upper.contains("PERSONAL") {
+            gettext("Home")
+        } else {
+            String::new()
+        };
+        result.push(ContactCardEmail {
+            label,
+            address: addr.to_string(),
+        });
+    }
+
+    for addr in &contact.emails {
+        let trimmed = addr.trim();
+        if !trimmed.is_empty() && seen_lower.insert(trimmed.to_ascii_lowercase()) {
+            result.push(ContactCardEmail {
+                label: String::new(),
+                address: trimmed.to_string(),
+            });
+        }
+    }
+
+    if result.is_empty() && !contact.email.trim().is_empty() {
+        result.push(ContactCardEmail {
+            label: String::new(),
+            address: contact.email.trim().to_string(),
+        });
     }
 
     result
@@ -9461,18 +10240,53 @@ fn set_avatar_photo(
     avatar: &adw::Avatar,
     photo: Option<&crate::services::vcard_service::VCardPhoto>,
 ) {
-    let Some(bytes) = photo.and_then(|photo| photo.decoded_bytes()) else {
+    use std::hash::{Hash, Hasher};
+
+    thread_local! {
+        static AVATAR_TEXTURE_CACHE: RefCell<HashMap<u64, Option<gdk::Texture>>> =
+            RefCell::new(HashMap::new());
+    }
+
+    let Some(photo) = photo else {
         avatar.set_custom_image(None::<&gdk::Texture>);
         return;
     };
-    let bytes = glib::Bytes::from_owned(bytes);
-    match gdk::Texture::from_bytes(&bytes) {
-        Ok(texture) => avatar.set_custom_image(Some(&texture)),
-        Err(error) => {
-            avatar.set_custom_image(None::<&gdk::Texture>);
-            tracing::debug!(%error, "Could not decode vCard avatar photo");
-        }
+    if photo.value.trim().is_empty() {
+        avatar.set_custom_image(None::<&gdk::Texture>);
+        return;
     }
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    photo.encoding.hash(&mut hasher);
+    photo.value.hash(&mut hasher);
+    let cache_key = hasher.finish();
+
+    let cached = AVATAR_TEXTURE_CACHE.with(|cache| cache.borrow().get(&cache_key).cloned());
+    if let Some(entry) = cached {
+        avatar.set_custom_image(entry.as_ref());
+        return;
+    }
+
+    let decoded_texture = photo.decoded_bytes().and_then(|bytes| {
+        let gbytes = glib::Bytes::from_owned(bytes);
+        match gdk::Texture::from_bytes(&gbytes) {
+            Ok(texture) => Some(texture),
+            Err(error) => {
+                tracing::debug!(%error, "Could not decode vCard avatar photo");
+                None
+            }
+        }
+    });
+
+    AVATAR_TEXTURE_CACHE.with(|cache| {
+        let mut map = cache.borrow_mut();
+        if map.len() >= 512 {
+            map.clear();
+        }
+        map.insert(cache_key, decoded_texture.clone());
+    });
+
+    avatar.set_custom_image(decoded_texture.as_ref());
 }
 
 fn contact_email_text(contact: &VCardContact) -> String {
@@ -10828,13 +11642,14 @@ mod tests {
 
         use adw::subclass::prelude::*;
         let page = ContactsPage::new();
+        page.set_screen_mode(true, false);
         page.set_view_mode(ContactViewMode::Table);
 
         // Initially not drilled down
         assert!(!page.can_navigate_back());
         assert!(!page.imp().is_detail_shown.get());
 
-        // When a row is activated / clicked in Table view, drill down occurs
+        // When a row is activated / clicked in mobile Table view, drill down occurs
         page.imp().is_detail_shown.set(true);
         page.sync_contacts_layout_visibility();
         assert!(page.can_navigate_back());
@@ -11102,10 +11917,11 @@ mod tests {
         let split_btn = page
             .view_options_split_button()
             .expect("view_options_split_button exists");
-        assert_eq!(
-            split_btn.icon_name(),
-            Some(glib::GString::from("view-list-symbolic"))
-        );
+        let expected_icon = match page.imp().current_view_mode.get() {
+            ContactViewMode::Simple => "view-list-symbolic",
+            ContactViewMode::Table => "view-grid-symbolic",
+        };
+        assert_eq!(split_btn.icon_name().as_deref(), Some(expected_icon));
 
         // Contact action pill is created and initially hidden (no contact selected)
         let pill = page
@@ -11171,7 +11987,11 @@ mod tests {
         use adw::subclass::prelude::*;
         let page = ContactsPage::new();
         let view_stack = page.imp().view_stack.borrow().clone().expect("view stack exists");
-        assert_eq!(view_stack.visible_child_name().as_deref(), Some("simple"));
+        let expected_initial = match page.imp().current_view_mode.get() {
+            ContactViewMode::Simple => "simple",
+            ContactViewMode::Table => "table",
+        };
+        assert_eq!(view_stack.visible_child_name().as_deref(), Some(expected_initial));
         assert!(page.imp().simple_list_scroll.borrow().is_some());
         assert!(page.imp().list_scroll.borrow().is_some());
 
@@ -11291,5 +12111,198 @@ mod tests {
         page.set_preview_visible(true);
         assert!(list_container.is_visible());
         assert!(detail_box.is_visible());
+    }
+
+    #[test]
+    fn test_contact_table_empty_filter_and_case_insensitive_sort() {
+        let mut c1 = VCardContact::new("Zoe Zimmermann", "zoe@example.test", "", "");
+        c1.org = "Zeta GmbH".to_string();
+        let r1 = record("book-1", "id-zoe", c1);
+
+        let mut c2 = VCardContact::new("ada lovelace", "ada@example.test", "+49 123", "");
+        c2.org = "".to_string();
+        let r2 = record("book-1", "id-ada", c2);
+
+        let mut c3 = VCardContact::new("Max & Co <Test>", "max@example.test", "", "Lead");
+        c3.org = "alpha ag".to_string();
+        let r3 = record("book-1", "id-max", c3);
+
+        let contacts = vec![r1, r2, r3];
+        let selected = std::collections::HashSet::new();
+
+        // Case-insensitive Name sort: "ada lovelace" < "Max & Co <Test>" < "Zoe Zimmermann"
+        let by_name = prepare_contact_table_layout(
+            &contacts,
+            None,
+            &selected,
+            ContactTableColumn::Name,
+            false,
+            1000.0,
+        );
+        assert_eq!(by_name.rows[0].name, "ada lovelace");
+        assert_eq!(by_name.rows[1].name, "Max & Co <Test>");
+        assert_eq!(by_name.rows[2].name, "Zoe Zimmermann");
+
+        // Company sort places empty company at the bottom instead of the top
+        let by_company = prepare_contact_table_layout(
+            &contacts,
+            None,
+            &selected,
+            ContactTableColumn::Company,
+            false,
+            1000.0,
+        );
+        assert_eq!(by_company.rows[0].company, "alpha ag");
+        assert_eq!(by_company.rows[1].company, "Zeta GmbH");
+        assert_eq!(by_company.rows[2].company, "");
+
+        // Active empty search filter must yield 0 rows (not leak all contacts!)
+        let empty_visible = std::collections::HashSet::new();
+        let empty_filtered = prepare_contact_table_layout(
+            &contacts,
+            Some(&empty_visible),
+            &selected,
+            ContactTableColumn::Name,
+            false,
+            1000.0,
+        );
+        assert!(empty_filtered.rows.is_empty());
+    }
+
+    #[test]
+    fn test_contact_card_emails_and_osm_preview_url() {
+        use crate::services::vcard_service::VCardProperty;
+
+        let mut contact = VCardContact::new("Ada", "ada@work.test", "Analytical", "Lead");
+        contact.email_properties = vec![
+            VCardProperty {
+                property: "EMAIL;TYPE=WORK".to_string(),
+                value: "ada@work.test".to_string(),
+                raw_value: "ada@work.test".to_string(),
+            },
+            VCardProperty {
+                property: "EMAIL;TYPE=HOME".to_string(),
+                value: "ada@home.test".to_string(),
+                raw_value: "ada@home.test".to_string(),
+            },
+        ];
+        contact.emails = vec![
+            "ada@work.test".to_string(),
+            "ada@home.test".to_string(),
+            "ada.extra@example.test".to_string(),
+        ];
+
+        let emails = super::contact_card_emails(&contact);
+        assert_eq!(emails.len(), 3);
+        assert_eq!(emails[0].address, "ada@work.test");
+        assert_eq!(emails[0].label, gettext("Business"));
+        assert_eq!(emails[1].address, "ada@home.test");
+        assert_eq!(emails[1].label, gettext("Home"));
+        assert_eq!(emails[2].address, "ada.extra@example.test");
+        assert_eq!(emails[2].label, "");
+
+        let geo_url = super::build_osm_preview_url("Berlin", "52.52000;13.40500");
+        assert!(geo_url.contains("export/embed.html?bbox="));
+        assert!(geo_url.contains("marker=52.52000%2C13.40500"));
+
+        let fallback_url = super::build_osm_preview_url("Hauptstraße 1, München", "");
+        assert!(fallback_url.starts_with("https://www.openstreetmap.org/search?query="));
+    }
+
+    #[test]
+    fn test_contact_selection_and_table_sync_no_refcell_panic() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        use adw::subclass::prelude::*;
+        let page = ContactsPage::new();
+        page.set_view_mode(ContactViewMode::Table);
+
+        let mut c1 = VCardContact::new(
+            "Müller & Söhne <Support>",
+            "info@mueller.test",
+            "Müller & Söhne GmbH",
+            "Geschäftsführung & Recht",
+        );
+        c1.phones = vec!["+49 89 100 & 200".to_string()];
+        c1.addresses = vec!["Königsallee 1 & 2, 40212 Düsseldorf".to_string()];
+        let r1 = record("book-1", "uid-1", c1);
+
+        let c2 = VCardContact::new("Grace Hopper", "grace@navy.mil", "+1 703 200", "Admiral");
+        let r2 = record("book-1", "uid-2", c2);
+
+        let contacts = vec![r1.clone(), r2.clone()];
+        let stored = page.imp().stored_contacts.borrow().clone().expect("stored");
+        *stored.borrow_mut() = contacts.clone();
+
+        let list = page.imp().contact_list.borrow().clone().expect("list");
+        while let Some(row) = list.row_at_index(0) {
+            list.remove(&row);
+        }
+        for rec in &contacts {
+            append_contact_row(&list, rec);
+        }
+        page.update_contacts_table_layout(&contacts, None, &std::collections::HashSet::new());
+
+        // Initially empty detail state
+        assert_eq!(
+            page.imp()
+                .detail_stack
+                .borrow()
+                .as_ref()
+                .and_then(|s| s.visible_child_name())
+                .as_deref(),
+            Some("empty")
+        );
+
+        // Select single contact (including '&' and '<>' characters) -> must not panic or fail markup
+        assert!(super::select_contact_row(&list, "book-1", "uid-1"));
+        assert_eq!(
+            page.imp()
+                .detail_stack
+                .borrow()
+                .as_ref()
+                .and_then(|s| s.visible_child_name())
+                .as_deref(),
+            Some("content")
+        );
+        assert!(page.imp().email_group.borrow().as_ref().unwrap().is_visible());
+        assert!(page.imp().phone_group.borrow().as_ref().unwrap().is_visible());
+        assert!(page.imp().address_group.borrow().as_ref().unwrap().is_visible());
+        assert!(page.imp().details_group.borrow().as_ref().unwrap().is_visible());
+
+        // Batch range selection (simulating Shift+Click / Shift+Arrow) -> single sync pass, no panic
+        let mut batch = std::collections::HashSet::new();
+        batch.insert(ContactIdentity::new("book-1", "uid-1"));
+        batch.insert(ContactIdentity::new("book-1", "uid-2"));
+        super::select_contact_identities_batch(&page, &list, &batch);
+        assert_eq!(list.selected_rows().len(), 2);
+        let selected_table_count = page
+            .imp()
+            .contact_table_layout
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .filter(|r| r.selected)
+            .count();
+        assert_eq!(selected_table_count, 2);
+
+        // Clearing selection returns detail_stack to "empty"
+        super::clear_contact_selection(&page, &list);
+        assert_eq!(
+            page.imp()
+                .detail_stack
+                .borrow()
+                .as_ref()
+                .and_then(|s| s.visible_child_name())
+                .as_deref(),
+            Some("empty")
+        );
     }
 }

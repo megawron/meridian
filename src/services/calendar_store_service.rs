@@ -3105,6 +3105,68 @@ pub fn build_mail_linked_memo_component(
     finish_physical_lines(lines)
 }
 
+pub fn build_mail_linked_task_component(
+    uid: &str,
+    summary: &str,
+    description: &str,
+    mid_uri: Option<&str>,
+    parent_uid: Option<&str>,
+) -> String {
+    let now_stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let mut lines = vec![
+        "BEGIN:VCALENDAR".to_string(),
+        "VERSION:2.0".to_string(),
+        "PRODID:-//Meridian//Task//EN".to_string(),
+        "BEGIN:VTODO".to_string(),
+    ];
+    append_folded_line(&mut lines, "UID", &strip_line_breaks(uid));
+    append_folded_line(&mut lines, "DTSTAMP", &now_stamp);
+    append_folded_line(&mut lines, "LAST-MODIFIED", &now_stamp);
+    append_folded_line(&mut lines, "STATUS", "NEEDS-ACTION");
+    append_folded_line(&mut lines, "SUMMARY", &escape_ical_text_value(summary));
+    if !description.trim().is_empty() {
+        append_folded_line(&mut lines, "DESCRIPTION", &escape_ical_text_value(description));
+    }
+    if let Some(mid) = mid_uri.filter(|s| !s.trim().is_empty()) {
+        let normalized_mid =
+            normalize_mid_uri(mid).unwrap_or_else(|| format!("mid:{}", mid.trim()));
+        append_folded_line(&mut lines, "URL", &serialize_memo_uri_value(&normalized_mid));
+    }
+    if let Some(parent) = parent_uid.filter(|s| !s.trim().is_empty()) {
+        append_folded_line(
+            &mut lines,
+            "RELATED-TO;RELTYPE=PARENT",
+            &escape_ical_text_value(parent.trim()),
+        );
+    }
+    lines.push("END:VTODO".to_string());
+    lines.push("END:VCALENDAR".to_string());
+    finish_physical_lines(lines)
+}
+
+pub fn task_parent_uid(component: &str) -> Option<String> {
+    for line in unfold_lines(component) {
+        let Some((prop, val)) = line.split_once(':') else {
+            continue;
+        };
+        let base = prop.split(';').next().unwrap_or(prop).trim();
+        if base.eq_ignore_ascii_case("RELATED-TO") {
+            let is_parent = !prop.contains(';')
+                || prop
+                    .split(';')
+                    .skip(1)
+                    .any(|p| p.trim().eq_ignore_ascii_case("RELTYPE=PARENT"));
+            if is_parent {
+                let cleaned = unescape(val.trim());
+                if !cleaned.is_empty() && !cleaned.contains('@') {
+                    return Some(cleaned);
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn update_mail_linked_memo_component(
     existing_component: &str,
     summary: &str,

@@ -15,6 +15,7 @@ use chrono::Utc;
 pub enum ItipMethod {
     Request,
     Reply,
+    Counter,
     Cancel,
     Publish,
     Add,
@@ -51,6 +52,7 @@ impl ItipMethod {
         match self {
             Self::Request => "REQUEST",
             Self::Reply => "REPLY",
+            Self::Counter => "COUNTER",
             Self::Cancel => "CANCEL",
             Self::Publish => "PUBLISH",
             Self::Add => "ADD",
@@ -180,6 +182,67 @@ pub fn build_reply_component(
     Ok(format!("{}\r\n", lines.join("\r\n")))
 }
 
+/// Build an RFC 5546 `METHOD:COUNTER` component proposing an alternative
+/// meeting start and end time to the organizer.
+pub fn build_counter_component(
+    invitation: &ItipInvitation,
+    attendee: &str,
+    proposed_dtstart_utc: &str,
+    proposed_dtend_utc: &str,
+    comment: Option<&str>,
+) -> Result<String, String> {
+    if !matches!(invitation.method, ItipMethod::Request | ItipMethod::Add) {
+        return Err("Counter-proposal is only valid for meeting requests".to_string());
+    }
+    let attendee = normalize_attendee_address(attendee)
+        .ok_or_else(|| "A valid own email address is required to propose a new time".to_string())?;
+    let uid = top_level_property(&invitation.event.component, "UID")
+        .map(|(_, value)| value)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| invitation.event.uid.clone());
+    if uid.trim().is_empty() {
+        return Err("The invitation has no UID".to_string());
+    }
+
+    let mut lines = vec![
+        "BEGIN:VCALENDAR".to_string(),
+        "VERSION:2.0".to_string(),
+        "PRODID:-//Meridian//iTIP Counter//EN".to_string(),
+        "METHOD:COUNTER".to_string(),
+        "BEGIN:VEVENT".to_string(),
+        format!("UID:{uid}"),
+        format!("DTSTAMP:{}", Utc::now().format("%Y%m%dT%H%M%SZ")),
+        format!("DTSTART:{proposed_dtstart_utc}"),
+        format!("DTEND:{proposed_dtend_utc}"),
+    ];
+    for property in ["SEQUENCE", "SUMMARY", "LOCATION", "RECURRENCE-ID"] {
+        if let Some((prefix, value)) = top_level_property(&invitation.event.component, property) {
+            lines.push(format!("{prefix}:{value}"));
+        }
+    }
+    if let Some((prefix, value)) = top_level_property(&invitation.event.component, "ORGANIZER")
+        .or_else(|| {
+            let organizer = invitation.organizer.trim();
+            (!organizer.is_empty()).then(|| ("ORGANIZER".to_string(), organizer.to_string()))
+        })
+    {
+        lines.push(format!("{prefix}:{value}"));
+    }
+    lines.push(reply_attendee_line(
+        &invitation.event.component,
+        &attendee,
+        ItipReplyStatus::Tentative,
+    ));
+    if let Some(comment_text) = comment {
+        let clean = comment_text.trim().replace("\r\n", " ").replace('\n', " ");
+        if !clean.is_empty() {
+            lines.push(format!("COMMENT:{clean}"));
+        }
+    }
+    lines.extend(["END:VEVENT".to_string(), "END:VCALENDAR".to_string()]);
+    Ok(format!("{}\r\n", lines.join("\r\n")))
+}
+
 pub fn normalize_attendee_address(value: &str) -> Option<String> {
     let value = value.trim();
     let value = value
@@ -283,6 +346,7 @@ fn parse_method(raw: &str) -> ItipMethod {
     {
         "REQUEST" => ItipMethod::Request,
         "REPLY" => ItipMethod::Reply,
+        "COUNTER" => ItipMethod::Counter,
         "CANCEL" => ItipMethod::Cancel,
         "PUBLISH" => ItipMethod::Publish,
         "ADD" => ItipMethod::Add,

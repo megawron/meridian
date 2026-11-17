@@ -9304,10 +9304,17 @@ pub(crate) fn prepare_task_table_layout(
     for task in tasks {
         let completed = task_is_completed(task);
         let raw_title = task.title();
-        let title = if raw_title.trim().is_empty() {
+        let base_title = if raw_title.trim().is_empty() {
             gettext("(No Subject)")
         } else {
             raw_title
+        };
+        let title = if crate::services::calendar_store_service::task_parent_uid(&task.component())
+            .is_some()
+        {
+            format!("   ↳ {base_title}")
+        } else {
+            base_title
         };
 
         let due_raw = task.due_date();
@@ -10037,6 +10044,153 @@ pub(crate) fn toggle_task_item_completion(page: &TasksPage, task: &TaskItemObjec
     });
 }
 
+fn nest_subtasks_under_parents(tasks: &mut Vec<TaskItemObject>) {
+    if tasks.len() < 2 {
+        return;
+    }
+    let present_ids: HashSet<String> = tasks.iter().map(|t| t.id()).collect();
+    let mut children_by_parent: HashMap<String, Vec<TaskItemObject>> = HashMap::new();
+    let mut roots = Vec::with_capacity(tasks.len());
+    for t in tasks.drain(..) {
+        if let Some(parent_uid) =
+            crate::services::calendar_store_service::task_parent_uid(&t.component())
+            && present_ids.contains(&parent_uid)
+            && parent_uid != t.id()
+        {
+            children_by_parent.entry(parent_uid).or_default().push(t);
+        } else {
+            roots.push(t);
+        }
+    }
+    if children_by_parent.is_empty() {
+        *tasks = roots;
+        return;
+    }
+    for root in roots {
+        let rid = root.id();
+        tasks.push(root);
+        if let Some(mut kids) = children_by_parent.remove(&rid) {
+            tasks.append(&mut kids);
+        }
+    }
+    for (_, mut leftovers) in children_by_parent {
+        tasks.append(&mut leftovers);
+    }
+}
+
+fn present_new_subtask_dialog(page: &TasksPage, parent_task: &TaskItemObject) {
+    let parent_uid = parent_task.id();
+    let source_uid = parent_task.source_uid();
+    let dialog = adw::Dialog::builder()
+        .title(gettext("New Subtask"))
+        .content_width(420)
+        .build();
+    let tv = adw::ToolbarView::new();
+    let hb = adw::HeaderBar::new();
+    let btn_create = gtk::Button::builder()
+        .label(gettext("Add"))
+        .css_classes(["suggested-action"])
+        .build();
+    hb.pack_end(&btn_create);
+    tv.add_top_bar(&hb);
+
+    let pref_page = adw::PreferencesPage::new();
+    let grp = adw::PreferencesGroup::builder()
+        .title(gettext("Subtask"))
+        .description(parent_task.title())
+        .build();
+    let title_row = adw::EntryRow::builder()
+        .title(gettext("Summary"))
+        .build();
+    grp.add(&title_row);
+    pref_page.add(&grp);
+    tv.set_content(Some(&pref_page));
+    dialog.set_child(Some(&tv));
+
+    let page_weak = page.downgrade();
+    let dlg_c = dialog.clone();
+    btn_create.connect_clicked(move |btn| {
+        let summary = title_row.text().trim().to_string();
+        if summary.is_empty() {
+            return;
+        }
+        btn.set_sensitive(false);
+        let sub_uid = uuid::Uuid::new_v4().to_string();
+        let vtodo = crate::services::calendar_store_service::build_mail_linked_task_component(
+            &sub_uid,
+            &summary,
+            "",
+            None,
+            Some(&parent_uid),
+        );
+        let src = source_uid.clone();
+        let sum_clone = summary.clone();
+        let uid_clone = sub_uid.clone();
+        let vtodo_clone = vtodo.clone();
+        let (tx, rx) = async_channel::bounded::<Result<TaskRecord, String>>(1);
+        std::thread::spawn(move || {
+            let res = if !src.is_empty() && src != "local" {
+                crate::services::ecal_service::ECalService::new()
+                    .create_component(
+                        &src,
+                        crate::services::ecal_service::ECalComponentType::Task,
+                        &vtodo_clone,
+                    )
+                    .map(|created| TaskRecord {
+                        source_uid: src.clone(),
+                        source_display_name: String::new(),
+                        uid: if created.uid.trim().is_empty() {
+                            uid_clone
+                        } else {
+                            created.uid
+                        },
+                        summary: sum_clone,
+                        due: String::new(),
+                        priority: 0,
+                        completed: false,
+                        component: created.component.unwrap_or(vtodo_clone),
+                    })
+                    .map_err(|e| e.to_string())
+            } else {
+                crate::services::CalendarStoreService::with_writable_calendar_dir(
+                    crate::services::app_data_dir().join("ical"),
+                )
+                .create_component(&vtodo_clone)
+                .map(|_| TaskRecord {
+                    source_uid: "local".to_string(),
+                    source_display_name: String::new(),
+                    uid: uid_clone,
+                    summary: sum_clone,
+                    due: String::new(),
+                    priority: 0,
+                    completed: false,
+                    component: vtodo_clone,
+                })
+                .map_err(|e| e.to_string())
+            };
+            let _ = tx.send_blocking(res);
+        });
+        let pw = page_weak.clone();
+        let dc = dlg_c.clone();
+        glib::spawn_future_local(async move {
+            if let Ok(Ok(rec)) = rx.recv().await
+                && let Some(p) = pw.upgrade()
+            {
+                if let (Some(store), Some(list), Some(empty)) = (
+                    p.imp().task_store.borrow().clone(),
+                    p.imp().task_list.borrow().clone(),
+                    p.imp().task_empty_state.borrow().clone(),
+                ) {
+                    upsert_task_row(&p, &list, &store, &empty, rec);
+                }
+                dc.close();
+            }
+        });
+    });
+
+    dialog.present(Some(page));
+}
+
 fn show_task_table_context_menu(
     page: &TasksPage,
     anchor_widget: &gtk::DrawingArea,
@@ -10067,6 +10221,25 @@ fn show_task_table_context_menu(
         }
     });
     menu_box.append(&edit);
+
+    let new_subtask = crate::views::create_context_menu_button(
+        None,
+        &gettext("New Subtask…"),
+        false,
+    );
+    new_subtask.set_sensitive(task_source_is_writable_on_page(page, &task.source_uid()));
+    {
+        let pop_sub = popover.clone();
+        let pw_sub = page.downgrade();
+        let parent_task = task.clone();
+        new_subtask.connect_clicked(move |_| {
+            pop_sub.popdown();
+            if let Some(p) = pw_sub.upgrade() {
+                present_new_subtask_dialog(&p, &parent_task);
+            }
+        });
+    }
+    menu_box.append(&new_subtask);
 
     // 2. Toggle completion
     let completed = task_is_completed(task);
@@ -10254,6 +10427,7 @@ fn render_task_rows(
             context,
         )
     });
+    nest_subtasks_under_parents(&mut tasks);
 
     // Populate `task_list` with `adw::ActionRow` items for print/export/search helpers
     for task in &tasks {
@@ -11226,10 +11400,12 @@ fn build_task_workspace_card_row(
     let is_high_prio = (1..=4).contains(&prio);
     let (steps, clean_notes) = parse_task_description_checklist(&draft.description);
 
+    let is_subtask =
+        crate::services::calendar_store_service::task_parent_uid(&comp).is_some();
     let outer_row_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(10)
-        .margin_start(12)
+        .margin_start(if is_subtask { 34 } else { 12 })
         .margin_end(10)
         .margin_top(8)
         .margin_bottom(8)
@@ -11552,6 +11728,25 @@ fn show_task_workspace_row_context_menu(
         });
     }
     menu_box.append(&toggle_btn);
+
+    let sub_btn = crate::views::create_context_menu_button(
+        None,
+        &gettext("New Subtask…"),
+        false,
+    );
+    sub_btn.set_sensitive(writable);
+    {
+        let pop = popover.clone();
+        let pw = page.downgrade();
+        let t = task.clone();
+        sub_btn.connect_clicked(move |_| {
+            pop.popdown();
+            if let Some(p) = pw.upgrade() {
+                present_new_subtask_dialog(&p, &t);
+            }
+        });
+    }
+    menu_box.append(&sub_btn);
 
     // 2. Quick Schedule: Due Today / Due Tomorrow
     let today_btn = crate::views::create_context_menu_button(None, &gettext("Due Today"), false);

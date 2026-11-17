@@ -51,6 +51,7 @@ mod imp {
         pub stored_parent: RefCell<Option<gtk::Widget>>,
         pub btn_open_in_new_window: RefCell<Option<gtk::Button>>,
         pub split_handler: RefCell<Option<Rc<dyn Fn()>>>,
+        pub text_desc: RefCell<Option<gtk::TextView>>,
         pub close_confirmed: Cell<bool>,
     }
 
@@ -1475,6 +1476,12 @@ impl EventDialog {
         builder.build()
     }
 
+    pub fn set_description(&self, description: &str) {
+        if let Some(view) = self.imp().text_desc.borrow().as_ref() {
+            view.buffer().set_text(description);
+        }
+    }
+
     pub fn new_for_edit(event: &CalendarEventRecord) -> Self {
         let summary = ical_property(&event.component, "SUMMARY")
             .filter(|s| !s.trim().is_empty())
@@ -2187,6 +2194,7 @@ impl EventDialog {
             desc_placeholder_for_buf.set_visible(buf.char_count() == 0);
         });
         scroll_desc.set_child(Some(&text_desc));
+        self.imp().text_desc.replace(Some(text_desc.clone()));
         desc_overlay.set_child(Some(&scroll_desc));
         desc_overlay.add_overlay(&desc_placeholder);
         group_desc.add(&desc_overlay);
