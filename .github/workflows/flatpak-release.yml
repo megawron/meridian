@@ -23,6 +23,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: release-${{ inputs.tag }}
@@ -102,6 +104,9 @@ jobs:
     name: Publish release
     needs: [build]
     runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     container:
       image: registry.fedoraproject.org/fedora:44
     env:
@@ -159,11 +164,17 @@ jobs:
           fi
           gh release upload "$TAG" dist/* --clobber
 
-      - name: Publish Flatpak repository to gh-pages
-        env:
-          GH_PAGES_REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          ./scripts/build-packages.sh publish-repo "$TAG"
+      - name: Stage GitHub Pages site
+        run: ./scripts/build-packages.sh stage-pages _site
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

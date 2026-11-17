@@ -9,6 +9,7 @@
 #   ./scripts/build-packages.sh flatpak [tag]   # builds Flatpak bundle (.flatpak) locally
 #   ./scripts/build-packages.sh rpm [tag]       # builds Fedora RPM (requires rpmbuild)
 #   ./scripts/build-packages.sh merge-repos <dest> <src>...  # merges per-arch Flatpak repos into <dest>
+#   ./scripts/build-packages.sh stage-pages <dest>         # stages static GitHub Pages directory (no git)
 
 set -euo pipefail
 
@@ -436,18 +437,13 @@ merge_flatpak_repos() {
     ostree refs --repo="$dest"
 }
 
-publish_gh_pages() {
+stage_pages_dir() {
+    local pages_work="$1"
     local repo_dir="$OUT/flatpak-repo"
     if [ ! -d "$repo_dir/objects" ]; then
         build_flatpak_bundle
     fi
-    echo "==> Publishing Flatpak repository to gh-pages branch..."
-    local pages_work
-    pages_work="$(mktemp -d)"
-    git -C "$pages_work" init -b gh-pages >/dev/null
-    git -C "$pages_work" config user.name "$(git -C "$ROOT" config user.name || echo 'Martin Gawron')"
-    git -C "$pages_work" config user.email "$(git -C "$ROOT" config user.email || echo 'martin@martingawron.com')"
-
+    mkdir -p "$pages_work"
     touch "$pages_work/.nojekyll"
     local cname="${FLATPAK_CNAME:-meridian.martingawron.com}"
     if [ -n "$cname" ]; then
@@ -484,7 +480,16 @@ publish_gh_pages() {
 </body>
 </html>
 EOF
+}
 
+publish_gh_pages() {
+    echo "==> Publishing Flatpak repository to gh-pages branch..."
+    local pages_work
+    pages_work="$(mktemp -d)"
+    stage_pages_dir "$pages_work"
+    git -C "$pages_work" init -b gh-pages >/dev/null
+    git -C "$pages_work" config user.name "$(git -C "$ROOT" config user.name || echo 'megawron')"
+    git -C "$pages_work" config user.email "$(git -C "$ROOT" config user.email || echo '52606827+megawron@users.noreply.github.com')"
     git -C "$pages_work" add -A
     git -C "$pages_work" commit -m "chore: publish Flatpak repository ($TAG)" >/dev/null
     local remote_url
@@ -517,9 +522,10 @@ case "$WHAT" in
         echo "==> Uploaded successfully to $TAG!"
         ;;
     publish-repo) publish_gh_pages ;;
+    stage-pages) [ -n "${2:-}" ] || { echo "Usage: $0 stage-pages <dest>" >&2; exit 1; }; stage_pages_dir "$2" ;;
     merge-repos) shift; merge_flatpak_repos "$@" ;;
     flatpak) build_flatpak_bundle ;;
     rpm) build_rpm ;;
     flatpak-stage) stage_flatpak ;;
-    *) echo "Usage: $0 {local|upload|publish-repo|merge-repos|flatpak|rpm} [tag]" >&2; exit 1 ;;
+    *) echo "Usage: $0 {local|upload|publish-repo|stage-pages|merge-repos|flatpak|rpm} [tag]" >&2; exit 1 ;;
 esac
