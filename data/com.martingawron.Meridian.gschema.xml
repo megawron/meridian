@@ -714,6 +714,10 @@
       <default>false</default>
       <summary>Sign new messages by default</summary>
     </key>
+    <key name="encrypt-new-messages" type="b">
+      <default>false</default>
+      <summary>Encrypt new messages by default</summary>
+    </key>
     <key name="default-pgp-key" type="s">
       <default>''</default>
       <summary>Default OpenPGP key fingerprint</summary>
@@ -1231,6 +1235,27 @@
       <default>true</default>
       <summary>Enable speculative background prefetching</summary>
       <description>Preload adjacent messages, hovered folders, and neighboring calendar periods in the background without side effects.</description>
+    </key>
+    <key name="run-in-background" type="b">
+      <default>false</default>
+      <summary>Keep running in background when window closes</summary>
+      <description>Hide the main window on close so reminders, scheduled messages, snoozed emails, and mail notifications continue running.</description>
+    </key>
+    <key name="composer-undo-send-seconds" type="i">
+      <default>0</default>
+      <range min="0" max="60"/>
+      <summary>Undo Send delay in seconds</summary>
+      <description>Seconds to delay outgoing transport so sending can still be cancelled (0 = send immediately).</description>
+    </key>
+    <key name="mail-single-key-shortcuts" type="b">
+      <default>false</default>
+      <summary>Enable single-key mail shortcuts</summary>
+      <description>Allow 1-5 label toggles and single-letter triage keys (A, M, S, U) in the mail list.</description>
+    </key>
+    <key name="contacts-auto-collect" type="b">
+      <default>false</default>
+      <summary>Automatically collect outgoing recipients</summary>
+      <description>Automatically save unknown outgoing email recipients to the local address book.</description>
     </key>
   </schema>
 </schemalist>

@@ -57,8 +57,13 @@ pub mod credential_service;
 pub mod evolution_summary_cache;
 pub mod evolution_contact_cache;
 pub mod avatar_cache_service;
+pub mod extension_service;
+pub mod jmap_service;
 pub mod recent_recipients_service;
 pub mod quick_preview_service;
+pub mod scheduled_send_service;
+pub mod sieve_service;
+pub mod snooze_service;
 
 pub use avatar_cache_service::AvatarCacheService;
 pub use recent_recipients_service::RecentRecipientsService;

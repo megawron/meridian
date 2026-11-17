@@ -2942,6 +2942,24 @@ impl AppSettings {
         self.set_boolean("sign-new-messages", value);
     }
 
+    pub fn encrypt_new_messages(&self) -> bool {
+        self.settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("encrypt-new-messages"))
+            .then(|| self.settings.boolean("encrypt-new-messages"))
+            .unwrap_or(false)
+    }
+
+    pub fn set_encrypt_new_messages(&self, value: bool) {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("encrypt-new-messages"))
+        {
+            self.set_boolean("encrypt-new-messages", value);
+        }
+    }
+
     pub fn default_pgp_key(&self) -> String {
         self.settings.string("default-pgp-key").to_string()
     }
@@ -3348,6 +3366,94 @@ impl AppSettings {
 
     pub fn set_mail_enable_unified_inbox(&self, value: bool) {
         self.set_boolean("mail-enable-unified-inbox", value);
+    }
+
+    pub fn run_in_background(&self) -> bool {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("run-in-background"))
+        {
+            self.settings.boolean("run-in-background")
+        } else {
+            false
+        }
+    }
+
+    pub fn set_run_in_background(&self, value: bool) {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("run-in-background"))
+        {
+            self.set_boolean("run-in-background", value);
+        }
+    }
+
+    pub fn composer_undo_send_seconds(&self) -> u32 {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("composer-undo-send-seconds"))
+        {
+            self.settings.int("composer-undo-send-seconds").clamp(0, 60) as u32
+        } else {
+            0
+        }
+    }
+
+    pub fn set_composer_undo_send_seconds(&self, seconds: u32) {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("composer-undo-send-seconds"))
+        {
+            self.set_int("composer-undo-send-seconds", seconds.clamp(0, 60) as i32);
+        }
+    }
+
+    pub fn mail_single_key_shortcuts(&self) -> bool {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("mail-single-key-shortcuts"))
+        {
+            self.settings.boolean("mail-single-key-shortcuts")
+        } else {
+            false
+        }
+    }
+
+    pub fn set_mail_single_key_shortcuts(&self, value: bool) {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("mail-single-key-shortcuts"))
+        {
+            self.set_boolean("mail-single-key-shortcuts", value);
+        }
+    }
+
+    pub fn contacts_auto_collect(&self) -> bool {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("contacts-auto-collect"))
+        {
+            self.settings.boolean("contacts-auto-collect")
+        } else {
+            false
+        }
+    }
+
+    pub fn set_contacts_auto_collect(&self, value: bool) {
+        if self
+            .settings
+            .settings_schema()
+            .is_some_and(|s| s.has_key("contacts-auto-collect"))
+        {
+            self.set_boolean("contacts-auto-collect", value);
+        }
     }
 
     pub fn mail_show_sender(&self) -> bool {
@@ -4725,6 +4831,9 @@ impl AppSettings {
             }
             "color-scheme" => self.set_color_scheme(value),
             "sign-new-messages" => self.set_sign_new_messages(parse_migrated_bool(key, value)?),
+            "encrypt-new-messages" => {
+                self.set_encrypt_new_messages(parse_migrated_bool(key, value)?);
+            }
             "default-pgp-key" => self.set_default_pgp_key(value),
             "crypto-protocol" => self.set_crypto_protocol(value),
             "smime-signer-certificate" => self.set_smime_signer_certificate(value),
@@ -5204,6 +5313,7 @@ impl AppSettings {
             "mail-list-column-order",
             "color-scheme",
             "sign-new-messages",
+            "encrypt-new-messages",
             "default-pgp-key",
             "crypto-protocol",
             "smime-signer-certificate",

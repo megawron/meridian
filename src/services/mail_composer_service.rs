@@ -71,7 +71,7 @@ pub(crate) enum AtomicSaveResult {
     Cancelled,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OutgoingMessage {
     pub(crate) source_uid: String,
     pub(crate) from: String,

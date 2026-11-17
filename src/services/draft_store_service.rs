@@ -119,6 +119,8 @@ pub(crate) struct DraftComposerOptions {
     pub(crate) charset: String,
     #[serde(default)]
     pub(crate) smime: Option<SmimeOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) template_name: Option<String>,
 }
 
 impl Default for DraftComposerOptions {
@@ -128,6 +130,7 @@ impl Default for DraftComposerOptions {
             priority: false,
             charset: default_charset(),
             smime: None,
+            template_name: None,
         }
     }
 }
@@ -148,6 +151,8 @@ impl<'de> Deserialize<'de> for DraftComposerOptions {
             charset: String,
             #[serde(default)]
             smime: Option<SmimeOptions>,
+            #[serde(default)]
+            template_name: Option<String>,
         }
 
         #[derive(Debug, Deserialize)]
@@ -163,6 +168,7 @@ impl<'de> Deserialize<'de> for DraftComposerOptions {
                 priority: options.priority,
                 charset: options.charset,
                 smime: options.smime,
+                template_name: options.template_name,
             }),
             Stored::Legacy(smime) => Ok(Self {
                 smime: Some(smime),
@@ -264,6 +270,27 @@ impl DraftStoreService {
         let mut drafts = self.load_unlocked()?;
         upsert_draft(&mut drafts, draft);
         self.save_all(&drafts)
+    }
+
+    pub(crate) fn set_draft_template_name(
+        &self,
+        id: &str,
+        template_name: Option<String>,
+    ) -> io::Result<bool> {
+        let _lock = draft_store_lock();
+        let mut drafts = self.load_unlocked()?;
+        let Some(draft) = drafts.iter_mut().find(|d| d.id == id) else {
+            return Ok(false);
+        };
+        let normalized = template_name
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let opts = draft
+            .smime_options
+            .get_or_insert_with(DraftComposerOptions::default);
+        opts.template_name = normalized;
+        self.save_all(&drafts)?;
+        Ok(true)
     }
 
     /// Save a snapshot only when the draft version observed by the composer
@@ -446,6 +473,7 @@ mod tests {
                     recipient_certificates: Vec::new(),
                     ca_file: "/tmp/ca.pem".to_string(),
                 }),
+                template_name: None,
             }),
         };
 
@@ -485,6 +513,7 @@ mod tests {
             priority: true,
             charset: "Windows-1252".to_string(),
             smime: None,
+            template_name: Some("Follow-up".to_string()),
         };
 
         let encoded = serde_json::to_string(&options).expect("composer options should serialize");
