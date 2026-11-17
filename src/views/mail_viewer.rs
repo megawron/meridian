@@ -49,6 +49,8 @@ mod imp {
         pub banner: adw::Banner,
         pub trash_banner: adw::Banner,
         pub junk_banner: adw::Banner,
+        pub mdn_banner: adw::Banner,
+        pub on_mdn_send: RefCell<Option<Box<dyn Fn() + 'static>>>,
         pub last_measured_content_height: Cell<Option<i32>>,
         pub adapted_card_height: Cell<Option<i32>>,
         pub last_parent_height: Cell<i32>,
@@ -105,6 +107,7 @@ mod imp {
         pub remote_content_allowed_senders: RefCell<HashSet<String>>,
         pub current_sender: RefCell<Option<String>>,
         pub on_remote_images_blocked: RefCell<Option<Box<dyn Fn(bool) + 'static>>>,
+        pub hovered_link_label: RefCell<Option<String>>,
         pub on_scroll_offset: RefCell<Vec<Box<dyn Fn(f64) + 'static>>>,
     }
 
@@ -467,6 +470,30 @@ impl MailViewer {
         disable_banner_animation(&junk_banner, "dialog-warning-symbolic");
         box_container.append(&junk_banner);
 
+        // ── 3b. Read Receipt (MDN) Banner ──────────────────────────────────
+        let mdn_banner = adw::Banner::builder()
+            .title(gettext("The sender requested a read receipt."))
+            .button_label(&gettext("Send Receipt"))
+            .revealed(false)
+            .visible(false)
+            .css_classes(["mail-status-banner"])
+            .build();
+        disable_banner_animation(&mdn_banner, "mail-send-receive-symbolic");
+        {
+            let viewer_weak = self.downgrade();
+            mdn_banner.connect_button_clicked(move |banner| {
+                banner.set_revealed(false);
+                banner.set_visible(false);
+                if let Some(viewer) = viewer_weak.upgrade() {
+                    let cb = viewer.imp().on_mdn_send.borrow_mut().take();
+                    if let Some(cb) = cb {
+                        cb();
+                    }
+                }
+            });
+        }
+        box_container.append(&mdn_banner);
+
         let caret_mode = AppSettings::try_new()
             .map(|s| s.mail_caret_mode())
             .unwrap_or(false);
@@ -695,6 +722,7 @@ impl MailViewer {
             (*mut_imp).banner = banner;
             (*mut_imp).trash_banner = trash_banner;
             (*mut_imp).junk_banner = junk_banner;
+            (*mut_imp).mdn_banner = mdn_banner;
         }
 
         // ── 4. Zoom Gestures & Keyboard Shortcuts ──────────────────────────
@@ -871,6 +899,7 @@ impl MailViewer {
         self.set_current_sender(None);
         self.set_trash_banner_visible(false);
         self.set_junk_banner_visible(false);
+        self.set_mdn_banner(None);
         self.imp().last_measured_content_height.set(None);
         self.imp().adapted_card_height.set(None);
         self.set_vexpand(true);
@@ -943,6 +972,7 @@ impl MailViewer {
         self.imp().displayed_plaintext.take();
         self.set_trash_banner_visible(false);
         self.set_junk_banner_visible(false);
+        self.set_mdn_banner(None);
         self.imp().last_measured_content_height.set(None);
         self.imp().adapted_card_height.set(None);
         self.set_vexpand(true);
@@ -1739,6 +1769,19 @@ impl MailViewer {
     pub fn set_junk_banner_visible(&self, visible: bool) {
         self.imp().junk_banner.set_visible(visible);
         self.imp().junk_banner.set_revealed(visible);
+        if visible && !self.imp().suppressed_by_itip.get() {
+            self.set_visible(true);
+        }
+        if let Some(ch) = self.imp().last_measured_content_height.get() {
+            self.apply_adapted_height(ch);
+        }
+    }
+
+    pub fn set_mdn_banner(&self, on_send: Option<Box<dyn Fn() + 'static>>) {
+        let visible = on_send.is_some();
+        self.imp().on_mdn_send.replace(on_send);
+        self.imp().mdn_banner.set_visible(visible);
+        self.imp().mdn_banner.set_revealed(visible);
         if visible && !self.imp().suppressed_by_itip.get() {
             self.set_visible(true);
         }
@@ -2918,8 +2961,9 @@ impl MailViewer {
         });
 
         // Block external navigation links in WebView, handle via the
-        // desktop's default browser.
-        webview.connect_decide_policy(|_, decision, decision_type| {
+        // desktop's default browser with phishing / homograph link inspection.
+        let viewer_for_policy = self.downgrade();
+        webview.connect_decide_policy(move |_, decision, decision_type| {
             if decision_type == webkit6::PolicyDecisionType::NavigationAction {
                 if let Ok(nav) = decision
                     .clone()
@@ -2929,6 +2973,41 @@ impl MailViewer {
                         if let Some(req) = action.request() {
                             if let Some(uri) = req.uri() {
                                 if !is_internal_renderer_uri(&uri) && !uri.starts_with("data:") {
+                                    decision.ignore();
+                                    let anchor_label = viewer_for_policy
+                                        .upgrade()
+                                        .and_then(|v| v.imp().hovered_link_label.borrow().clone());
+                                    if let Some(warning_detail) = detect_suspicious_link_warning(
+                                        &uri,
+                                        anchor_label.as_deref(),
+                                    )
+                                        && let Some(viewer) = viewer_for_policy.upgrade()
+                                    {
+                                        let uri_owned = uri.to_string();
+                                        let alert = adw::AlertDialog::new(
+                                            Some(&gettext("Suspicious Link")),
+                                            Some(&warning_detail),
+                                        );
+                                        alert.add_responses(&[
+                                            ("cancel", &gettext("Cancel")),
+                                            ("open", &gettext("Open Link")),
+                                        ]);
+                                        alert.set_response_appearance(
+                                            "open",
+                                            adw::ResponseAppearance::Destructive,
+                                        );
+                                        alert.connect_response(None, move |dlg, resp| {
+                                            dlg.close();
+                                            if resp == "open" {
+                                                let _ = gio::AppInfo::launch_default_for_uri(
+                                                    &uri_owned,
+                                                    None::<&gio::AppLaunchContext>,
+                                                );
+                                            }
+                                        });
+                                        alert.present(Some(&viewer));
+                                        return true;
+                                    }
                                     tracing::info!(
                                         uri = %redact_renderer_uri(&uri),
                                         "Opening external link in browser"
@@ -2937,7 +3016,6 @@ impl MailViewer {
                                         &uri,
                                         None::<&gio::AppLaunchContext>,
                                     );
-                                    decision.ignore();
                                     return true;
                                 }
                             }
@@ -2955,8 +3033,11 @@ impl MailViewer {
             };
             if hit_test_result.context_is_link() {
                 let uri = hit_test_result.link_uri();
+                let label = hit_test_result.link_label().map(|s| s.to_string());
+                viewer.imp().hovered_link_label.replace(label);
                 viewer.set_hovered_link(uri.as_deref());
             } else {
+                viewer.imp().hovered_link_label.replace(None);
                 viewer.set_hovered_link(None);
             }
         });
@@ -3221,6 +3302,9 @@ impl MailViewer {
             banner_extra += 28;
         }
         if self.imp().junk_banner.is_revealed() || self.imp().junk_banner.is_visible() {
+            banner_extra += 28;
+        }
+        if self.imp().mdn_banner.is_revealed() || self.imp().mdn_banner.is_visible() {
             banner_extra += 28;
         }
 
@@ -6907,4 +6991,68 @@ impl Default for MailViewer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub(crate) fn extract_uri_host(uri: &str) -> Option<(String, bool)> {
+    let trimmed = uri.trim();
+    let after_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))?;
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    let has_userinfo = authority.contains('@');
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host_port
+        .split(':')
+        .next()
+        .unwrap_or(host_port)
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        None
+    } else {
+        Some((host, has_userinfo))
+    }
+}
+
+fn registrable_domain_suffix(host: &str) -> String {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() >= 2 {
+        format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
+    } else {
+        host.to_string()
+    }
+}
+
+/// Detect deceptive links (mismatched visible URL host, `@` userinfo spoofing,
+/// or Punycode IDN homographs). Returns a human-readable warning message if suspicious.
+pub(crate) fn detect_suspicious_link_warning(
+    target_uri: &str,
+    visible_label: Option<&str>,
+) -> Option<String> {
+    let (target_host, has_userinfo) = extract_uri_host(target_uri)?;
+    if has_userinfo {
+        return Some(format!(
+            "This link uses deceptive '@' address formatting and actually opens:\n\n{target_host}\n\n({target_uri})"
+        ));
+    }
+    if target_host.contains("xn--") {
+        return Some(format!(
+            "This link uses an internationalized Punycode domain that may imitate another website:\n\n{target_host}"
+        ));
+    }
+    if let Some(label) = visible_label {
+        let clean_label = label.trim();
+        if let Some((shown_host, _)) = extract_uri_host(clean_label) {
+            if registrable_domain_suffix(&shown_host) != registrable_domain_suffix(&target_host) {
+                return Some(format!(
+                    "The link text displays '{shown_host}', but the actual destination is '{target_host}'."
+                ));
+            }
+        }
+    }
+    None
 }

@@ -348,7 +348,7 @@ impl MailViewerWindow {
         set_accessible_label(&btn_print, &gettext("Print"));
 
         let btn_mark_read_unread = gtk::Button::builder()
-            .icon_name("mail-mark-read-symbolic")
+            .icon_name("mail-read-symbolic")
             .tooltip_text(gettext("Mark as read/unread"))
             .action_name("win.toggle-read-unread")
             .css_classes(["flat"])
@@ -2476,10 +2476,10 @@ impl MailViewerWindow {
     fn update_read_unread_icon(&self, is_unread: bool) {
         if let Some(btn) = self.imp().btn_mark_read_unread.borrow().as_ref() {
             if is_unread {
-                btn.set_icon_name("mail-mark-read-symbolic");
+                btn.set_icon_name("mail-read-symbolic");
                 btn.set_tooltip_text(Some(&gettext("Mark as read (Ctrl+K)")));
             } else {
-                btn.set_icon_name("mail-mark-unread-symbolic");
+                btn.set_icon_name("mail-unread-symbolic");
                 btn.set_tooltip_text(Some(&gettext("Mark as unread (Ctrl+Shift+K)")));
             }
         }
@@ -2527,6 +2527,9 @@ impl MailViewerWindow {
             &message.resolved_html_body(),
             &style,
         );
+        if let Some(location) = message.backend_location() {
+            composer.set_requested_account(Some(location.source_uid), Some(message.recipient_to()));
+        }
         composer.set_transient_for(Some(self));
         composer.present();
     }
@@ -2548,6 +2551,9 @@ impl MailViewerWindow {
             &message.resolved_html_body(),
             &style,
         );
+        if let Some(location) = message.backend_location() {
+            composer.set_requested_account(Some(location.source_uid), Some(message.recipient_to()));
+        }
         composer.set_transient_for(Some(self));
         composer.present();
     }
@@ -2579,6 +2585,9 @@ impl MailViewerWindow {
                 &resolved_html,
             )
         };
+        if let Some(location) = message.backend_location() {
+            composer.set_requested_account(Some(location.source_uid), None);
+        }
         composer.set_transient_for(Some(self));
         composer.present();
     }
