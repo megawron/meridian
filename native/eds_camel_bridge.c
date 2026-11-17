@@ -973,6 +973,38 @@ dup_nonempty_user_tag (CamelMessageInfo *message_info,
     return value && *value ? g_strdup (value) : NULL;
 }
 
+static gchar *
+encode_message_user_flags (CamelMessageInfo *message_info)
+{
+    const CamelNamedFlags *named_flags;
+    guint length, ii;
+    GString *buf = NULL;
+
+    if (!message_info)
+        return NULL;
+
+    named_flags = camel_message_info_get_user_flags (message_info);
+    if (!named_flags)
+        return NULL;
+
+    length = camel_named_flags_get_length (named_flags);
+    if (length == 0)
+        return NULL;
+
+    for (ii = 0; ii < length; ii++) {
+        const gchar *flag_name = camel_named_flags_get (named_flags, ii);
+        if (!flag_name || !*flag_name)
+            continue;
+        if (!buf)
+            buf = g_string_new (NULL);
+        else
+            g_string_append_c (buf, '\n');
+        g_string_append (buf, flag_name);
+    }
+
+    return buf ? g_string_free (buf, FALSE) : NULL;
+}
+
 static void
 read_follow_up_tags (CamelMessageInfo *message_info,
                      MeridianEdsCamelMessage *record)
@@ -983,6 +1015,7 @@ read_follow_up_tags (CamelMessageInfo *message_info,
         message_info, EVOLUTION_COMPLETED_ON_TAG);
     record->due_by = dup_nonempty_user_tag (
         message_info, EVOLUTION_DUE_BY_TAG);
+    record->user_flags = encode_message_user_flags (message_info);
 
     if (!record->follow_up) {
         record->follow_up_status = EVOLUTION_FOLLOW_UP_NONE;
@@ -1045,6 +1078,7 @@ append_message (LoadContext *context,
     record->follow_up = NULL;
     record->completed_on = NULL;
     record->due_by = NULL;
+    record->user_flags = NULL;
 
     if (message_info) {
         guint32 flags = camel_message_info_get_flags (message_info);
@@ -1177,6 +1211,7 @@ append_message_from_info (LoadContext *context,
     record->follow_up = NULL;
     record->completed_on = NULL;
     record->due_by = NULL;
+    record->user_flags = NULL;
 
     flags = camel_message_info_get_flags (message_info);
     record->is_unread = (flags & CAMEL_MESSAGE_SEEN) == 0;
@@ -2994,6 +3029,7 @@ meridian_eds_camel_free_messages (MeridianEdsCamelMessage *messages,
         g_free (messages[ii].follow_up);
         g_free (messages[ii].completed_on);
         g_free (messages[ii].due_by);
+        g_free (messages[ii].user_flags);
     }
 
     g_free (messages);
@@ -4721,6 +4757,110 @@ find_folder_name_by_type (CamelFolderInfo *folder_info,
     return found;
 }
 
+static const gchar *
+find_matching_folder_name_in_tree (CamelFolderInfo *folder_info,
+                                   const gchar *target_name,
+                                   gboolean exact_only)
+{
+    const CamelFolderInfo *cursor;
+
+    for (cursor = folder_info; cursor != NULL; cursor = cursor->next) {
+        if (cursor->full_name &&
+            (cursor->flags & CAMEL_FOLDER_NOSELECT) == 0) {
+            if (exact_only) {
+                if (g_strcmp0 (cursor->full_name, target_name) == 0)
+                    return cursor->full_name;
+            } else if (camel_folder_matches_target (
+                           cursor->full_name, cursor->flags, target_name)) {
+                return cursor->full_name;
+            }
+        }
+        if (cursor->child) {
+            const gchar *child_match = find_matching_folder_name_in_tree (
+                cursor->child, target_name, exact_only);
+            if (child_match)
+                return child_match;
+        }
+    }
+
+    return NULL;
+}
+
+static CamelFolder *
+open_matching_store_folder (CamelStore *store,
+                            const gchar *target_name,
+                            GCancellable *cancellable,
+                            GError **error)
+{
+    CamelFolderInfo *folder_info = NULL;
+    CamelFolder *folder = NULL;
+    const gchar *resolved_name = NULL;
+
+    if (!store || !target_name || !*target_name) {
+        g_set_error_literal (
+            error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "Folder name is missing");
+        return NULL;
+    }
+
+    folder_info = camel_store_get_folder_info_sync (
+        store, NULL,
+        CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+        CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+        CAMEL_STORE_FOLDER_INFO_FAST,
+        cancellable, NULL);
+    if (folder_info) {
+        resolved_name = find_matching_folder_name_in_tree (
+            folder_info, target_name, TRUE);
+        if (!resolved_name) {
+            resolved_name = find_matching_folder_name_in_tree (
+                folder_info, target_name, FALSE);
+        }
+        if (resolved_name) {
+            folder = camel_store_get_folder_sync (
+                store, resolved_name, CAMEL_STORE_FOLDER_NONE,
+                cancellable, error);
+            camel_folder_info_free (folder_info);
+            return folder;
+        }
+        camel_folder_info_free (folder_info);
+        folder_info = NULL;
+    }
+
+    folder_info = camel_store_get_folder_info_sync (
+        store, NULL,
+        CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+        CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+        CAMEL_STORE_FOLDER_INFO_REFRESH,
+        cancellable, NULL);
+    if (folder_info) {
+        resolved_name = find_matching_folder_name_in_tree (
+            folder_info, target_name, TRUE);
+        if (!resolved_name) {
+            resolved_name = find_matching_folder_name_in_tree (
+                folder_info, target_name, FALSE);
+        }
+        if (resolved_name) {
+            folder = camel_store_get_folder_sync (
+                store, resolved_name, CAMEL_STORE_FOLDER_NONE,
+                cancellable, error);
+            camel_folder_info_free (folder_info);
+            return folder;
+        }
+        camel_folder_info_free (folder_info);
+    }
+
+    if (is_inbox_alias (target_name)) {
+        folder = camel_store_get_inbox_folder_sync (store, cancellable, NULL);
+        if (folder)
+            return folder;
+    }
+
+    return camel_store_get_folder_sync (
+        store, target_name, CAMEL_STORE_FOLDER_NONE,
+        cancellable, error);
+}
+
 static GPtrArray *
 single_message_uid (const gchar *message_uid)
 {
@@ -4750,21 +4890,38 @@ synchronize_message_flags (CamelFolder *folder,
 }
 
 static gboolean
+verify_message_moved (CamelFolder *source,
+                      const gchar *message_uid,
+                      GError **error);
+
+static gboolean
 transfer_one_message (CamelFolder *source,
                       CamelFolder *destination,
                       const gchar *message_uid,
                       gboolean delete_original,
+                      gchar **out_transferred_uid,
                       GCancellable *cancellable,
                       GError **error)
 {
     GPtrArray *uids;
     GPtrArray *transferred_uids = NULL;
+    GError *sync_error = NULL;
     gboolean success;
+
+    if (out_transferred_uid)
+        *out_transferred_uid = NULL;
 
     uids = single_message_uid (message_uid);
     success = camel_folder_transfer_messages_to_sync (
         source, uids, destination, delete_original,
         &transferred_uids, cancellable, error);
+
+    if (success && out_transferred_uid &&
+        transferred_uids && transferred_uids->len > 0) {
+        const gchar *first_uid = g_ptr_array_index (transferred_uids, 0);
+        if (first_uid && *first_uid)
+            *out_transferred_uid = g_strdup (first_uid);
+    }
 
     if (success && delete_original) {
         camel_folder_set_message_flags (
@@ -4773,14 +4930,32 @@ transfer_one_message (CamelFolder *source,
             CAMEL_MESSAGE_DELETED | CAMEL_MESSAGE_SEEN);
     }
 
-    if (success)
-        success = camel_folder_synchronize_sync (
-            source, delete_original, cancellable, error);
+    if (success) {
+        if (!camel_folder_synchronize_sync (
+                source, delete_original, cancellable, &sync_error)) {
+            if (delete_original) {
+                /* Shared folders may grant flag updates (\Deleted) without
+                 * EXPUNGE privileges; synchronize flags without expunge when
+                 * the message is already marked deleted or gone. */
+                camel_folder_synchronize_sync (source, FALSE, cancellable, NULL);
+                if (verify_message_moved (source, message_uid, NULL)) {
+                    g_clear_error (&sync_error);
+                } else {
+                    g_propagate_error (error, sync_error);
+                    success = FALSE;
+                }
+            } else {
+                g_propagate_error (error, sync_error);
+                success = FALSE;
+            }
+        }
+    }
+
     if (success && destination != source) {
         camel_folder_refresh_info_sync (
             destination, cancellable, NULL);
-        success = camel_folder_synchronize_sync (
-            destination, FALSE, cancellable, error);
+        camel_folder_synchronize_sync (
+            destination, FALSE, cancellable, NULL);
     }
 
     g_clear_pointer (&transferred_uids, g_ptr_array_unref);
@@ -5042,7 +5217,7 @@ synchronize_message_follow_up (CamelFolder *folder,
     default:
         g_set_error_literal (
             error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "Unbekannter Evolution-Follow-up-Status");
+            "Unknown Evolution follow-up status");
         g_object_unref (message_info);
         return FALSE;
     }
@@ -5124,9 +5299,15 @@ verify_message_moved (CamelFolder *source,
     return FALSE;
 }
 
+static ESource *
+ref_mail_account_source (ESourceRegistry *registry,
+                         const gchar *source_uid);
+
 int
-meridian_eds_camel_apply_operation (
+meridian_eds_camel_apply_operation_with_uid (
     const MeridianEdsCamelOperation *operation,
+    char **out_created_folder,
+    char **out_created_uid,
     char **out_error,
     MeridianEdsCamelCancellationCallback cancellation_callback,
     void *cancellation_user_data)
@@ -5134,7 +5315,9 @@ meridian_eds_camel_apply_operation (
     ESourceRegistry *registry = NULL;
     EdsCamelSession *session = NULL;
     ESource *source = NULL;
+    ESource *dest_source = NULL;
     CamelStore *store = NULL;
+    CamelStore *dest_store = NULL;
     CamelFolder *folder = NULL;
     CamelFolder *destination = NULL;
     CamelFolder *restore_source = NULL;
@@ -5146,9 +5329,14 @@ meridian_eds_camel_apply_operation (
     const gchar *destination_name = NULL;
     const gchar *message_uid;
     gchar *resolved_message_uid = NULL;
+    gchar *transferred_uid = NULL;
     gboolean success = FALSE;
     gboolean conflict = FALSE;
 
+    if (out_created_folder)
+        *out_created_folder = NULL;
+    if (out_created_uid)
+        *out_created_uid = NULL;
     if (out_error)
         *out_error = NULL;
 
@@ -5175,7 +5363,7 @@ meridian_eds_camel_apply_operation (
     if (!registry)
         goto finish;
 
-    source = e_source_registry_ref_source (registry, operation->source_uid);
+    source = ref_mail_account_source (registry, operation->source_uid);
     if (!source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
@@ -5198,19 +5386,24 @@ meridian_eds_camel_apply_operation (
     if (!store)
         goto finish;
 
-    folder = camel_store_get_folder_sync (
-        store, operation->folder_name, CAMEL_STORE_FOLDER_NONE,
-        cancellable, &error);
+    ensure_foreign_folders_for_ews_store (store, registry, cancellable);
+    folder = open_matching_store_folder (
+        store, operation->folder_name, cancellable, &error);
     if (!folder)
         goto finish;
 
     if (operation->kind != MERIDIAN_EDS_CAMEL_RESTORE_DELETED &&
         operation->kind != MERIDIAN_EDS_CAMEL_RESTORE_ARCHIVED &&
         !message_exists (folder, message_uid)) {
-        resolved_message_uid = find_message_uid_by_id (
-            folder, operation->message_id, cancellable);
-        if (resolved_message_uid)
-            message_uid = resolved_message_uid;
+        /* Refresh folder summary first so UIDs displayed from Evolution's
+         * SQLite fast-path cache are synced into Meridian's Camel summary. */
+        camel_folder_refresh_info_sync (folder, cancellable, NULL);
+        if (!message_exists (folder, message_uid)) {
+            resolved_message_uid = find_message_uid_by_id (
+                folder, operation->message_id, cancellable);
+            if (resolved_message_uid)
+                message_uid = resolved_message_uid;
+        }
         if (!message_exists (folder, message_uid)) {
             set_conflict_error (
                 &error, "The message no longer exists in the source folder");
@@ -5272,17 +5465,34 @@ meridian_eds_camel_apply_operation (
             NULL, operation->due_by, cancellable,
             cancellation_callback, cancellation_user_data, &error);
         break;
+    case MERIDIAN_EDS_CAMEL_SET_USER_FLAG: {
+        CamelMessageInfo *mi = NULL;
+        if (!operation->user_flag || !*operation->user_flag) {
+            g_set_error_literal (
+                &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                "User flag name must not be empty");
+            break;
+        }
+        mi = camel_folder_get_message_info (folder, message_uid);
+        if (!mi) {
+            set_conflict_error (
+                &error, "The message no longer exists in the source folder");
+            break;
+        }
+        camel_message_info_set_user_flag (
+            mi, operation->user_flag, operation->user_flag_set != 0);
+        g_object_unref (mi);
+        success = camel_folder_synchronize_message_sync (
+            folder, message_uid, cancellable, &error);
+        break;
+    }
     case MERIDIAN_EDS_CAMEL_MOVE_MESSAGE:
-    case MERIDIAN_EDS_CAMEL_ARCHIVE_MESSAGE:
-        if (operation->kind == MERIDIAN_EDS_CAMEL_MOVE_MESSAGE) {
-            destination_name = operation->destination_folder;
-            if (!destination_name || !*destination_name) {
-                g_set_error_literal (
-                    &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-                    "Move operation has no destination folder");
-                break;
-            }
-        } else {
+    case MERIDIAN_EDS_CAMEL_COPY_MESSAGE:
+    case MERIDIAN_EDS_CAMEL_ARCHIVE_MESSAGE: {
+        gboolean delete_original =
+            operation->kind != MERIDIAN_EDS_CAMEL_COPY_MESSAGE;
+
+        if (operation->kind == MERIDIAN_EDS_CAMEL_ARCHIVE_MESSAGE) {
             folder_info = camel_store_get_folder_info_sync (
                 store, NULL,
                 CAMEL_STORE_FOLDER_INFO_RECURSIVE |
@@ -5299,20 +5509,106 @@ meridian_eds_camel_apply_operation (
                     "No Archive folder is configured for this EDS account");
                 break;
             }
+            dest_store = g_object_ref (store);
+        } else {
+            destination_name = operation->destination_folder;
+            if (!destination_name || !*destination_name) {
+                g_set_error_literal (
+                    &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                    delete_original
+                        ? "Move operation has no destination folder"
+                        : "Copy operation has no destination folder");
+                break;
+            }
+            if (operation->destination_source_uid &&
+                *operation->destination_source_uid &&
+                g_strcmp0 (operation->destination_source_uid, operation->source_uid) != 0) {
+                dest_source = ref_mail_account_source (
+                    registry, operation->destination_source_uid);
+                if (!dest_source) {
+                    g_set_error_literal (
+                        &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                        "EDS destination account no longer exists");
+                    break;
+                }
+                if (!e_source_get_enabled (dest_source)) {
+                    g_set_error_literal (
+                        &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                        "EDS destination account is disabled");
+                    break;
+                }
+                if (g_strcmp0 (
+                        e_source_get_uid (dest_source),
+                        e_source_get_uid (source)) == 0) {
+                    dest_store = g_object_ref (store);
+                } else {
+                    dest_store = open_store_for_source (
+                        session, dest_source, cancellable, &error);
+                    if (!dest_store)
+                        break;
+                    ensure_foreign_folders_for_ews_store (
+                        dest_store, registry, cancellable);
+                }
+            } else {
+                dest_store = g_object_ref (store);
+            }
         }
 
-        destination = camel_store_get_folder_sync (
-            store, destination_name, CAMEL_STORE_FOLDER_NONE,
-            cancellable, &error);
+        destination = open_matching_store_folder (
+            dest_store, destination_name, cancellable, &error);
         if (!destination)
             break;
 
-        success = transfer_one_message (
-            folder, destination, message_uid, TRUE,
-            cancellable, &error);
-        if (success)
-            success = verify_message_moved (
-                folder, message_uid, &error);
+        if (delete_original &&
+            dest_store == store &&
+            g_strcmp0 (
+                camel_folder_get_full_name (folder),
+                camel_folder_get_full_name (destination)) == 0) {
+            success = TRUE;
+            transferred_uid = g_strdup (message_uid);
+        } else {
+            success = transfer_one_message (
+                folder, destination, message_uid, delete_original,
+                &transferred_uid, cancellable, &error);
+            if (success && delete_original)
+                success = verify_message_moved (
+                    folder, message_uid, &error);
+        }
+
+        if (success) {
+            if (out_created_folder)
+                *out_created_folder = g_strdup (
+                    camel_folder_get_full_name (destination));
+            if (out_created_uid && transferred_uid)
+                *out_created_uid = g_steal_pointer (&transferred_uid);
+        }
+        break;
+    }
+    case MERIDIAN_EDS_CAMEL_EXPUNGE_MESSAGE:
+        if (camel_folder_set_message_flags (
+                folder, message_uid,
+                CAMEL_MESSAGE_DELETED | CAMEL_MESSAGE_SEEN,
+                CAMEL_MESSAGE_DELETED | CAMEL_MESSAGE_SEEN)) {
+            GError *sync_error = NULL;
+            if (!camel_folder_synchronize_sync (
+                    folder, TRUE, cancellable, &sync_error)) {
+                camel_folder_synchronize_sync (folder, FALSE, cancellable, NULL);
+                if (verify_message_moved (folder, message_uid, NULL)) {
+                    g_clear_error (&sync_error);
+                    success = TRUE;
+                } else {
+                    g_propagate_error (&error, sync_error);
+                    success = FALSE;
+                }
+            } else {
+                success = verify_message_moved (
+                    folder, message_uid, &error);
+            }
+        } else {
+            g_set_error_literal (
+                &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                "Camel refused to expunge the copied message");
+        }
         break;
     case MERIDIAN_EDS_CAMEL_DELETE_MESSAGE:
         trash = open_real_trash_folder (
@@ -5325,10 +5621,16 @@ meridian_eds_camel_apply_operation (
                 !is_trash_alias (folder_name)) {
                 success = transfer_one_message (
                     folder, trash, message_uid, TRUE,
-                    cancellable, &error);
+                    &transferred_uid, cancellable, &error);
                 if (success)
                     success = verify_message_moved (
                         folder, message_uid, &error);
+                if (success) {
+                    if (out_created_folder)
+                        *out_created_folder = g_strdup (trash_name);
+                    if (out_created_uid && transferred_uid)
+                        *out_created_uid = g_steal_pointer (&transferred_uid);
+                }
                 break;
             }
         } else {
@@ -5374,6 +5676,8 @@ meridian_eds_camel_apply_operation (
         g_clear_pointer (&resolved_message_uid, g_free);
         message_uid = operation->message_uid;
         if (!message_exists (restore_source, message_uid))
+            camel_folder_refresh_info_sync (restore_source, cancellable, NULL);
+        if (!message_exists (restore_source, message_uid))
             resolved_message_uid = find_message_uid_by_id (
                 restore_source, operation->message_id, cancellable);
         if (resolved_message_uid)
@@ -5386,10 +5690,17 @@ meridian_eds_camel_apply_operation (
         }
         success = transfer_one_message (
             restore_source, folder, message_uid, TRUE,
-            cancellable, &error);
+            &transferred_uid, cancellable, &error);
         if (success)
             success = verify_message_moved (
                 restore_source, message_uid, &error);
+        if (success) {
+            if (out_created_folder)
+                *out_created_folder = g_strdup (
+                    camel_folder_get_full_name (folder));
+            if (out_created_uid && transferred_uid)
+                *out_created_uid = g_steal_pointer (&transferred_uid);
+        }
         break;
     case MERIDIAN_EDS_CAMEL_RESTORE_ARCHIVED:
         folder_info = camel_store_get_folder_info_sync (
@@ -5424,6 +5735,8 @@ meridian_eds_camel_apply_operation (
         g_clear_pointer (&resolved_message_uid, g_free);
         message_uid = operation->message_uid;
         if (!message_exists (restore_source, message_uid))
+            camel_folder_refresh_info_sync (restore_source, cancellable, NULL);
+        if (!message_exists (restore_source, message_uid))
             resolved_message_uid = find_message_uid_by_id (
                 restore_source, operation->message_id, cancellable);
         if (resolved_message_uid)
@@ -5436,10 +5749,17 @@ meridian_eds_camel_apply_operation (
         }
         success = transfer_one_message (
             restore_source, folder, message_uid, TRUE,
-            cancellable, &error);
+            &transferred_uid, cancellable, &error);
         if (success)
             success = verify_message_moved (
                 restore_source, message_uid, &error);
+        if (success) {
+            if (out_created_folder)
+                *out_created_folder = g_strdup (
+                    camel_folder_get_full_name (folder));
+            if (out_created_uid && transferred_uid)
+                *out_created_uid = g_steal_pointer (&transferred_uid);
+        }
         break;
     default:
         g_set_error_literal (
@@ -5458,19 +5778,34 @@ finish:
         *out_error = g_strdup (error->message);
     g_clear_error (&error);
     camel_folder_info_free (folder_info);
+    g_clear_pointer (&transferred_uid, g_free);
     g_clear_object (&trash);
     g_clear_object (&restore_source);
     g_clear_pointer (&resolved_message_uid, g_free);
     g_clear_object (&destination);
     g_clear_object (&folder);
+    g_clear_object (&dest_store);
     g_clear_object (&store);
     cancellation_monitor_free (cancellation_monitor);
     g_clear_object (&cancellable);
     g_clear_object (&session);
+    g_clear_object (&dest_source);
     g_clear_object (&source);
     g_clear_object (&registry);
 
     return success ? 1 : (conflict ? 2 : 0);
+}
+
+int
+meridian_eds_camel_apply_operation (
+    const MeridianEdsCamelOperation *operation,
+    char **out_error,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data)
+{
+    return meridian_eds_camel_apply_operation_with_uid (
+        operation, NULL, NULL, out_error,
+        cancellation_callback, cancellation_user_data);
 }
 
 static CamelFolder *
@@ -5560,157 +5895,122 @@ finish:
     return folder;
 }
 
-static void
-parse_email_address_parts (const gchar *input_address,
-                            gchar **out_name,
-                            gchar **out_email)
+#include "eds_camel_message_identity.h"
+
+static ESource *
+ref_mail_account_source (ESourceRegistry *registry,
+                         const gchar *source_uid)
 {
-    if (out_name) *out_name = NULL;
-    if (out_email) *out_email = NULL;
+    ESource *source = NULL;
 
-    if (!input_address || !*input_address)
-        return;
+    if (!registry || !source_uid || !*source_uid)
+        return NULL;
 
-    gchar *trimmed = g_strdup (input_address);
-    g_strstrip (trimmed);
-
-    gchar *angle_start = strchr (trimmed, '<');
-    gchar *angle_end = strrchr (trimmed, '>');
-
-    if (angle_start && angle_end && angle_end > angle_start) {
-        *angle_end = '\0';
-        gchar *email_part = g_strdup (angle_start + 1);
-        g_strstrip (email_part);
-
-        *angle_start = '\0';
-        gchar *name_part = g_strdup (trimmed);
-        g_strstrip (name_part);
-        gsize name_len = strlen (name_part);
-        if (name_len >= 2 && name_part[0] == '"' && name_part[name_len - 1] == '"') {
-            name_part[name_len - 1] = '\0';
-            memmove (name_part, name_part + 1, name_len - 1);
-            g_strstrip (name_part);
-        }
-
-        if (out_email) *out_email = email_part; else g_free (email_part);
-        if (out_name && *name_part) *out_name = name_part; else g_free (name_part);
-    } else {
-        if (out_email) *out_email = g_strdup (trimmed);
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source && !g_str_has_suffix (source_uid, "-mail")) {
+        gchar *mail_uid = g_strdup_printf ("%s-mail", source_uid);
+        source = e_source_registry_ref_source (registry, mail_uid);
+        g_free (mail_uid);
     }
 
-    g_free (trimmed);
+    if (source && !e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT)) {
+        const gchar *parent_uid = e_source_get_uid (source);
+        ESource *resolved_child = NULL;
+
+        if (parent_uid && *parent_uid && !g_str_has_suffix (parent_uid, "-mail")) {
+            gchar *mail_uid = g_strdup_printf ("%s-mail", parent_uid);
+            ESource *candidate = e_source_registry_ref_source (registry, mail_uid);
+            g_free (mail_uid);
+            if (candidate &&
+                e_source_has_extension (candidate, E_SOURCE_EXTENSION_MAIL_ACCOUNT) &&
+                !is_source_foreign_or_shared (candidate)) {
+                resolved_child = candidate;
+            } else {
+                g_clear_object (&candidate);
+            }
+        }
+
+        if (!resolved_child && parent_uid && *parent_uid) {
+            GList *mail_sources = e_source_registry_list_sources (
+                registry, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
+            ESource *fallback_child = NULL;
+
+            for (GList *l = mail_sources; l != NULL; l = l->next) {
+                ESource *child = E_SOURCE (l->data);
+                if (g_strcmp0 (e_source_get_parent (child), parent_uid) != 0 ||
+                    is_source_foreign_or_shared (child))
+                    continue;
+                if (e_source_get_enabled (child)) {
+                    resolved_child = g_object_ref (child);
+                    break;
+                }
+                if (!fallback_child)
+                    fallback_child = child;
+            }
+            if (!resolved_child && fallback_child)
+                resolved_child = g_object_ref (fallback_child);
+            g_list_free_full (mail_sources, g_object_unref);
+        }
+
+        if (resolved_child) {
+            g_object_unref (source);
+            source = resolved_child;
+        }
+    }
+
+    return source;
 }
 
 static gboolean
-set_camel_internet_address (CamelInternetAddress *cia,
-                             const gchar *provided_name,
-                             const gchar *provided_address)
+append_message_with_preferred_folder (CamelStore *store,
+                                      ESourceRegistry *registry,
+                                      ESource *identity_source,
+                                      ESource *account_source,
+                                      const gchar *preferred_folder_name,
+                                      CamelFolderInfoFlags folder_type,
+                                      gboolean drafts,
+                                      CamelMimeMessage *message,
+                                      GCancellable *cancellable,
+                                      GError **error)
 {
-    if (!cia || !provided_address || !*provided_address)
+    CamelFolder *folder = NULL;
+    gchar *appended_uid = NULL;
+    gboolean appended = FALSE;
+
+    if (preferred_folder_name && *preferred_folder_name) {
+        ensure_foreign_folders_for_ews_store (store, registry, cancellable);
+        folder = camel_store_get_folder_sync (
+            store, preferred_folder_name, CAMEL_STORE_FOLDER_NONE,
+            cancellable, NULL);
+        if (folder) {
+            appended = camel_folder_append_message_sync (
+                folder, message, NULL, &appended_uid,
+                cancellable, NULL);
+            g_clear_pointer (&appended_uid, g_free);
+            g_clear_object (&folder);
+            if (appended)
+                return TRUE;
+        }
+    }
+
+    folder = open_special_folder (
+        store, identity_source, account_source,
+        folder_type, drafts, cancellable, error);
+    if (!folder)
         return FALSE;
 
-    gchar *parsed_name = NULL;
-    gchar *parsed_email = NULL;
-
-    parse_email_address_parts (provided_address, &parsed_name, &parsed_email);
-
-    const gchar *final_email = (parsed_email && *parsed_email) ? parsed_email : provided_address;
-    const gchar *final_name = (provided_name && *provided_name)
-        ? provided_name
-        : (parsed_name && *parsed_name ? parsed_name : NULL);
-
-    gint index = camel_internet_address_add (cia, final_name, final_email);
-    gboolean success = (index >= 0);
-
-    g_free (parsed_name);
-    g_free (parsed_email);
-    return success;
-}
-
-static gboolean
-set_message_identity (CamelMimeMessage *message,
-                       ESource *identity_source,
-                       const gchar *source_uid,
-                       GError **error)
-{
-    ESourceMailIdentity *identity_extension;
-    CamelInternetAddress *from = NULL;
-    gchar *address = NULL;
-    gchar *name = NULL;
-    gboolean success = FALSE;
-
-    identity_extension = identity_source
-        ? (ESourceMailIdentity *) e_source_get_extension (
-            identity_source, E_SOURCE_EXTENSION_MAIL_IDENTITY)
-        : NULL;
-    address = identity_extension
-        ? e_source_mail_identity_dup_address (identity_extension)
-        : NULL;
-    name = identity_extension
-        ? e_source_mail_identity_dup_name (identity_extension)
-        : NULL;
-
-    if (!address || !*address) {
-        if (identity_source && e_source_has_extension (identity_source, "GNOME Online Accounts")) {
-            ESourceExtension *goa = e_source_get_extension (identity_source, "GNOME Online Accounts");
-            address = e_source_goa_dup_address (E_SOURCE_GOA (goa));
-        }
-    }
-
-    if (!address || !*address) {
-        g_set_error_literal (
-            error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "The EDS mail identity has no sender address");
-        goto finish;
-    }
-
-    from = camel_internet_address_new ();
-    if (!set_camel_internet_address (
-            from, name && *name ? name : NULL, address)) {
-        g_set_error_literal (
-            error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "The EDS sender address could not be parsed as an internet address");
-        goto finish;
-    }
-
-    camel_medium_remove_header (CAMEL_MEDIUM (message), "From");
-    camel_mime_message_set_from (message, from);
-    camel_mime_message_set_source (message, source_uid);
-    success = TRUE;
-
-finish:
-    g_clear_object (&from);
-    g_free (address);
-    g_free (name);
-    return success;
-}
-
-static CamelMimeMessage *
-parse_raw_message (const guint8 *raw_message,
-                   gsize raw_message_len,
-                   GCancellable *cancellable,
-                   GError **error)
-{
-    CamelMimeMessage *message;
-    CamelStream *stream;
-
-    message = camel_mime_message_new ();
-    stream = camel_stream_mem_new_with_buffer (
-        (const gchar *) raw_message, raw_message_len);
-    if (!camel_data_wrapper_construct_from_stream_sync (
-            CAMEL_DATA_WRAPPER (message), stream, cancellable, error)) {
-        g_clear_object (&stream);
-        g_clear_object (&message);
-        return NULL;
-    }
-
-    g_clear_object (&stream);
-    return message;
+    appended = camel_folder_append_message_sync (
+        folder, message, NULL, &appended_uid,
+        cancellable, error);
+    g_clear_pointer (&appended_uid, g_free);
+    g_clear_object (&folder);
+    return appended;
 }
 
 int
 meridian_eds_camel_save_message (
     const char *source_uid,
+    const char *preferred_folder_name,
     const uint8_t *raw_message,
     size_t raw_message_len,
     MeridianEdsCamelSaveFolder folder,
@@ -5721,15 +6021,14 @@ meridian_eds_camel_save_message (
     ESource *source = NULL;
     ESource *identity_source = NULL;
     CamelStore *store = NULL;
-    CamelFolder *target_folder = NULL;
     CamelMimeMessage *message = NULL;
     GCancellable *cancellable = NULL;
     GError *error = NULL;
     ESourceMailAccount *account_extension;
     gchar *identity_uid = NULL;
+    const gchar *effective_source_uid;
     gboolean drafts;
     gboolean success = FALSE;
-    gchar *appended_uid = NULL;
 
     if (out_error)
         *out_error = NULL;
@@ -5743,7 +6042,7 @@ meridian_eds_camel_save_message (
     if (folder != MERIDIAN_EDS_CAMEL_SAVE_DRAFT &&
         folder != MERIDIAN_EDS_CAMEL_SAVE_SENT) {
         if (out_error)
-            *out_error = g_strdup ("Unbekannter EDS-Mailordner");
+            *out_error = g_strdup ("Unknown EDS mail folder");
         return 0;
     }
     drafts = folder == MERIDIAN_EDS_CAMEL_SAVE_DRAFT;
@@ -5752,7 +6051,7 @@ meridian_eds_camel_save_message (
     registry = eds_camel_ref_registry (&error);
     if (!registry)
         goto finish;
-    source = e_source_registry_ref_source (registry, source_uid);
+    source = ref_mail_account_source (registry, source_uid);
     if (!source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
@@ -5765,25 +6064,19 @@ meridian_eds_camel_save_message (
             "The EDS mail account is disabled");
         goto finish;
     }
+    effective_source_uid = e_source_get_uid (source);
 
-    account_extension = (ESourceMailAccount *) e_source_get_extension (
-        source, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
+    account_extension = e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT)
+        ? (ESourceMailAccount *) e_source_get_extension (
+            source, E_SOURCE_EXTENSION_MAIL_ACCOUNT)
+        : NULL;
     identity_uid = account_extension
         ? e_source_mail_account_dup_identity_uid (account_extension)
         : NULL;
-    if (!identity_uid || !*identity_uid) {
-        g_set_error_literal (
-            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "No mail identity is configured for the EDS mail account");
-        goto finish;
-    }
-    identity_source = e_source_registry_ref_source (registry, identity_uid);
-    if (!identity_source) {
-        g_set_error_literal (
-            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-            "The mail identity of the EDS account no longer exists");
-        goto finish;
-    }
+    if (identity_uid && *identity_uid)
+        identity_source = e_source_registry_ref_source (registry, identity_uid);
+    if (!identity_source)
+        identity_source = g_object_ref (source);
 
     session = eds_camel_ref_session (registry);
     cancellable = g_cancellable_new ();
@@ -5794,26 +6087,19 @@ meridian_eds_camel_save_message (
         raw_message, raw_message_len, cancellable, &error);
     if (!message)
         goto finish;
-    if (!set_message_identity (message, identity_source, source_uid, &error))
+    if (!set_message_identity (
+            message, identity_source, source, effective_source_uid, &error))
         goto finish;
 
-    target_folder = open_special_folder (
-        store, identity_source, source,
+    success = append_message_with_preferred_folder (
+        store, registry, identity_source, source, preferred_folder_name,
         drafts ? CAMEL_FOLDER_TYPE_DRAFTS : CAMEL_FOLDER_TYPE_SENT,
-        drafts, cancellable, &error);
-    if (!target_folder)
-        goto finish;
-
-    success = camel_folder_append_message_sync (
-        target_folder, message, NULL, &appended_uid,
-        cancellable, &error);
+        drafts, message, cancellable, &error);
 
 finish:
     if (!success && out_error && error)
         *out_error = g_strdup (error->message);
     g_clear_error (&error);
-    g_free (appended_uid);
-    g_clear_object (&target_folder);
     g_clear_object (&message);
     g_clear_object (&store);
     g_clear_object (&cancellable);
@@ -5827,8 +6113,144 @@ finish:
 }
 
 int
+meridian_eds_camel_append_message_to_folder (
+    const char *source_uid,
+    const char *folder_name,
+    const uint8_t *raw_message,
+    size_t raw_message_len,
+    int is_unread,
+    int is_flagged,
+    char **out_created_folder,
+    char **out_created_uid,
+    char **out_error,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data)
+{
+    ESourceRegistry *registry = NULL;
+    EdsCamelSession *session = NULL;
+    ESource *source = NULL;
+    CamelStore *store = NULL;
+    CamelFolder *target_folder = NULL;
+    CamelMimeMessage *message = NULL;
+    CamelMessageInfo *message_info = NULL;
+    GCancellable *cancellable = NULL;
+    CancellationMonitor *cancellation_monitor = NULL;
+    GError *error = NULL;
+    gchar *appended_uid = NULL;
+    guint32 set_flags = 0;
+    gboolean success = FALSE;
+
+    if (out_created_folder)
+        *out_created_folder = NULL;
+    if (out_created_uid)
+        *out_created_uid = NULL;
+    if (out_error)
+        *out_error = NULL;
+
+    if (!source_uid || !*source_uid || !folder_name || !*folder_name ||
+        !raw_message || raw_message_len == 0) {
+        if (out_error)
+            *out_error = g_strdup (
+                "EDS append requires an account, target folder and RFC822 message");
+        return 0;
+    }
+
+    if (cancellation_requested (cancellation_callback, cancellation_user_data)) {
+        if (out_error)
+            *out_error = g_strdup ("EDS/Camel append was cancelled");
+        return 0;
+    }
+
+    eds_camel_provider_init ();
+    registry = eds_camel_ref_registry (&error);
+    if (!registry)
+        goto finish;
+
+    source = ref_mail_account_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "The EDS mail account no longer exists");
+        goto finish;
+    }
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "The EDS mail account is disabled");
+        goto finish;
+    }
+
+    session = eds_camel_ref_session (registry);
+    cancellable = g_cancellable_new ();
+    cancellation_monitor = cancellation_monitor_start (
+        cancellable, cancellation_callback, cancellation_user_data);
+
+    store = open_store_for_source (session, source, cancellable, &error);
+    if (!store)
+        goto finish;
+
+    ensure_foreign_folders_for_ews_store (store, registry, cancellable);
+    target_folder = open_matching_store_folder (
+        store, folder_name, cancellable, &error);
+    if (!target_folder)
+        goto finish;
+
+    message = parse_raw_message (
+        raw_message, raw_message_len, cancellable, &error);
+    if (!message)
+        goto finish;
+
+    message_info = camel_message_info_new (NULL);
+    if (message_info) {
+        if (!is_unread)
+            set_flags |= CAMEL_MESSAGE_SEEN;
+        if (is_flagged)
+            set_flags |= CAMEL_MESSAGE_FLAGGED;
+        camel_message_info_set_flags (
+            message_info,
+            CAMEL_MESSAGE_SEEN | CAMEL_MESSAGE_FLAGGED,
+            set_flags);
+    }
+
+    success = camel_folder_append_message_sync (
+        target_folder, message, message_info, &appended_uid,
+        cancellable, &error);
+
+    if (success) {
+        camel_folder_synchronize_sync (target_folder, FALSE, cancellable, NULL);
+        camel_folder_refresh_info_sync (target_folder, cancellable, NULL);
+        if (out_created_folder)
+            *out_created_folder = g_strdup (
+                camel_folder_get_full_name (target_folder));
+        if (out_created_uid && appended_uid && *appended_uid)
+            *out_created_uid = g_steal_pointer (&appended_uid);
+    }
+
+finish:
+    if (!success && cancellation_requested (
+            cancellation_callback, cancellation_user_data) && !error)
+        set_cancelled_error (&error);
+    if (!success && out_error && error)
+        *out_error = g_strdup (error->message);
+    g_clear_error (&error);
+    g_clear_pointer (&appended_uid, g_free);
+    g_clear_object (&message_info);
+    g_clear_object (&message);
+    g_clear_object (&target_folder);
+    g_clear_object (&store);
+    cancellation_monitor_free (cancellation_monitor);
+    g_clear_object (&cancellable);
+    g_clear_object (&session);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+
+    return success ? 1 : 0;
+}
+
+int
 meridian_eds_camel_send_message (
     const char *source_uid,
+    const char *preferred_sent_folder,
     const uint8_t *raw_message,
     size_t raw_message_len,
     int *out_sent_message_saved,
@@ -5841,21 +6263,17 @@ meridian_eds_camel_send_message (
     ESource *transport_source = NULL;
     CamelService *transport_service = NULL;
     CamelStore *sent_store = NULL;
-    CamelFolder *sent_folder = NULL;
     CamelMimeMessage *message = NULL;
-    CamelStream *stream = NULL;
     CamelInternetAddress *from = NULL;
     CamelInternetAddress *recipients = NULL;
     GCancellable *cancellable = NULL;
     GError *error = NULL;
     ESourceMailAccount *account_extension;
-    ESourceMailIdentity *identity_extension;
-    ESourceMailSubmission *submission_extension;
+    ESourceMailSubmission *submission_extension = NULL;
     ESourceBackend *transport_backend;
     gchar *identity_uid = NULL;
     gchar *transport_uid = NULL;
-    gchar *identity_address = NULL;
-    gchar *identity_name = NULL;
+    const gchar *effective_source_uid;
     const gchar *backend_name;
     gboolean sent_message_saved = FALSE;
     gboolean success = FALSE;
@@ -5877,7 +6295,7 @@ meridian_eds_camel_send_message (
     if (!registry)
         goto finish;
 
-    source = e_source_registry_ref_source (registry, source_uid);
+    source = ref_mail_account_source (registry, source_uid);
     if (!source) {
         g_set_error_literal (
             &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
@@ -5890,9 +6308,12 @@ meridian_eds_camel_send_message (
             "The selected EDS mail account is disabled");
         goto finish;
     }
+    effective_source_uid = e_source_get_uid (source);
 
-    account_extension = (ESourceMailAccount *) e_source_get_extension (
-        source, E_SOURCE_EXTENSION_MAIL_ACCOUNT);
+    account_extension = e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_ACCOUNT)
+        ? (ESourceMailAccount *) e_source_get_extension (
+            source, E_SOURCE_EXTENSION_MAIL_ACCOUNT)
+        : NULL;
     identity_uid = account_extension
         ? e_source_mail_account_dup_identity_uid (account_extension)
         : NULL;
@@ -5903,35 +6324,11 @@ meridian_eds_camel_send_message (
         identity_source = g_object_ref (source);
     }
 
-    identity_extension = (ESourceMailIdentity *) e_source_get_extension (
-        identity_source, E_SOURCE_EXTENSION_MAIL_IDENTITY);
-    identity_address = identity_extension
-        ? e_source_mail_identity_dup_address (identity_extension)
-        : NULL;
-    identity_name = identity_extension
-        ? e_source_mail_identity_dup_name (identity_extension)
-        : NULL;
-
-    if (!identity_address || !*identity_address) {
-        if (e_source_has_extension (identity_source, "GNOME Online Accounts")) {
-            ESourceExtension *goa = e_source_get_extension (identity_source, "GNOME Online Accounts");
-            identity_address = e_source_goa_dup_address (E_SOURCE_GOA (goa));
-        } else if (e_source_has_extension (source, "GNOME Online Accounts")) {
-            ESourceExtension *goa = e_source_get_extension (source, "GNOME Online Accounts");
-            identity_address = e_source_goa_dup_address (E_SOURCE_GOA (goa));
-        }
-    }
-
-    if (!identity_address || !*identity_address) {
-        g_set_error_literal (
-            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "The selected EDS mail identity has no sender address");
-        goto finish;
-    }
-
-    submission_extension = (ESourceMailSubmission *) e_source_get_extension (
-        identity_source, E_SOURCE_EXTENSION_MAIL_SUBMISSION);
-    if (!submission_extension)
+    if (e_source_has_extension (identity_source, E_SOURCE_EXTENSION_MAIL_SUBMISSION))
+        submission_extension = (ESourceMailSubmission *) e_source_get_extension (
+            identity_source, E_SOURCE_EXTENSION_MAIL_SUBMISSION);
+    if (!submission_extension &&
+        e_source_has_extension (source, E_SOURCE_EXTENSION_MAIL_SUBMISSION))
         submission_extension = (ESourceMailSubmission *) e_source_get_extension (
             source, E_SOURCE_EXTENSION_MAIL_SUBMISSION);
     transport_uid = submission_extension
@@ -5944,7 +6341,7 @@ meridian_eds_camel_send_message (
         goto finish;
     }
 
-    if (g_strcmp0 (transport_uid, source_uid) == 0)
+    if (g_strcmp0 (transport_uid, effective_source_uid) == 0)
         transport_source = g_object_ref (source);
     else
         transport_source = e_source_registry_ref_source (registry, transport_uid);
@@ -5955,8 +6352,10 @@ meridian_eds_camel_send_message (
         goto finish;
     }
 
-    transport_backend = (ESourceBackend *) e_source_get_extension (
-        transport_source, E_SOURCE_EXTENSION_MAIL_TRANSPORT);
+    transport_backend = e_source_has_extension (transport_source, E_SOURCE_EXTENSION_MAIL_TRANSPORT)
+        ? (ESourceBackend *) e_source_get_extension (
+            transport_source, E_SOURCE_EXTENSION_MAIL_TRANSPORT)
+        : NULL;
     backend_name = transport_backend
         ? e_source_backend_get_backend_name (transport_backend)
         : NULL;
@@ -5969,6 +6368,39 @@ meridian_eds_camel_send_message (
 
     session = eds_camel_ref_session (registry);
     cancellable = g_cancellable_new ();
+
+    message = parse_raw_message (
+        raw_message, raw_message_len, cancellable, &error);
+    if (!message)
+        goto finish;
+
+    /* Preserve an explicit From header already written into the RFC822 message
+     * (shared/delegate mailboxes, aliases, or chosen composer identity) and
+     * fall back to the host EDS mail identity only when From is missing. */
+    if (!resolve_message_sender (
+            message, identity_source, source, effective_source_uid, &from, &error))
+        goto finish;
+
+    recipients = camel_internet_address_new ();
+    CamelInternetAddress *part = camel_mime_message_get_recipients (
+        message, CAMEL_RECIPIENT_TYPE_TO);
+    if (part)
+        camel_address_cat (CAMEL_ADDRESS (recipients), CAMEL_ADDRESS (part));
+    part = camel_mime_message_get_recipients (
+        message, CAMEL_RECIPIENT_TYPE_CC);
+    if (part)
+        camel_address_cat (CAMEL_ADDRESS (recipients), CAMEL_ADDRESS (part));
+    part = camel_mime_message_get_recipients (
+        message, CAMEL_RECIPIENT_TYPE_BCC);
+    if (part)
+        camel_address_cat (CAMEL_ADDRESS (recipients), CAMEL_ADDRESS (part));
+    if (camel_address_length (CAMEL_ADDRESS (recipients)) == 0) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "The RFC822 message has no valid recipients");
+        goto finish;
+    }
+
     transport_service = camel_session_ref_service (
         CAMEL_SESSION (session), transport_uid);
     if (!transport_service) {
@@ -6021,47 +6453,6 @@ meridian_eds_camel_send_message (
         goto finish;
     }
 
-    message = camel_mime_message_new ();
-    stream = camel_stream_mem_new_with_buffer (
-        (const gchar *) raw_message, raw_message_len);
-    if (!camel_data_wrapper_construct_from_stream_sync (
-            CAMEL_DATA_WRAPPER (message), stream, cancellable, &error))
-        goto finish;
-
-    from = camel_internet_address_new ();
-    if (!set_camel_internet_address (
-            from,
-            identity_name && *identity_name ? identity_name : NULL,
-            identity_address)) {
-        g_set_error_literal (
-            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "The EDS sender address could not be parsed as an internet address");
-        goto finish;
-    }
-    camel_medium_remove_header (CAMEL_MEDIUM (message), "From");
-    camel_mime_message_set_from (message, from);
-    camel_mime_message_set_source (message, source_uid);
-
-    recipients = camel_internet_address_new ();
-    CamelInternetAddress *part = camel_mime_message_get_recipients (
-        message, CAMEL_RECIPIENT_TYPE_TO);
-    if (part)
-        camel_address_cat (CAMEL_ADDRESS (recipients), CAMEL_ADDRESS (part));
-    part = camel_mime_message_get_recipients (
-        message, CAMEL_RECIPIENT_TYPE_CC);
-    if (part)
-        camel_address_cat (CAMEL_ADDRESS (recipients), CAMEL_ADDRESS (part));
-    part = camel_mime_message_get_recipients (
-        message, CAMEL_RECIPIENT_TYPE_BCC);
-    if (part)
-        camel_address_cat (CAMEL_ADDRESS (recipients), CAMEL_ADDRESS (part));
-    if (camel_address_length (CAMEL_ADDRESS (recipients)) == 0) {
-        g_set_error_literal (
-            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-            "The RFC822 message has no valid recipients");
-        goto finish;
-    }
-
     /* Camel converts 8-bit parts to a transport-safe representation when
      * necessary; this also keeps locally generated UTF-8 HTML valid for SMTP
      * providers that do not advertise 8BITMIME. */
@@ -6083,18 +6474,11 @@ meridian_eds_camel_send_message (
 
         sent_store = open_store_for_source (
             session, source, cancellable, &sent_error);
-        if (sent_store)
-            sent_folder = open_special_folder (
-                sent_store, identity_source, source,
-                CAMEL_FOLDER_TYPE_SENT, FALSE,
-                cancellable, &sent_error);
-        if (sent_folder) {
-            gchar *appended_uid = NULL;
-
-            sent_message_saved = camel_folder_append_message_sync (
-                sent_folder, message, NULL, &appended_uid,
-                cancellable, &sent_error);
-            g_free (appended_uid);
+        if (sent_store) {
+            sent_message_saved = append_message_with_preferred_folder (
+                sent_store, registry, identity_source, source,
+                preferred_sent_folder, CAMEL_FOLDER_TYPE_SENT, FALSE,
+                message, cancellable, &sent_error);
         }
         if (!sent_message_saved && sent_error) {
             g_warning ("EDS sent copy could not be saved: %s",
@@ -6111,13 +6495,9 @@ finish:
     g_clear_error (&error);
     g_clear_pointer (&identity_uid, g_free);
     g_clear_pointer (&transport_uid, g_free);
-    g_clear_pointer (&identity_address, g_free);
-    g_clear_pointer (&identity_name, g_free);
     g_clear_object (&recipients);
     g_clear_object (&from);
-    g_clear_object (&stream);
     g_clear_object (&message);
-    g_clear_object (&sent_folder);
     g_clear_object (&sent_store);
     g_clear_object (&transport_service);
     g_clear_object (&transport_source);

@@ -218,6 +218,60 @@ impl ImportDialog {
 
         page.add(&group);
 
+        let tb_group = adw::PreferencesGroup::builder()
+            .title(gettext("Profile Migration"))
+            .build();
+        let tb_row = adw::ActionRow::builder()
+            .title(gettext("Import Thunderbird Profile…"))
+            .subtitle(gettext("Accounts, filter rules, and local mail folders"))
+            .activatable(true)
+            .build();
+        let tb_chevron = gtk::Image::from_icon_name("folder-open-symbolic");
+        tb_row.add_suffix(&tb_chevron);
+        let dlg_for_tb = self.downgrade();
+        tb_row.connect_activated(move |row| {
+            let Some(root) = row.root().and_downcast::<gtk::Window>() else {
+                return;
+            };
+            let dw = dlg_for_tb.clone();
+            let folder_dlg = gtk::FileDialog::builder()
+                .title(gettext("Select Thunderbird Profile Folder"))
+                .modal(true)
+                .build();
+            folder_dlg.select_folder(Some(&root), gio::Cancellable::NONE, move |res| {
+                let Ok(file) = res else {
+                    return;
+                };
+                let Some(path) = file.path() else {
+                    return;
+                };
+                let (tx, rx) = async_channel::bounded(1);
+                std::thread::spawn(move || {
+                    let rep = crate::services::migration_service::import_thunderbird_profile(&path);
+                    let _ = tx.send_blocking(rep);
+                });
+                let dw2 = dw.clone();
+                glib::spawn_future_local(async move {
+                    if let Ok(Ok(rep)) = rx.recv().await
+                        && let Some(d) = dw2.upgrade()
+                    {
+                        if let Some(win) = crate::window::find_meridian_window(&d) {
+                            win.add_toast(&adw::Toast::new(&format!(
+                                "{}: {} accounts, {} filters, {} mail archives",
+                                gettext("Thunderbird import finished"),
+                                rep.imported_accounts,
+                                rep.imported_filters,
+                                rep.imported_mail_files
+                            )));
+                        }
+                        d.close();
+                    }
+                });
+            });
+        });
+        tb_group.add(&tb_row);
+        page.add(&tb_group);
+
         toolbar.set_content(Some(&page));
         self.set_child(Some(&toolbar));
     }

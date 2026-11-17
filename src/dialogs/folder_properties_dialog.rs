@@ -105,6 +105,10 @@ impl Default for FolderCustomizationStore {
     }
 }
 
+static FOLDER_CUSTOMIZATION_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<Option<(std::time::Instant, PathBuf, HashMap<String, FolderCustomization>)>>,
+> = std::sync::OnceLock::new();
+
 impl FolderCustomizationStore {
     pub fn key_for_path(is_remote: bool, folder_path: &str, folder_name: &str) -> String {
         let raw = if !folder_path.trim().is_empty() {
@@ -123,10 +127,22 @@ impl FolderCustomizationStore {
     }
 
     pub fn load_all(&self) -> HashMap<String, FolderCustomization> {
-        fs::read(&self.path)
+        let lock = FOLDER_CUSTOMIZATION_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+        if let Ok(guard) = lock.lock()
+            && let Some((ts, ref cached_path, ref map)) = *guard
+            && cached_path == &self.path
+            && ts.elapsed() < std::time::Duration::from_secs(3)
+        {
+            return map.clone();
+        }
+        let loaded: HashMap<String, FolderCustomization> = fs::read(&self.path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Ok(mut guard) = lock.lock() {
+            *guard = Some((std::time::Instant::now(), self.path.clone(), loaded.clone()));
+        }
+        loaded
     }
 
     pub fn get(&self, key: &str) -> FolderCustomization {
@@ -155,6 +171,11 @@ impl FolderCustomizationStore {
         }
         if let Ok(encoded) = serde_json::to_vec_pretty(&all) {
             let _ = fs::write(&self.path, encoded);
+        }
+        if let Some(lock) = FOLDER_CUSTOMIZATION_CACHE.get()
+            && let Ok(mut guard) = lock.lock()
+        {
+            *guard = Some((std::time::Instant::now(), self.path.clone(), all));
         }
     }
 }

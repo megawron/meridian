@@ -27,6 +27,7 @@ typedef struct {
     char *due_by;
     int is_replied;
     int is_forwarded;
+    char *user_flags;
 } MeridianEdsCamelMessage;
 
 typedef struct {
@@ -69,6 +70,9 @@ typedef enum {
     MERIDIAN_EDS_CAMEL_RESTORE_DELETED = 7,
     MERIDIAN_EDS_CAMEL_RESTORE_ARCHIVED = 8,
     MERIDIAN_EDS_CAMEL_SET_FOLLOW_UP = 9,
+    MERIDIAN_EDS_CAMEL_COPY_MESSAGE = 10,
+    MERIDIAN_EDS_CAMEL_EXPUNGE_MESSAGE = 11,
+    MERIDIAN_EDS_CAMEL_SET_USER_FLAG = 12,
 } MeridianEdsCamelOperationKind;
 
 typedef struct {
@@ -77,6 +81,7 @@ typedef struct {
     const char *folder_name;
     const char *message_uid;
     const char *message_id;
+    const char *destination_source_uid;
     const char *destination_folder;
     int is_unread;
     int is_flagged;
@@ -84,6 +89,8 @@ typedef struct {
     int is_important;
     int follow_up_status;
     const char *due_by;
+    const char *user_flag;
+    int user_flag_set;
 } MeridianEdsCamelOperation;
 
 typedef enum {
@@ -299,21 +306,51 @@ int meridian_eds_camel_apply_operation(
     MeridianEdsCamelCancellationCallback cancellation_callback,
     void *cancellation_user_data);
 
+int meridian_eds_camel_apply_operation_with_uid(
+    const MeridianEdsCamelOperation *operation,
+    char **out_created_folder,
+    char **out_created_uid,
+    char **out_error,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data);
+
+/* Append a complete RFC822 message into an arbitrary folder of the selected
+ * EDS mail-account source, preserving unread/flagged flags and optionally
+ * returning the resolved folder name and provider-assigned message UID. */
+int meridian_eds_camel_append_message_to_folder(
+    const char *source_uid,
+    const char *folder_name,
+    const uint8_t *raw_message,
+    size_t raw_message_len,
+    int is_unread,
+    int is_flagged,
+    char **out_created_folder,
+    char **out_created_uid,
+    char **out_error,
+    MeridianEdsCamelCancellationCallback cancellation_callback,
+    void *cancellation_user_data);
+
 /* Send a complete RFC822 message through the EDS-configured transport linked
- * to the selected mail-account source.  Returns 1 on success and 0 on an
- * ordinary backend error.  out_sent_message_saved is set when the transport
- * also saved a copy in the configured Sent folder. */
+ * to the selected mail-account source.  `preferred_sent_folder` is optional
+ * (may be NULL) and names a delegate/shared mailbox Sent folder to try first
+ * when the transport does not store a Sent copy itself.  Returns 1 on success
+ * and 0 on an ordinary backend error.  out_sent_message_saved is set when the
+ * transport or post-send append saved a copy in Sent. */
 int meridian_eds_camel_send_message(
     const char *source_uid,
+    const char *preferred_sent_folder,
     const uint8_t *raw_message,
     size_t raw_message_len,
     int *out_sent_message_saved,
     char **out_error);
 
 /* Append a complete RFC822 message to the EDS-configured Drafts or Sent
- * folder for the selected mail-account source. */
+ * folder for the selected mail-account source.  `preferred_folder_name` is
+ * optional (may be NULL) and names a delegate/shared mailbox folder to try
+ * before falling back to the host account's special folder. */
 int meridian_eds_camel_save_message(
     const char *source_uid,
+    const char *preferred_folder_name,
     const uint8_t *raw_message,
     size_t raw_message_len,
     MeridianEdsCamelSaveFolder folder,

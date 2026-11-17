@@ -311,6 +311,56 @@ pub(crate) enum MailOperation {
         #[serde(default)]
         fallback_raw: Option<Vec<u8>>,
     },
+    MoveCrossAccount {
+        id: String,
+        location: MailBackendLocation,
+        destination_source_uid: String,
+        destination: String,
+        #[serde(default)]
+        is_unread: bool,
+        #[serde(default)]
+        is_flagged: bool,
+        #[serde(default)]
+        fallback_raw: Option<Vec<u8>>,
+    },
+    CopyCrossAccount {
+        id: String,
+        location: MailBackendLocation,
+        destination_source_uid: String,
+        destination: String,
+        #[serde(default)]
+        is_unread: bool,
+        #[serde(default)]
+        is_flagged: bool,
+        #[serde(default)]
+        fallback_raw: Option<Vec<u8>>,
+    },
+    MoveLocalToRemote {
+        id: String,
+        destination_source_uid: String,
+        destination: String,
+        #[serde(default)]
+        is_unread: bool,
+        #[serde(default)]
+        is_flagged: bool,
+        #[serde(default)]
+        fallback_raw: Option<Vec<u8>>,
+    },
+    CopyLocalToRemote {
+        id: String,
+        destination_source_uid: String,
+        destination: String,
+        #[serde(default)]
+        is_unread: bool,
+        #[serde(default)]
+        is_flagged: bool,
+        #[serde(default)]
+        fallback_raw: Option<Vec<u8>>,
+    },
+    UndoMoveLocalToRemote {
+        id: String,
+        remote_location: Option<MailBackendLocation>,
+    },
 }
 
 /// A reversible user action.  The backend mutation is executed before a
@@ -774,21 +824,213 @@ impl MailCommand {
         )
     }
 
+    pub(crate) fn move_cross_account(
+        id: impl Into<String>,
+        location: MailBackendLocation,
+        destination_source_uid: impl Into<String>,
+        destination: impl Into<String>,
+        is_unread: bool,
+        is_flagged: bool,
+        fallback_raw: Option<Vec<u8>>,
+    ) -> Self {
+        let id = id.into();
+        let destination_source_uid = destination_source_uid.into();
+        let destination = destination.into();
+        let inverse_location = MailBackendLocation {
+            source_uid: destination_source_uid.clone(),
+            folder_name: destination.clone(),
+            message_uid: location.message_uid.clone(),
+            message_id: location.message_id.clone(),
+        };
+        Self::new(
+            MailOperation::MoveCrossAccount {
+                id: id.clone(),
+                location: location.clone(),
+                destination_source_uid: destination_source_uid.clone(),
+                destination: destination.clone(),
+                is_unread,
+                is_flagged,
+                fallback_raw: fallback_raw.clone(),
+            },
+            MailOperation::MoveCrossAccount {
+                id,
+                location: inverse_location,
+                destination_source_uid: location.source_uid,
+                destination: location.folder_name,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            },
+            format!("Move message to {destination}"),
+        )
+    }
+
+    pub(crate) fn copy_cross_account(
+        id: impl Into<String>,
+        location: MailBackendLocation,
+        destination_source_uid: impl Into<String>,
+        destination: impl Into<String>,
+        is_unread: bool,
+        is_flagged: bool,
+        fallback_raw: Option<Vec<u8>>,
+    ) -> Self {
+        let id = id.into();
+        let destination_source_uid = destination_source_uid.into();
+        let destination = destination.into();
+        Self::new(
+            MailOperation::CopyCrossAccount {
+                id: id.clone(),
+                location,
+                destination_source_uid,
+                destination: destination.clone(),
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            },
+            MailOperation::RemoveCopy {
+                id,
+                location: None,
+                destination: destination.clone(),
+            },
+            format!("Copied message to {destination}"),
+        )
+    }
+
+    pub(crate) fn move_local_to_remote(
+        id: impl Into<String>,
+        destination_source_uid: impl Into<String>,
+        destination: impl Into<String>,
+        is_unread: bool,
+        is_flagged: bool,
+        fallback_raw: Option<Vec<u8>>,
+    ) -> Self {
+        let id = id.into();
+        let destination_source_uid = destination_source_uid.into();
+        let destination = destination.into();
+        Self::new(
+            MailOperation::MoveLocalToRemote {
+                id: id.clone(),
+                destination_source_uid,
+                destination: destination.clone(),
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            },
+            MailOperation::UndoMoveLocalToRemote {
+                id,
+                remote_location: None,
+            },
+            format!("Move message to {destination}"),
+        )
+    }
+
+    pub(crate) fn copy_local_to_remote(
+        id: impl Into<String>,
+        destination_source_uid: impl Into<String>,
+        destination: impl Into<String>,
+        is_unread: bool,
+        is_flagged: bool,
+        fallback_raw: Option<Vec<u8>>,
+    ) -> Self {
+        let id = id.into();
+        let destination_source_uid = destination_source_uid.into();
+        let destination = destination.into();
+        Self::new(
+            MailOperation::CopyLocalToRemote {
+                id: id.clone(),
+                destination_source_uid,
+                destination: destination.clone(),
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            },
+            MailOperation::RemoveCopy {
+                id,
+                location: None,
+                destination: destination.clone(),
+            },
+            format!("Copied message to {destination}"),
+        )
+    }
+
     fn update_inverse_from_result(&mut self, result: Option<MailBackendLocation>) {
-        let Some(copy_location) = result else {
+        let Some(created_location) = result else {
             return;
         };
-        let MailOperation::Copy {
-            id, destination, ..
-        } = &self.forward
-        else {
+        match &self.forward {
+            MailOperation::Copy {
+                id, destination, ..
+            }
+            | MailOperation::CopyCrossAccount {
+                id, destination, ..
+            }
+            | MailOperation::CopyLocalToRemote {
+                id, destination, ..
+            } => {
+                self.inverse = MailOperation::RemoveCopy {
+                    id: id.clone(),
+                    location: Some(created_location),
+                    destination: destination.clone(),
+                };
+            }
+            MailOperation::Move {
+                id,
+                location: Some(source_location),
+                ..
+            } => {
+                self.inverse = MailOperation::Move {
+                    id: id.clone(),
+                    location: Some(created_location),
+                    destination: source_location.folder_name.clone(),
+                };
+            }
+            MailOperation::MoveCrossAccount {
+                id,
+                location: source_location,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+                ..
+            } => {
+                self.inverse = MailOperation::MoveCrossAccount {
+                    id: id.clone(),
+                    location: created_location,
+                    destination_source_uid: source_location.source_uid.clone(),
+                    destination: source_location.folder_name.clone(),
+                    is_unread: *is_unread,
+                    is_flagged: *is_flagged,
+                    fallback_raw: fallback_raw.clone(),
+                };
+            }
+            MailOperation::MoveLocalToRemote { id, .. } => {
+                self.inverse = MailOperation::UndoMoveLocalToRemote {
+                    id: id.clone(),
+                    remote_location: Some(created_location),
+                };
+            }
+            _ => {}
+        }
+    }
+
+    fn update_forward_from_undo_result(&mut self, result: Option<MailBackendLocation>) {
+        let Some(restored_location) = result else {
             return;
         };
-        self.inverse = MailOperation::RemoveCopy {
-            id: id.clone(),
-            location: Some(copy_location),
-            destination: destination.clone(),
-        };
+        match &mut self.forward {
+            MailOperation::Move {
+                location: Some(forward_location),
+                ..
+            } => {
+                *forward_location = restored_location;
+            }
+            MailOperation::MoveCrossAccount {
+                location: forward_location,
+                ..
+            } => {
+                *forward_location = restored_location;
+            }
+            _ => {}
+        }
     }
 
     pub(crate) fn description(&self) -> &str {
@@ -809,10 +1051,16 @@ impl MailOperation {
         match self {
             Self::SetMessageState { .. } => MailOperationKind::SetMessageState,
             Self::Delete { .. } | Self::RestoreDeleted { .. } => MailOperationKind::Delete,
-            Self::Move { .. } | Self::MoveRemoteToLocal { .. } => MailOperationKind::Move,
+            Self::Move { .. }
+            | Self::MoveRemoteToLocal { .. }
+            | Self::MoveCrossAccount { .. }
+            | Self::MoveLocalToRemote { .. }
+            | Self::UndoMoveLocalToRemote { .. } => MailOperationKind::Move,
             Self::Copy { .. }
             | Self::RemoveCopy { .. }
-            | Self::CopyRemoteToLocal { .. } => MailOperationKind::Copy,
+            | Self::CopyRemoteToLocal { .. }
+            | Self::CopyCrossAccount { .. }
+            | Self::CopyLocalToRemote { .. } => MailOperationKind::Copy,
             Self::Archive { .. } | Self::RestoreArchived { .. } => MailOperationKind::Archive,
             Self::SetJunk { is_junk: true, .. } => MailOperationKind::MarkJunk,
             Self::SetJunk { is_junk: false, .. } => MailOperationKind::MarkNotJunk,
@@ -843,7 +1091,14 @@ impl MailOperation {
             | Self::RestoreDeleted { id, location }
             | Self::RestoreArchived { id, location } => (id, location.as_ref()),
             Self::MoveRemoteToLocal { id, location, .. }
-            | Self::CopyRemoteToLocal { id, location, .. } => (id, Some(location)),
+            | Self::CopyRemoteToLocal { id, location, .. }
+            | Self::MoveCrossAccount { id, location, .. }
+            | Self::CopyCrossAccount { id, location, .. } => (id, Some(location)),
+            Self::MoveLocalToRemote { id, .. } | Self::CopyLocalToRemote { id, .. } => (id, None),
+            Self::UndoMoveLocalToRemote {
+                id,
+                remote_location,
+            } => (id, remote_location.as_ref()),
         };
         let identity = location.map_or_else(
             || format!("local:{id}"),
@@ -1549,16 +1804,21 @@ impl MailCommandStack {
         }
 
         let mut undone: Vec<MailCommand> = Vec::with_capacity(batch.len());
-        for command in batch.iter().rev() {
-            if let Err(error) = operations.apply_with_result(command.inverse.clone()) {
-                for mut prev in undone.into_iter().rev() {
-                    if let Ok(res) = operations.apply_with_result(prev.forward.clone()) {
-                        prev.update_inverse_from_result(res);
+        let original_batch = batch.clone();
+        for command in batch.iter_mut().rev() {
+            let undo_result = match operations.apply_with_result(command.inverse.clone()) {
+                Ok(res) => res,
+                Err(error) => {
+                    for mut prev in undone.into_iter().rev() {
+                        if let Ok(res) = operations.apply_with_result(prev.forward.clone()) {
+                            prev.update_inverse_from_result(res);
+                        }
                     }
+                    self.undo.extend(original_batch);
+                    return Err(error);
                 }
-                self.undo.extend(batch);
-                return Err(error);
-            }
+            };
+            command.update_forward_from_undo_result(undo_result);
             undone.push(command.clone());
         }
 
@@ -1752,25 +2012,41 @@ impl MailOperationsService {
         Self { store }
     }
 
+    fn is_draft_store(id: &str, location: &Option<MailBackendLocation>) -> bool {
+        id.starts_with("draft-store:")
+            || location
+                .as_ref()
+                .is_some_and(|loc| loc.message_uid.starts_with("draft-store:"))
+    }
+
+    fn extract_draft_id(id: &str, location: &Option<MailBackendLocation>) -> Option<String> {
+        id.strip_prefix("draft-store:")
+            .map(str::to_string)
+            .or_else(|| {
+                location.as_ref().and_then(|loc| {
+                    loc.message_uid
+                        .strip_prefix("draft-store:")
+                        .map(str::to_string)
+                })
+            })
+    }
+
+    fn map_backend_error(operation: MailOperationKind, message: String) -> MailOperationError {
+        if message
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("conflict:")
+        {
+            MailOperationError::Conflict { operation, message }
+        } else {
+            MailOperationError::Backend { operation, message }
+        }
+    }
+
     /// Apply a mutation supported by the current backend boundary.
     pub(crate) fn apply(&self, operation: MailOperation) -> Result<(), MailOperationError> {
-        let is_draft_store = |id: &str, location: &Option<MailBackendLocation>| {
-            id.starts_with("draft-store:")
-                || location
-                    .as_ref()
-                    .is_some_and(|loc| loc.message_uid.starts_with("draft-store:"))
-        };
-        let extract_draft_id = |id: &str, location: &Option<MailBackendLocation>| -> Option<String> {
-            id.strip_prefix("draft-store:")
-                .map(str::to_string)
-                .or_else(|| {
-                    location.as_ref().and_then(|loc| {
-                        loc.message_uid
-                            .strip_prefix("draft-store:")
-                            .map(str::to_string)
-                    })
-                })
-        };
+        let is_draft_store = Self::is_draft_store;
+        let extract_draft_id = Self::extract_draft_id;
 
         match operation {
             MailOperation::SetMessageState {
@@ -1907,10 +2183,15 @@ impl MailOperationsService {
                         .map_err(Into::into);
                 }
                 match location {
-                    Some(_) => Err(Self::unsupported_backend(
-                        MailOperationKind::Copy,
-                        "EDS/Camel-Copy-Backend",
-                    )),
+                    Some(location) => self
+                        .apply_camel_with_result(
+                            CamelMailOperation::Copy {
+                                location,
+                                destination,
+                            },
+                            MailOperationKind::Copy,
+                        )
+                        .map(|_| ()),
                     None => self
                         .store
                         .metadata_store()
@@ -1931,10 +2212,12 @@ impl MailOperationsService {
                         .map_err(Into::into);
                 }
                 match location {
-                    Some(_) => Err(Self::unsupported_backend(
-                        MailOperationKind::Copy,
-                        "EDS/Camel-Copy-Backend",
-                    )),
+                    Some(location) => self
+                        .apply_camel_with_result(
+                            CamelMailOperation::RemoveCopy { location },
+                            MailOperationKind::Copy,
+                        )
+                        .map(|_| ()),
                     None => self
                         .store
                         .metadata_store()
@@ -2033,14 +2316,18 @@ impl MailOperationsService {
                         .map_err(Into::into);
                 }
                 match location {
-                    Some(location) => self.apply_camel(
-                        CamelMailOperation::SetLabel {
-                            location,
-                            label,
-                            labeled,
-                        },
-                        MailOperationKind::SetLabel,
-                    ),
+                    Some(location) => {
+                        let res = self.apply_camel(
+                            CamelMailOperation::SetLabel {
+                                location,
+                                label: label.clone(),
+                                labeled,
+                            },
+                            MailOperationKind::SetLabel,
+                        );
+                        let _ = self.store.metadata_store().set_label(&id, &label, labeled);
+                        res
+                    }
                     None => self
                         .store
                         .metadata_store()
@@ -2128,7 +2415,138 @@ impl MailOperationsService {
                     MailOperationKind::Move,
                 )
             }
+            MailOperation::MoveCrossAccount {
+                id: _,
+                location,
+                destination_source_uid,
+                destination,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            } => self
+                .apply_camel_with_result(
+                    CamelMailOperation::MoveCrossAccount {
+                        location,
+                        destination_source_uid,
+                        destination,
+                        is_unread,
+                        is_flagged,
+                        fallback_raw,
+                    },
+                    MailOperationKind::Move,
+                )
+                .map(|_| ()),
+            MailOperation::CopyCrossAccount {
+                id: _,
+                location,
+                destination_source_uid,
+                destination,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            } => self
+                .apply_camel_with_result(
+                    CamelMailOperation::CopyCrossAccount {
+                        location,
+                        destination_source_uid,
+                        destination,
+                        is_unread,
+                        is_flagged,
+                        fallback_raw,
+                    },
+                    MailOperationKind::Copy,
+                )
+                .map(|_| ()),
+            MailOperation::MoveLocalToRemote {
+                id,
+                destination_source_uid,
+                destination,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            } => {
+                let _ = self.apply_local_to_remote(
+                    &id,
+                    &destination_source_uid,
+                    &destination,
+                    is_unread,
+                    is_flagged,
+                    fallback_raw,
+                    true,
+                )?;
+                Ok(())
+            }
+            MailOperation::CopyLocalToRemote {
+                id,
+                destination_source_uid,
+                destination,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            } => {
+                let _ = self.apply_local_to_remote(
+                    &id,
+                    &destination_source_uid,
+                    &destination,
+                    is_unread,
+                    is_flagged,
+                    fallback_raw,
+                    false,
+                )?;
+                Ok(())
+            }
+            MailOperation::UndoMoveLocalToRemote {
+                id,
+                remote_location,
+            } => {
+                self.store.metadata_store().set_deleted(&id, false)?;
+                if let Some(location) = remote_location {
+                    self.apply_camel_with_result(
+                        CamelMailOperation::RemoveCopy { location },
+                        MailOperationKind::Move,
+                    )?;
+                }
+                Ok(())
+            }
         }
+    }
+
+    fn apply_local_to_remote(
+        &self,
+        id: &str,
+        destination_source_uid: &str,
+        destination: &str,
+        is_unread: bool,
+        is_flagged: bool,
+        fallback_raw: Option<Vec<u8>>,
+        delete_local_after_append: bool,
+    ) -> Result<Option<MailBackendLocation>, MailOperationError> {
+        let operation_kind = if delete_local_after_append {
+            MailOperationKind::Move
+        } else {
+            MailOperationKind::Copy
+        };
+        let raw = self
+            .store
+            .load_raw_local_message_by_id(id)
+            .or(fallback_raw)
+            .ok_or_else(|| MailOperationError::Backend {
+                operation: operation_kind,
+                message: "Could not read local RFC822 message payload".to_string(),
+            })?;
+        let created = camel_mail_service::append_raw_message_to_folder(
+            destination_source_uid,
+            destination,
+            &raw,
+            is_unread,
+            is_flagged,
+            None,
+        )
+        .map_err(|message| Self::map_backend_error(operation_kind, message))?;
+        if delete_local_after_append {
+            self.store.metadata_store().set_deleted(id, true)?;
+        }
+        Ok(created)
     }
 
     /// Apply a mutation after a cooperative cancellation check. The check is
@@ -2160,24 +2578,134 @@ impl MailOperationsService {
         operation: MailOperation,
     ) -> Result<Option<MailBackendLocation>, MailOperationError> {
         match operation {
-            MailOperation::Copy {
-                id: _,
-                location: Some(location),
-                destination,
-            } => self.apply_camel_with_result(
-                CamelMailOperation::Copy {
-                    location,
+            MailOperation::Move {
+                ref id,
+                location: Some(ref loc),
+                ..
+            } if Self::extract_draft_id(id, &Some(loc.clone())).is_none() => {
+                let MailOperation::Move {
+                    location: Some(location),
                     destination,
+                    ..
+                } = operation
+                else {
+                    unreachable!()
+                };
+                self.apply_camel_with_result(
+                    CamelMailOperation::Move {
+                        location,
+                        destination,
+                    },
+                    MailOperationKind::Move,
+                )
+            }
+            MailOperation::Copy {
+                ref id,
+                ref location,
+                ..
+            } if location.is_some() && !Self::is_draft_store(id, location) => {
+                let MailOperation::Copy {
+                    location: Some(location),
+                    destination,
+                    ..
+                } = operation
+                else {
+                    unreachable!()
+                };
+                self.apply_camel_with_result(
+                    CamelMailOperation::Copy {
+                        location,
+                        destination,
+                    },
+                    MailOperationKind::Copy,
+                )
+            }
+            MailOperation::RemoveCopy {
+                ref id,
+                ref location,
+                ..
+            } if location.is_some() && !Self::is_draft_store(id, location) => {
+                let MailOperation::RemoveCopy {
+                    location: Some(location),
+                    ..
+                } = operation
+                else {
+                    unreachable!()
+                };
+                self.apply_camel_with_result(
+                    CamelMailOperation::RemoveCopy { location },
+                    MailOperationKind::Copy,
+                )
+            }
+            MailOperation::MoveCrossAccount {
+                id: _,
+                location,
+                destination_source_uid,
+                destination,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            } => self.apply_camel_with_result(
+                CamelMailOperation::MoveCrossAccount {
+                    location,
+                    destination_source_uid,
+                    destination,
+                    is_unread,
+                    is_flagged,
+                    fallback_raw,
+                },
+                MailOperationKind::Move,
+            ),
+            MailOperation::CopyCrossAccount {
+                id: _,
+                location,
+                destination_source_uid,
+                destination,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            } => self.apply_camel_with_result(
+                CamelMailOperation::CopyCrossAccount {
+                    location,
+                    destination_source_uid,
+                    destination,
+                    is_unread,
+                    is_flagged,
+                    fallback_raw,
                 },
                 MailOperationKind::Copy,
             ),
-            MailOperation::RemoveCopy {
-                id: _,
-                location: Some(location),
-                destination: _,
-            } => self.apply_camel_with_result(
-                CamelMailOperation::RemoveCopy { location },
-                MailOperationKind::Copy,
+            MailOperation::MoveLocalToRemote {
+                id,
+                destination_source_uid,
+                destination,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            } => self.apply_local_to_remote(
+                &id,
+                &destination_source_uid,
+                &destination,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+                true,
+            ),
+            MailOperation::CopyLocalToRemote {
+                id,
+                destination_source_uid,
+                destination,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+            } => self.apply_local_to_remote(
+                &id,
+                &destination_source_uid,
+                &destination,
+                is_unread,
+                is_flagged,
+                fallback_raw,
+                false,
             ),
             operation => self.apply(operation).map(|()| None),
         }
@@ -3680,6 +4208,154 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn move_command_updates_inverse_and_forward_when_backend_assigns_new_uid() {
+        let source_location = MailBackendLocation {
+            source_uid: "imap-account-a".to_string(),
+            folder_name: "INBOX".to_string(),
+            message_uid: "101".to_string(),
+            message_id: Some("<move-test@example.org>".to_string()),
+        };
+        let moved_location = MailBackendLocation {
+            source_uid: "imap-account-a".to_string(),
+            folder_name: "Archive".to_string(),
+            message_uid: "202".to_string(),
+            message_id: Some("<move-test@example.org>".to_string()),
+        };
+        let restored_location = MailBackendLocation {
+            source_uid: "imap-account-a".to_string(),
+            folder_name: "INBOX".to_string(),
+            message_uid: "303".to_string(),
+            message_id: Some("<move-test@example.org>".to_string()),
+        };
+
+        let mut command =
+            MailCommand::move_to("eds:imap-account-a:INBOX:101", source_location, "Archive");
+        command.update_inverse_from_result(Some(moved_location.clone()));
+
+        assert!(matches!(
+            &command.inverse,
+            MailOperation::Move {
+                location: Some(loc),
+                destination,
+                ..
+            } if *loc == moved_location && destination == "INBOX"
+        ));
+
+        command.update_forward_from_undo_result(Some(restored_location.clone()));
+        assert!(matches!(
+            &command.forward,
+            MailOperation::Move {
+                location: Some(loc),
+                destination,
+                ..
+            } if *loc == restored_location && destination == "Archive"
+        ));
+    }
+
+    #[test]
+    fn cross_account_move_and_copy_commands_track_destination_locations_for_undo() {
+        let source_location = MailBackendLocation {
+            source_uid: "account-a".to_string(),
+            folder_name: "INBOX".to_string(),
+            message_uid: "55".to_string(),
+            message_id: Some("<cross-account@example.org>".to_string()),
+        };
+        let target_location = MailBackendLocation {
+            source_uid: "account-b".to_string(),
+            folder_name: "Projects/2026".to_string(),
+            message_uid: "890".to_string(),
+            message_id: Some("<cross-account@example.org>".to_string()),
+        };
+
+        let mut move_cmd = MailCommand::move_cross_account(
+            "eds:account-a:INBOX:55",
+            source_location.clone(),
+            "account-b",
+            "Projects/2026",
+            false,
+            true,
+            None,
+        );
+        move_cmd.update_inverse_from_result(Some(target_location.clone()));
+        assert!(matches!(
+            &move_cmd.inverse,
+            MailOperation::MoveCrossAccount {
+                location,
+                destination_source_uid,
+                destination,
+                is_unread: false,
+                is_flagged: true,
+                ..
+            } if *location == target_location
+                && destination_source_uid == "account-a"
+                && destination == "INBOX"
+        ));
+
+        let mut copy_cmd = MailCommand::copy_cross_account(
+            "eds:account-a:INBOX:55",
+            source_location,
+            "account-b",
+            "Projects/2026",
+            false,
+            true,
+            None,
+        );
+        copy_cmd.update_inverse_from_result(Some(target_location.clone()));
+        assert!(matches!(
+            &copy_cmd.inverse,
+            MailOperation::RemoveCopy {
+                location: Some(loc),
+                destination,
+                ..
+            } if *loc == target_location && destination == "Projects/2026"
+        ));
+    }
+
+    #[test]
+    fn local_to_remote_move_and_copy_commands_populate_undo_locations() {
+        let remote_location = MailBackendLocation {
+            source_uid: "account-b".to_string(),
+            folder_name: "INBOX".to_string(),
+            message_uid: "777".to_string(),
+            message_id: Some("<local-upload@example.org>".to_string()),
+        };
+
+        let mut move_cmd = MailCommand::move_local_to_remote(
+            "local:test#0",
+            "account-b",
+            "INBOX",
+            true,
+            false,
+            Some(b"Subject: Synthetic\r\n\r\nBody\r\n".to_vec()),
+        );
+        move_cmd.update_inverse_from_result(Some(remote_location.clone()));
+        assert!(matches!(
+            &move_cmd.inverse,
+            MailOperation::UndoMoveLocalToRemote {
+                id,
+                remote_location: Some(loc),
+            } if id == "local:test#0" && *loc == remote_location
+        ));
+
+        let mut copy_cmd = MailCommand::copy_local_to_remote(
+            "local:test#0",
+            "account-b",
+            "INBOX",
+            true,
+            false,
+            None,
+        );
+        copy_cmd.update_inverse_from_result(Some(remote_location.clone()));
+        assert!(matches!(
+            &copy_cmd.inverse,
+            MailOperation::RemoveCopy {
+                location: Some(loc),
+                ..
+            } if *loc == remote_location
+        ));
     }
 
     fn temporary_directory(label: &str) -> PathBuf {

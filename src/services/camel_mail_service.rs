@@ -1245,6 +1245,234 @@ pub(crate) fn strip_shared_mailbox_prefix<'a>(
     None
 }
 
+fn resolve_profile_eds_mail_uid(
+    profile: &crate::services::account_config_service::AccountProfile,
+) -> String {
+    if let Some(real_eds) = profile
+        .id
+        .strip_prefix("eds:")
+        .or_else(|| profile.id.strip_prefix("evolution-source:"))
+    {
+        real_eds.to_string()
+    } else if profile.protocol == crate::services::account_config_service::AccountProtocol::Goa {
+        profile.id.clone()
+    } else {
+        format!(
+            "{}-mail",
+            crate::services::account_config_service::eds_source_uid_for_email(&profile.email)
+        )
+    }
+}
+
+fn shared_mailbox_address(
+    profile: &crate::services::account_config_service::AccountProfile,
+) -> &str {
+    let foreign = profile.foreign_mailbox.trim();
+    if !foreign.is_empty() && foreign.contains('@') {
+        foreign
+    } else {
+        profile.email.trim()
+    }
+}
+
+fn profile_matches_shared_mailbox_source(
+    profile: &crate::services::account_config_service::AccountProfile,
+    source_uid: &str,
+) -> bool {
+    if !profile.is_shared_mailbox {
+        return false;
+    }
+    let trimmed = source_uid.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let mailbox_email = shared_mailbox_address(profile);
+    let mailbox_eds_uid =
+        crate::services::account_config_service::eds_source_uid_for_email(mailbox_email);
+    let mailbox_mail_uid = format!("{mailbox_eds_uid}-mail");
+    let email_eds_uid =
+        crate::services::account_config_service::eds_source_uid_for_email(&profile.email);
+    let email_mail_uid = format!("{email_eds_uid}-mail");
+
+    profile.id.eq_ignore_ascii_case(trimmed)
+        || profile
+            .id
+            .strip_prefix("eds:")
+            .is_some_and(|id| id.eq_ignore_ascii_case(trimmed))
+        || profile
+            .id
+            .strip_prefix("account:")
+            .is_some_and(|id| id.eq_ignore_ascii_case(trimmed))
+        || profile.email.eq_ignore_ascii_case(trimmed)
+        || (!mailbox_email.is_empty() && mailbox_email.eq_ignore_ascii_case(trimmed))
+        || mailbox_eds_uid.eq_ignore_ascii_case(trimmed)
+        || mailbox_mail_uid.eq_ignore_ascii_case(trimmed)
+        || email_eds_uid.eq_ignore_ascii_case(trimmed)
+        || email_mail_uid.eq_ignore_ascii_case(trimmed)
+}
+
+fn resolve_shared_mailbox_target_with_profiles(
+    source_uid: &str,
+    folder_name: &str,
+    profiles: &[crate::services::account_config_service::AccountProfile],
+    cached_folder_names: &[String],
+) -> Option<(String, String, Option<String>)> {
+    for profile in profiles {
+        if !profile_matches_shared_mailbox_source(profile, source_uid) {
+            continue;
+        }
+
+        let parent_uid = profile.parent_account_id.as_deref().unwrap_or("").trim();
+        let (parent_source_uid, parent_profile_id) = if !parent_uid.is_empty() {
+            if let Some(parent_profile) = profiles.iter().find(|p| {
+                !p.is_shared_mailbox
+                    && (p.id.eq_ignore_ascii_case(parent_uid)
+                        || p.id
+                            .strip_prefix("eds:")
+                            .is_some_and(|id| id.eq_ignore_ascii_case(parent_uid))
+                        || p.email.eq_ignore_ascii_case(parent_uid))
+            }) {
+                (
+                    resolve_profile_eds_mail_uid(parent_profile),
+                    Some(parent_profile.id.clone()),
+                )
+            } else if let Some(stripped) = parent_uid
+                .strip_prefix("eds:")
+                .or_else(|| parent_uid.strip_prefix("evolution-source:"))
+            {
+                (stripped.to_string(), Some(parent_uid.to_string()))
+            } else if let Some(email) = parent_uid.strip_prefix("account:") {
+                (
+                    format!(
+                        "{}-mail",
+                        crate::services::account_config_service::eds_source_uid_for_email(email)
+                    ),
+                    Some(parent_uid.to_string()),
+                )
+            } else {
+                (parent_uid.to_string(), Some(parent_uid.to_string()))
+            }
+        } else {
+            profiles
+                .iter()
+                .find(|p| {
+                    p.enabled
+                        && !p.is_shared_mailbox
+                        && p.protocol
+                            == crate::services::account_config_service::AccountProtocol::Exchange
+                })
+                .or_else(|| {
+                    profiles.iter().find(|p| {
+                        !p.is_shared_mailbox
+                            && p.protocol
+                                == crate::services::account_config_service::AccountProtocol::Exchange
+                    })
+                })
+                .map(|p| (resolve_profile_eds_mail_uid(p), Some(p.id.clone())))
+                .unwrap_or_else(|| (source_uid.to_string(), None))
+        };
+
+        let mailbox_email = shared_mailbox_address(profile);
+        let trimmed_folder = folder_name.trim();
+
+        let candidate_prefixes =
+            shared_mailbox_container_prefixes(mailbox_email, &profile.display_name);
+        let detected_prefix = cached_folder_names.iter().find_map(|fname| {
+            for prefix in &candidate_prefixes {
+                if fname.starts_with(prefix) {
+                    return Some(format!("{prefix}/"));
+                }
+            }
+            None
+        });
+        let mailbox_prefix = detected_prefix
+            .unwrap_or_else(|| format!("Foreign Folders/Postfach — {mailbox_email}/"));
+
+        let target_subfolder = if let Some((rel, is_container)) =
+            strip_shared_mailbox_prefix(trimmed_folder, mailbox_email, &profile.display_name)
+        {
+            if is_container || rel.is_empty() {
+                "Posteingang".to_string()
+            } else {
+                rel.to_string()
+            }
+        } else if trimmed_folder.is_empty() || trimmed_folder.eq_ignore_ascii_case("inbox") {
+            "Posteingang".to_string()
+        } else if trimmed_folder.eq_ignore_ascii_case("sent")
+            || trimmed_folder.eq_ignore_ascii_case("sent items")
+            || trimmed_folder.eq_ignore_ascii_case("gesendet")
+        {
+            "Gesendete Elemente".to_string()
+        } else if trimmed_folder.eq_ignore_ascii_case("drafts")
+            || trimmed_folder.eq_ignore_ascii_case("draft")
+        {
+            "Entwürfe".to_string()
+        } else if trimmed_folder.eq_ignore_ascii_case("trash")
+            || trimmed_folder.eq_ignore_ascii_case("deleted items")
+            || trimmed_folder.eq_ignore_ascii_case("papierkorb")
+        {
+            "Gelöschte Elemente".to_string()
+        } else if trimmed_folder.eq_ignore_ascii_case("junk")
+            || trimmed_folder.eq_ignore_ascii_case("spam")
+        {
+            "Junk-E-Mail".to_string()
+        } else {
+            trimmed_folder.to_string()
+        };
+
+        let target_folder = format!("{mailbox_prefix}{target_subfolder}");
+        return Some((parent_source_uid, target_folder, parent_profile_id));
+    }
+
+    None
+}
+
+fn resolve_eds_send_or_save_target_with_profiles(
+    source_uid: &str,
+    folder_hint: &str,
+    profiles: &[crate::services::account_config_service::AccountProfile],
+    cached_folder_names: &[String],
+) -> (String, Option<String>, Option<String>) {
+    if let Some((parent_source_uid, target_folder, parent_profile_id)) =
+        resolve_shared_mailbox_target_with_profiles(
+            source_uid,
+            folder_hint,
+            profiles,
+            cached_folder_names,
+        )
+    {
+        return (parent_source_uid, Some(target_folder), parent_profile_id);
+    }
+
+    let trimmed = source_uid.trim();
+    if let Some(profile) = profiles.iter().find(|p| {
+        !p.is_shared_mailbox
+            && (p.id.eq_ignore_ascii_case(trimmed)
+                || p.id
+                    .strip_prefix("eds:")
+                    .is_some_and(|id| id.eq_ignore_ascii_case(trimmed))
+                || p.email.eq_ignore_ascii_case(trimmed))
+    }) {
+        let eds_uid = if trimmed.starts_with("eds:")
+            || trimmed.starts_with("evolution-source:")
+            || trimmed.starts_with("account:")
+            || trimmed.eq_ignore_ascii_case(&profile.email)
+        {
+            resolve_profile_eds_mail_uid(profile)
+        } else {
+            trimmed.to_string()
+        };
+        return (eds_uid, None, Some(profile.id.clone()));
+    }
+
+    let normalized = trimmed
+        .strip_prefix("eds:")
+        .or_else(|| trimmed.strip_prefix("evolution-source:"))
+        .unwrap_or(trimmed)
+        .to_string();
+    (normalized, None, Some(trimmed.to_string()))
+}
+
 /// Resolves a shared mailbox / delegate mailbox source UID and folder name to its
 /// primary authenticated host account UID and the delegate folder path in Camel
 /// (`Foreign Folders/Postfach — <email_or_dname>/<folder_name>`).
@@ -1252,109 +1480,23 @@ pub(crate) fn resolve_shared_mailbox_target(
     source_uid: &str,
     folder_name: &str,
 ) -> (String, String) {
-    let profiles = crate::services::account_config_service::AccountConfigStore::default().load_cached();
-    for profile in profiles.iter() {
-        if !profile.is_shared_mailbox {
-            continue;
-        }
-        let eds_uid = crate::services::account_config_service::eds_source_uid_for_email(&profile.email);
-        let mail_uid = format!("{eds_uid}-mail");
-        if profile.id == source_uid
-            || profile.id.strip_prefix("eds:") == Some(source_uid)
-            || profile.email == source_uid
-            || eds_uid == source_uid
-            || mail_uid == source_uid
-        {
-            let parent_uid = profile.parent_account_id.as_deref().unwrap_or("").trim();
-            let parent_source_uid = if !parent_uid.is_empty() {
-                if let Some(parent_profile) = profiles.iter().find(|p| {
-                    p.id == parent_uid
-                        || p.id.strip_prefix("eds:") == Some(parent_uid)
-                        || p.email == parent_uid
-                }) {
-                    if let Some(real_eds) = parent_profile.id.strip_prefix("eds:") {
-                        real_eds.to_string()
-                    } else {
-                        crate::services::account_config_service::eds_source_uid_for_email(&parent_profile.email)
-                    }
-                } else {
-                    parent_uid.to_string()
-                }
-            } else {
-                profiles
-                    .iter()
-                    .find(|p| !p.is_shared_mailbox && p.protocol == crate::services::account_config_service::AccountProtocol::Exchange)
-                    .map(|p| {
-                        if let Some(real_eds) = p.id.strip_prefix("eds:") {
-                            real_eds.to_string()
-                        } else {
-                            crate::services::account_config_service::eds_source_uid_for_email(&p.email)
-                        }
-                    })
-                    .unwrap_or_else(|| source_uid.to_string())
-            };
-
-            let trimmed_folder = folder_name.trim();
-
-            let detected_prefix = CACHED_FOLDER_NAMES_IN_MEMORY
-                .lock()
-                .ok()
-                .and_then(|folder_names| {
-                    let candidate_prefixes =
-                        shared_mailbox_container_prefixes(&profile.email, &profile.display_name);
-                    folder_names.iter().find_map(|fname| {
-                        for prefix in &candidate_prefixes {
-                            if fname.starts_with(prefix) {
-                                return Some(format!("{prefix}/"));
-                            }
-                        }
-                        None
-                    })
-                });
-            let mailbox_prefix = detected_prefix.unwrap_or_else(|| {
-                format!("Foreign Folders/Postfach — {}/", profile.email.trim())
-            });
-
-            let target_subfolder = if let Some((rel, is_container)) =
-                strip_shared_mailbox_prefix(trimmed_folder, &profile.email, &profile.display_name)
-            {
-                if is_container || rel.is_empty() {
-                    "Posteingang".to_string()
-                } else {
-                    rel.to_string()
-                }
-            } else if trimmed_folder.is_empty()
-                || trimmed_folder.eq_ignore_ascii_case("inbox")
-            {
-                "Posteingang".to_string()
-            } else if trimmed_folder.eq_ignore_ascii_case("sent")
-                || trimmed_folder.eq_ignore_ascii_case("sent items")
-                || trimmed_folder.eq_ignore_ascii_case("gesendet")
-            {
-                "Gesendete Elemente".to_string()
-            } else if trimmed_folder.eq_ignore_ascii_case("drafts")
-                || trimmed_folder.eq_ignore_ascii_case("draft")
-            {
-                "Entwürfe".to_string()
-            } else if trimmed_folder.eq_ignore_ascii_case("trash")
-                || trimmed_folder.eq_ignore_ascii_case("deleted items")
-                || trimmed_folder.eq_ignore_ascii_case("papierkorb")
-            {
-                "Gelöschte Elemente".to_string()
-            } else if trimmed_folder.eq_ignore_ascii_case("junk")
-                || trimmed_folder.eq_ignore_ascii_case("spam")
-            {
-                "Junk-E-Mail".to_string()
-            } else {
-                trimmed_folder.to_string()
-            };
-
-            let target_folder = format!("{mailbox_prefix}{target_subfolder}");
-            return (parent_source_uid, target_folder);
-        }
+    let profiles =
+        crate::services::account_config_service::AccountConfigStore::default().load_cached();
+    let cached_folders = CACHED_FOLDER_NAMES_IN_MEMORY
+        .lock()
+        .ok()
+        .map(|names| names.clone())
+        .unwrap_or_default();
+    if let Some((parent_source_uid, target_folder, _)) = resolve_shared_mailbox_target_with_profiles(
+        source_uid,
+        folder_name,
+        &profiles,
+        &cached_folders,
+    ) {
+        (parent_source_uid, target_folder)
+    } else {
+        (source_uid.to_string(), folder_name.to_string())
     }
-
-    (source_uid.to_string(), folder_name.to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -1444,6 +1586,7 @@ mod ffi {
         pub(super) due_by: *mut c_char,
         pub(super) is_replied: i32,
         pub(super) is_forwarded: i32,
+        pub(super) user_flags: *mut c_char,
     }
 
     #[repr(C)]
@@ -1490,6 +1633,7 @@ mod ffi {
         pub(super) folder_name: *const c_char,
         pub(super) message_uid: *const c_char,
         pub(super) message_id: *const c_char,
+        pub(super) destination_source_uid: *const c_char,
         pub(super) destination_folder: *const c_char,
         pub(super) is_unread: i32,
         pub(super) is_flagged: i32,
@@ -1497,6 +1641,8 @@ mod ffi {
         pub(super) is_important: i32,
         pub(super) follow_up_status: i32,
         pub(super) due_by: *const c_char,
+        pub(super) user_flag: *const c_char,
+        pub(super) user_flag_set: i32,
     }
 
     #[repr(C)]
@@ -1640,6 +1786,7 @@ mod ffi {
             cancellation_user_data: *mut c_void,
         ) -> i32;
 
+        #[allow(dead_code)]
         pub(super) fn meridian_eds_camel_apply_operation(
             operation: *const MeridianEdsCamelOperation,
             out_error: *mut *mut c_char,
@@ -1647,8 +1794,32 @@ mod ffi {
             cancellation_user_data: *mut c_void,
         ) -> i32;
 
+        pub(super) fn meridian_eds_camel_apply_operation_with_uid(
+            operation: *const MeridianEdsCamelOperation,
+            out_created_folder: *mut *mut c_char,
+            out_created_uid: *mut *mut c_char,
+            out_error: *mut *mut c_char,
+            cancellation_callback: Option<MeridianEdsCamelCancellationCallback>,
+            cancellation_user_data: *mut c_void,
+        ) -> i32;
+
+        pub(super) fn meridian_eds_camel_append_message_to_folder(
+            source_uid: *const c_char,
+            folder_name: *const c_char,
+            raw_message: *const u8,
+            raw_message_len: usize,
+            is_unread: i32,
+            is_flagged: i32,
+            out_created_folder: *mut *mut c_char,
+            out_created_uid: *mut *mut c_char,
+            out_error: *mut *mut c_char,
+            cancellation_callback: Option<MeridianEdsCamelCancellationCallback>,
+            cancellation_user_data: *mut c_void,
+        ) -> i32;
+
         pub(super) fn meridian_eds_camel_send_message(
             source_uid: *const c_char,
+            preferred_sent_folder: *const c_char,
             raw_message: *const u8,
             raw_message_len: usize,
             out_sent_message_saved: *mut i32,
@@ -1657,6 +1828,7 @@ mod ffi {
 
         pub(super) fn meridian_eds_camel_save_message(
             source_uid: *const c_char,
+            preferred_folder_name: *const c_char,
             raw_message: *const u8,
             raw_message_len: usize,
             folder: i32,
@@ -2774,6 +2946,15 @@ fn parse_native_messages(
                 c_string_option(record.completed_on),
             );
             parsed.follow_up_state = parsed.follow_up.state;
+            if let Some(encoded_flags) = c_string_option(record.user_flags) {
+                for raw_flag in encoded_flags.lines() {
+                    if let Some(mapped) = imap_keyword_to_label(raw_flag.trim())
+                        && !parsed.labels.iter().any(|l| l.eq_ignore_ascii_case(&mapped))
+                    {
+                        parsed.labels.push(mapped);
+                    }
+                }
+            }
             let location = MailBackendLocation {
                 source_uid,
                 folder_name: parsed.folder_name.clone(),
@@ -4075,9 +4256,25 @@ pub(crate) enum CamelMailOperation {
         location: MailBackendLocation,
         destination: String,
     },
+    MoveCrossAccount {
+        location: MailBackendLocation,
+        destination_source_uid: String,
+        destination: String,
+        is_unread: bool,
+        is_flagged: bool,
+        fallback_raw: Option<Vec<u8>>,
+    },
     Copy {
         location: MailBackendLocation,
         destination: String,
+    },
+    CopyCrossAccount {
+        location: MailBackendLocation,
+        destination_source_uid: String,
+        destination: String,
+        is_unread: bool,
+        is_flagged: bool,
+        fallback_raw: Option<Vec<u8>>,
     },
     RemoveCopy {
         location: MailBackendLocation,
@@ -4106,6 +4303,82 @@ pub(crate) enum CamelMailOperation {
     },
 }
 
+fn strip_eds_source_prefix(uid: &str) -> &str {
+    let trimmed = uid.trim();
+    trimmed
+        .strip_prefix("eds:")
+        .or_else(|| trimmed.strip_prefix("evolution-source:"))
+        .unwrap_or(trimmed)
+}
+
+/// Convert a Meridian human-readable label into an interoperable IMAP keyword
+/// (`$Label1`..`$Label5` for the 5 standard Thunderbird/Evolution slots, or a
+/// sanitized RFC 3501 atom for custom labels).
+pub(crate) fn label_to_imap_keyword(label: &str) -> String {
+    let clean = label.trim();
+    let configured = super::settings_service::AppSettings::try_new()
+        .map(|s| s.mail_labels())
+        .unwrap_or_else(super::settings_service::MailLabelDefinition::default_labels);
+    for (idx, def) in configured.iter().take(5).enumerate() {
+        if def.name.eq_ignore_ascii_case(clean) {
+            return format!("$Label{}", idx + 1);
+        }
+    }
+    let sanitized: String = clean
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '$' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "$Label1".to_string()
+    } else {
+        sanitized
+    }
+}
+
+/// Convert an incoming IMAP user flag (`$Label1`..`$Label5` or custom keyword)
+/// into a Meridian display label, ignoring internal Evolution/Junk system flags.
+pub(crate) fn imap_keyword_to_label(flag: &str) -> Option<String> {
+    let trimmed = flag.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "junk"
+            | "nonjunk"
+            | "notjunk"
+            | "$junk"
+            | "$notjunk"
+            | "$has_cal"
+            | "$mdnsent"
+            | "$forwarded"
+            | "receipt-handled"
+    ) {
+        return None;
+    }
+    let configured = super::settings_service::AppSettings::try_new()
+        .map(|s| s.mail_labels())
+        .unwrap_or_else(super::settings_service::MailLabelDefinition::default_labels);
+    if let Some(slot_num) = lower
+        .strip_prefix("$label")
+        .and_then(|n| n.parse::<usize>().ok())
+        && (1..=5).contains(&slot_num)
+    {
+        return configured
+            .get(slot_num - 1)
+            .map(|d| d.name.clone())
+            .or_else(|| Some(format!("Label {slot_num}")));
+    }
+    Some(trimmed.replace('_', " "))
+}
+
 pub(crate) fn apply_operation(operation: CamelMailOperation) -> Result<(), String> {
     apply_operation_with_cancellation(operation, None)
 }
@@ -4114,12 +4387,79 @@ fn apply_operation_with_cancellation(
     operation: CamelMailOperation,
     cancelled: Option<&AtomicBool>,
 ) -> Result<(), String> {
+    apply_operation_with_result_and_cancellation(operation, cancelled).map(|_| ())
+}
+
+fn apply_operation_with_result_and_cancellation(
+    operation: CamelMailOperation,
+    cancelled: Option<&AtomicBool>,
+) -> Result<Option<MailBackendLocation>, String> {
     if let Some(cancelled) = cancelled {
         cancellation_error(cancelled, "EDS/Camel operation")?;
     }
-    if let Some(result) = apply_graph_operation(&operation) {
+
+    // Cross-account operations where either side is backed by Microsoft Graph
+    // transfer the complete RFC822 MIME payload across backends and delete the
+    // source only after the destination append succeeds.
+    match &operation {
+        CamelMailOperation::MoveCrossAccount {
+            location,
+            destination_source_uid,
+            destination,
+            is_unread,
+            is_flagged,
+            fallback_raw,
+        }
+        | CamelMailOperation::CopyCrossAccount {
+            location,
+            destination_source_uid,
+            destination,
+            is_unread,
+            is_flagged,
+            fallback_raw,
+        } => {
+            let source_is_graph =
+                super::exchange_service::graph_service_for_source_worker(&location.source_uid)
+                    .is_some();
+            let dest_is_graph =
+                super::exchange_service::graph_service_for_source_worker(destination_source_uid)
+                    .is_some();
+            if source_is_graph || dest_is_graph {
+                let delete_original =
+                    matches!(operation, CamelMailOperation::MoveCrossAccount { .. });
+                let cancel_arc = Arc::new(AtomicBool::new(
+                    cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)),
+                ));
+                let raw = match load_raw_message(location, &cancel_arc) {
+                    Ok(bytes) => bytes,
+                    Err(err) => fallback_raw.clone().ok_or(err)?,
+                };
+                let created = append_raw_message_to_folder(
+                    destination_source_uid,
+                    destination,
+                    &raw,
+                    *is_unread,
+                    *is_flagged,
+                    Some(cancel_arc),
+                )?;
+                if delete_original {
+                    apply_operation_with_cancellation(
+                        CamelMailOperation::Delete {
+                            location: location.clone(),
+                        },
+                        cancelled,
+                    )?;
+                }
+                return Ok(created);
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(result) = apply_graph_operation_with_result(&operation) {
         return result;
     }
+
     #[cfg(eds_camel_bridge)]
     {
         use std::ffi::{CStr, CString, c_char, c_void};
@@ -4132,9 +4472,21 @@ fn apply_operation_with_cancellation(
             cancelled.load(Ordering::Relaxed) as i32
         }
 
+        let (user_flag_opt, user_flag_set) = if let CamelMailOperation::SetLabel {
+            ref label,
+            labeled,
+            ..
+        } = operation
+        {
+            (Some(label_to_imap_keyword(label)), labeled)
+        } else {
+            (None, false)
+        };
+
         let (
             kind,
             location,
+            destination_source_uid,
             destination,
             is_unread,
             is_flagged,
@@ -4148,7 +4500,7 @@ fn apply_operation_with_cancellation(
                 is_unread,
                 is_flagged,
             } => (
-                1, location, None, is_unread, is_flagged, false, false, 0, None,
+                1, location, None, None, is_unread, is_flagged, false, false, 0, None,
             ),
             CamelMailOperation::SetFollowUp {
                 location,
@@ -4158,6 +4510,7 @@ fn apply_operation_with_cancellation(
                 9,
                 location,
                 None,
+                None,
                 false,
                 false,
                 false,
@@ -4166,7 +4519,7 @@ fn apply_operation_with_cancellation(
                 due_by,
             ),
             CamelMailOperation::Delete { location } => {
-                (2, location, None, false, false, false, false, 0, None)
+                (2, location, None, None, false, false, false, false, 0, None)
             }
             CamelMailOperation::Move {
                 location,
@@ -4174,6 +4527,7 @@ fn apply_operation_with_cancellation(
             } => (
                 3,
                 location,
+                None,
                 Some(destination),
                 false,
                 false,
@@ -4182,16 +4536,63 @@ fn apply_operation_with_cancellation(
                 0,
                 None,
             ),
-            CamelMailOperation::Copy { .. } | CamelMailOperation::RemoveCopy { .. } => {
-                return Err(
-                    "EDS/Camel copy is not yet implemented in this backend".to_string(),
-                );
+            CamelMailOperation::MoveCrossAccount {
+                location,
+                destination_source_uid,
+                destination,
+                ..
+            } => (
+                3,
+                location,
+                Some(destination_source_uid),
+                Some(destination),
+                false,
+                false,
+                false,
+                false,
+                0,
+                None,
+            ),
+            CamelMailOperation::Copy {
+                location,
+                destination,
+            } => (
+                10,
+                location,
+                None,
+                Some(destination),
+                false,
+                false,
+                false,
+                false,
+                0,
+                None,
+            ),
+            CamelMailOperation::CopyCrossAccount {
+                location,
+                destination_source_uid,
+                destination,
+                ..
+            } => (
+                10,
+                location,
+                Some(destination_source_uid),
+                Some(destination),
+                false,
+                false,
+                false,
+                false,
+                0,
+                None,
+            ),
+            CamelMailOperation::RemoveCopy { location } => {
+                (11, location, None, None, false, false, false, false, 0, None)
             }
             CamelMailOperation::Archive { location } => {
-                (4, location, None, false, false, false, false, 0, None)
+                (4, location, None, None, false, false, false, false, 0, None)
             }
             CamelMailOperation::SetJunk { location, is_junk } => {
-                (5, location, None, false, false, is_junk, false, 0, None)
+                (5, location, None, None, false, false, is_junk, false, 0, None)
             }
             CamelMailOperation::SetImportant {
                 location,
@@ -4200,6 +4601,7 @@ fn apply_operation_with_cancellation(
                 6,
                 location,
                 None,
+                None,
                 false,
                 false,
                 false,
@@ -4207,62 +4609,95 @@ fn apply_operation_with_cancellation(
                 0,
                 None,
             ),
-            CamelMailOperation::SetLabel { .. } => {
-                return Err(
-                    "EDS/Camel categories are not yet supported in this backend"
-                        .to_string(),
-                );
+            CamelMailOperation::SetLabel { location, .. } => {
+                (12, location, None, None, false, false, false, false, 0, None)
             }
             CamelMailOperation::RestoreDeleted { location } => {
-                (7, location, None, false, false, false, false, 0, None)
+                (7, location, None, None, false, false, false, false, 0, None)
             }
             CamelMailOperation::RestoreArchived { location } => {
-                (8, location, None, false, false, false, false, 0, None)
+                (8, location, None, None, false, false, false, false, 0, None)
             }
         };
 
-        let (resolved_source_uid, resolved_folder_name) =
+        let (raw_resolved_source_uid, resolved_folder_name) =
             resolve_shared_mailbox_target(&location.source_uid, &location.folder_name);
-        let resolved_destination = destination.map(|dest| {
-            let (_, res_dest) = resolve_shared_mailbox_target(&location.source_uid, &dest);
-            res_dest
-        });
+        let resolved_source_uid = strip_eds_source_prefix(&raw_resolved_source_uid).to_string();
 
-        let source_uid = CString::new(resolved_source_uid)
+        let (resolved_dest_source_uid, resolved_destination) = match destination {
+            Some(dest) => {
+                let target_account_uid = destination_source_uid
+                    .as_deref()
+                    .unwrap_or(&location.source_uid);
+                let (raw_dest_uid, res_dest) =
+                    resolve_shared_mailbox_target(target_account_uid, &dest);
+                let clean_dest_uid = strip_eds_source_prefix(&raw_dest_uid).to_string();
+                let explicit_dest_uid =
+                    (clean_dest_uid != resolved_source_uid).then_some(clean_dest_uid);
+                (explicit_dest_uid, Some(res_dest))
+            }
+            None => (None, None),
+        };
+
+        let original_message_uid = location.message_uid;
+        let original_message_id = location.message_id;
+
+        let source_uid_c = CString::new(resolved_source_uid.as_str())
             .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
-        let folder_name = CString::new(resolved_folder_name)
+        let folder_name_c = CString::new(resolved_folder_name.as_str())
             .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())?;
-        let message_uid = CString::new(location.message_uid)
+        let message_uid_c = CString::new(original_message_uid.as_str())
             .map_err(|_| "EDS message UID contains an invalid NUL byte".to_string())?;
-        let destination = resolved_destination
+        let destination_source_uid_c = resolved_dest_source_uid
+            .as_deref()
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| "EDS destination source UID contains an invalid NUL byte".to_string())?;
+        let destination_source_uid_ptr = destination_source_uid_c
+            .as_ref()
+            .map_or(std::ptr::null(), |value| value.as_ptr());
+        let destination_c = resolved_destination
+            .as_deref()
             .map(CString::new)
             .transpose()
             .map_err(|_| "EDS destination contains an invalid NUL byte".to_string())?;
-        let destination_ptr = destination
+        let destination_ptr = destination_c
             .as_ref()
             .map_or(std::ptr::null(), |value| value.as_ptr());
-        let message_id = location
-            .message_id
+        let message_id_c = original_message_id
+            .as_deref()
             .map(CString::new)
             .transpose()
             .map_err(|_| "RFC-822 Message-ID contains an invalid NUL byte".to_string())?;
-        let message_id_ptr = message_id
+        let message_id_ptr = message_id_c
             .as_ref()
             .map_or(std::ptr::null(), |value| value.as_ptr());
-        let due_by = due_by
+        let due_by_c = due_by
             .map(CString::new)
             .transpose()
             .map_err(|_| "EDS due-by tag contains an invalid NUL byte".to_string())?;
-        let due_by_ptr = due_by
+        let due_by_ptr = due_by_c
             .as_ref()
             .map_or(std::ptr::null(), |value| value.as_ptr());
+        let user_flag_c = user_flag_opt
+            .as_deref()
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| "IMAP user flag contains an invalid NUL byte".to_string())?;
+        let user_flag_ptr = user_flag_c
+            .as_ref()
+            .map_or(std::ptr::null(), |value| value.as_ptr());
+
+        let mut created_folder_ptr: *mut c_char = std::ptr::null_mut();
+        let mut created_uid_ptr: *mut c_char = std::ptr::null_mut();
         let mut error_message: *mut c_char = std::ptr::null_mut();
         let ffi_operation = ffi::MeridianEdsCamelOperation {
             kind,
-            source_uid: source_uid.as_ptr(),
-            folder_name: folder_name.as_ptr(),
-            message_uid: message_uid.as_ptr(),
+            source_uid: source_uid_c.as_ptr(),
+            folder_name: folder_name_c.as_ptr(),
+            message_uid: message_uid_c.as_ptr(),
             message_id: message_id_ptr,
+            destination_source_uid: destination_source_uid_ptr,
             destination_folder: destination_ptr,
             is_unread: is_unread as i32,
             is_flagged: is_flagged as i32,
@@ -4270,6 +4705,8 @@ fn apply_operation_with_cancellation(
             is_important: is_important as i32,
             follow_up_status,
             due_by: due_by_ptr,
+            user_flag: user_flag_ptr,
+            user_flag_set: user_flag_set as i32,
         };
 
         let cancellation_user_data = cancelled.map_or(std::ptr::null_mut(), |cancelled| {
@@ -4282,13 +4719,29 @@ fn apply_operation_with_cancellation(
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let result = unsafe {
-            ffi::meridian_eds_camel_apply_operation(
+            ffi::meridian_eds_camel_apply_operation_with_uid(
                 &ffi_operation,
+                &mut created_folder_ptr,
+                &mut created_uid_ptr,
                 &mut error_message,
                 cancellation_callback,
                 cancellation_user_data,
             )
         };
+        let created_folder = (!created_folder_ptr.is_null()).then(|| unsafe {
+            let value = CStr::from_ptr(created_folder_ptr)
+                .to_string_lossy()
+                .into_owned();
+            ffi::meridian_eds_camel_free_error(created_folder_ptr);
+            value
+        });
+        let created_uid = (!created_uid_ptr.is_null()).then(|| unsafe {
+            let value = CStr::from_ptr(created_uid_ptr)
+                .to_string_lossy()
+                .into_owned();
+            ffi::meridian_eds_camel_free_error(created_uid_ptr);
+            value
+        });
         let error = (!error_message.is_null()).then(|| unsafe {
             let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
             ffi::meridian_eds_camel_free_error(error_message);
@@ -4296,7 +4749,36 @@ fn apply_operation_with_cancellation(
         });
 
         if result == 1 {
-            Ok(())
+            let target_source_uid =
+                resolved_dest_source_uid.unwrap_or_else(|| resolved_source_uid.clone());
+            let result_location = match kind {
+                // MOVE_MESSAGE (3) and ARCHIVE_MESSAGE (4): preserve message_id
+                // and fall back to original UID when provider does not emit UIDPLUS.
+                3 | 4 => {
+                    let target_folder = created_folder
+                        .or(resolved_destination)
+                        .unwrap_or_else(|| resolved_folder_name.clone());
+                    let target_uid = created_uid.unwrap_or(original_message_uid);
+                    Some(MailBackendLocation {
+                        source_uid: target_source_uid,
+                        folder_name: target_folder,
+                        message_uid: target_uid,
+                        message_id: original_message_id,
+                    })
+                }
+                // COPY_MESSAGE (10): only populate RemoveCopy location when
+                // Camel returned the exact copied UID.
+                10 => created_uid.map(|uid| MailBackendLocation {
+                    source_uid: target_source_uid,
+                    folder_name: created_folder
+                        .or(resolved_destination)
+                        .unwrap_or_default(),
+                    message_uid: uid,
+                    message_id: original_message_id,
+                }),
+                _ => None,
+            };
+            Ok(result_location)
         } else if result == 2 {
             let message =
                 error.unwrap_or_else(|| "Server state has changed".to_string());
@@ -4323,6 +4805,160 @@ fn apply_operation_with_cancellation(
     }
 }
 
+/// Append a complete RFC822 message into an arbitrary folder of a remote or
+/// local EDS/Camel or Microsoft Graph account and return its backend location.
+pub(crate) fn append_raw_message_to_folder(
+    source_uid: &str,
+    folder_name: &str,
+    raw_message: &[u8],
+    is_unread: bool,
+    is_flagged: bool,
+    cancelled: Option<Arc<AtomicBool>>,
+) -> Result<Option<MailBackendLocation>, String> {
+    if cancelled
+        .as_ref()
+        .is_some_and(|flag| flag.load(Ordering::Acquire))
+    {
+        return Err("Mail append was cancelled".to_string());
+    }
+    if raw_message.is_empty() {
+        return Err("The RFC822 message is empty".to_string());
+    }
+    let trimmed_folder = folder_name.trim();
+    if trimmed_folder.is_empty() {
+        return Err("Destination folder must not be empty".to_string());
+    }
+
+    let (raw_resolved_uid, resolved_folder) =
+        resolve_shared_mailbox_target(source_uid, trimmed_folder);
+    let resolved_source_uid = strip_eds_source_prefix(&raw_resolved_uid).to_string();
+
+    if let Some(service) = super::exchange_service::graph_service_for_source_worker(source_uid)
+        .or_else(|| {
+            (resolved_source_uid != source_uid)
+                .then(|| super::exchange_service::graph_service_for_source_worker(&resolved_source_uid))
+                .flatten()
+        })
+    {
+        let service = match cancelled {
+            Some(flag) => service.with_cancellation_flag(flag),
+            None => service,
+        };
+        let imported = service
+            .import_raw_message_to_folder_sync(
+                raw_message,
+                &resolved_folder,
+                is_unread,
+                is_flagged,
+            )
+            .map_err(|error| error.to_string())?;
+        return Ok(Some(MailBackendLocation {
+            source_uid: source_uid.to_string(),
+            folder_name: trimmed_folder.to_string(),
+            message_uid: imported.id,
+            message_id: imported.internet_message_id,
+        }));
+    }
+
+    #[cfg(eds_camel_bridge)]
+    {
+        use std::ffi::{CStr, CString, c_char, c_void};
+
+        unsafe extern "C" fn cancellation_callback(user_data: *mut c_void) -> i32 {
+            if user_data.is_null() {
+                return 0;
+            }
+            let cancelled = unsafe { &*(user_data as *const AtomicBool) };
+            cancelled.load(Ordering::Relaxed) as i32
+        }
+
+        let source_uid_c = CString::new(resolved_source_uid.as_str())
+            .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
+        let folder_name_c = CString::new(resolved_folder.as_str())
+            .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())?;
+
+        let mut created_folder_ptr: *mut c_char = std::ptr::null_mut();
+        let mut created_uid_ptr: *mut c_char = std::ptr::null_mut();
+        let mut error_message: *mut c_char = std::ptr::null_mut();
+
+        let cancellation_user_data = cancelled
+            .as_deref()
+            .map_or(std::ptr::null_mut(), |flag| {
+                flag as *const AtomicBool as *mut c_void
+            });
+        let cancellation_cb = cancelled
+            .as_ref()
+            .map(|_| cancellation_callback as ffi::MeridianEdsCamelCancellationCallback);
+
+        let _native_lock = CAMEL_NATIVE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let result = unsafe {
+            ffi::meridian_eds_camel_append_message_to_folder(
+                source_uid_c.as_ptr(),
+                folder_name_c.as_ptr(),
+                raw_message.as_ptr(),
+                raw_message.len(),
+                is_unread as i32,
+                is_flagged as i32,
+                &mut created_folder_ptr,
+                &mut created_uid_ptr,
+                &mut error_message,
+                cancellation_cb,
+                cancellation_user_data,
+            )
+        };
+        let created_folder = (!created_folder_ptr.is_null()).then(|| unsafe {
+            let value = CStr::from_ptr(created_folder_ptr)
+                .to_string_lossy()
+                .into_owned();
+            ffi::meridian_eds_camel_free_error(created_folder_ptr);
+            value
+        });
+        let created_uid = (!created_uid_ptr.is_null()).then(|| unsafe {
+            let value = CStr::from_ptr(created_uid_ptr)
+                .to_string_lossy()
+                .into_owned();
+            ffi::meridian_eds_camel_free_error(created_uid_ptr);
+            value
+        });
+        let error = (!error_message.is_null()).then(|| unsafe {
+            let message = CStr::from_ptr(error_message).to_string_lossy().into_owned();
+            ffi::meridian_eds_camel_free_error(error_message);
+            message
+        });
+
+        if result == 1 {
+            let parsed_message_id = crate::services::mail_store_service::parse_rfc822_bytes(
+                "append-temp",
+                "inbox",
+                raw_message,
+                is_unread,
+            )
+            .and_then(|parsed| parsed.message_id);
+            Ok(created_uid.map(|uid| MailBackendLocation {
+                source_uid: resolved_source_uid,
+                folder_name: created_folder.unwrap_or(resolved_folder),
+                message_uid: uid,
+                message_id: parsed_message_id,
+            }))
+        } else {
+            Err(error.unwrap_or_else(|| "EDS/Camel append failed".to_string()))
+        }
+    }
+
+    #[cfg(not(eds_camel_bridge))]
+    {
+        let _ = (
+            resolved_source_uid,
+            resolved_folder,
+            is_unread,
+            is_flagged,
+            cancelled,
+        );
+        Err("native EDS/Camel adapter is not available in this build".to_string())
+    }
+}
 
 /// Set Evolution's three-state follow-up status for one folder-scoped Camel
 /// message.  The native bridge writes `follow-up`, `completed-on`, and the
@@ -4378,63 +5014,26 @@ fn apply_follow_up_state_with_cancellation_inner(
 }
 
 /// Apply an operation that may need to return backend-created identity data.
-/// Graph copies are special because the copied message receives a new ID;
-/// the command stack uses that ID to make undo delete only the copy.
+/// Both Graph and Camel moves/copies can assign a new message UID in the target
+/// folder; the command stack uses that UID so undo targets the moved/copied item.
 pub(crate) fn apply_operation_with_result(
     operation: CamelMailOperation,
 ) -> Result<Option<MailBackendLocation>, String> {
-    match operation {
-        CamelMailOperation::Copy {
-            location,
-            destination,
-        } => {
-            let Some(service) =
-                super::exchange_service::graph_service_for_source_worker(&location.source_uid)
-            else {
-                return Err(
-                    "EDS/Camel copy is not yet implemented in this backend".to_string(),
-                );
-            };
-            let destination_id = service
-                .resolve_mail_folder_id_sync(&destination)
-                .map_err(|error| error.to_string())?;
-            let copied = service
-                .copy_message_to_folder_sync(&location.message_uid, &destination_id)
-                .map_err(|error| error.to_string())?;
-            Ok(Some(MailBackendLocation {
-                source_uid: location.source_uid,
-                folder_name: destination,
-                message_uid: copied.id,
-                message_id: copied.internet_message_id,
-            }))
-        }
-        CamelMailOperation::RemoveCopy { location } => {
-            let Some(service) =
-                super::exchange_service::graph_service_for_source_worker(&location.source_uid)
-            else {
-                return Err(
-                    "EDS/Camel copy is not yet implemented in this backend".to_string(),
-                );
-            };
-            // This location is created by the successful Copy operation above,
-            // so permanent deletion cannot target the original message.
-            service
-                .delete_message_sync(&location.message_uid)
-                .map_err(|error| error.to_string())?;
-            Ok(None)
-        }
-        operation => apply_operation(operation).map(|()| None),
-    }
+    apply_operation_with_result_and_cancellation(operation, None)
 }
 
-fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), String>> {
+fn apply_graph_operation_with_result(
+    operation: &CamelMailOperation,
+) -> Option<Result<Option<MailBackendLocation>, String>> {
     use super::exchange_service::graph_service_for_source_worker;
     let location = match operation {
         CamelMailOperation::SetMessageState { location, .. }
         | CamelMailOperation::SetFollowUp { location, .. }
         | CamelMailOperation::Delete { location }
         | CamelMailOperation::Move { location, .. }
+        | CamelMailOperation::MoveCrossAccount { location, .. }
         | CamelMailOperation::Copy { location, .. }
+        | CamelMailOperation::CopyCrossAccount { location, .. }
         | CamelMailOperation::RemoveCopy { location }
         | CamelMailOperation::Archive { location }
         | CamelMailOperation::SetJunk { location, .. }
@@ -4444,15 +5043,55 @@ fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), St
         | CamelMailOperation::RestoreArchived { location } => location,
     };
     let service = graph_service_for_source_worker(&location.source_uid)?;
-    if matches!(
-        operation,
-        CamelMailOperation::Copy { .. } | CamelMailOperation::RemoveCopy { .. }
-    ) {
-        return Some(Err(
-            "Graph copy requires the result-returning operation path".to_string(),
-        ));
-    }
-    let result = match operation {
+    match operation {
+        CamelMailOperation::Copy {
+            location,
+            destination,
+        } => {
+            let result = (|| {
+                let destination_id = service
+                    .resolve_mail_folder_id_sync(destination)
+                    .map_err(|error| error.to_string())?;
+                let copied = service
+                    .copy_message_to_folder_sync(&location.message_uid, &destination_id)
+                    .map_err(|error| error.to_string())?;
+                Ok(Some(MailBackendLocation {
+                    source_uid: location.source_uid.clone(),
+                    folder_name: destination.clone(),
+                    message_uid: copied.id,
+                    message_id: copied
+                        .internet_message_id
+                        .or_else(|| location.message_id.clone()),
+                }))
+            })();
+            Some(result)
+        }
+        CamelMailOperation::RemoveCopy { location } => Some(
+            service
+                .delete_message_sync(&location.message_uid)
+                .map(|()| None)
+                .map_err(|error| error.to_string()),
+        ),
+        CamelMailOperation::Move {
+            location,
+            destination,
+        } => Some(
+            service
+                .move_message_to_folder_name_with_result_sync(&location.message_uid, destination)
+                .map(|moved| {
+                    Some(MailBackendLocation {
+                        source_uid: location.source_uid.clone(),
+                        folder_name: destination.clone(),
+                        message_uid: moved
+                            .as_ref()
+                            .map_or_else(|| location.message_uid.clone(), |m| m.id.clone()),
+                        message_id: moved
+                            .and_then(|m| m.internet_message_id)
+                            .or_else(|| location.message_id.clone()),
+                    })
+                })
+                .map_err(|error| error.to_string()),
+        ),
         CamelMailOperation::SetFollowUp {
             location,
             status,
@@ -4463,49 +5102,77 @@ fn apply_graph_operation(operation: &CamelMailOperation) -> Option<Result<(), St
                     "Microsoft Graph does not support follow-up due dates".to_string(),
                 ));
             }
-            service.set_message_follow_up_state_sync(&location.message_uid, *status)
+            Some(
+                service
+                    .set_message_follow_up_state_sync(&location.message_uid, *status)
+                    .map(|()| None)
+                    .map_err(|error| error.to_string()),
+            )
         }
         CamelMailOperation::SetMessageState {
             location,
             is_unread,
             is_flagged: _,
-        } => service.set_message_read_state_sync(&location.message_uid, !is_unread),
+        } => Some(
+            service
+                .set_message_read_state_sync(&location.message_uid, !is_unread)
+                .map(|()| None)
+                .map_err(|error| error.to_string()),
+        ),
         CamelMailOperation::SetImportant {
             location,
             is_important,
-        } => service.set_message_importance_sync(&location.message_uid, *is_important),
+        } => Some(
+            service
+                .set_message_importance_sync(&location.message_uid, *is_important)
+                .map(|()| None)
+                .map_err(|error| error.to_string()),
+        ),
         CamelMailOperation::SetLabel {
             location,
             label,
             labeled,
-        } => service.set_message_label_sync(&location.message_uid, label, *labeled),
-        CamelMailOperation::Move {
-            location,
-            destination,
-        } => service.move_message_to_folder_name_sync(&location.message_uid, destination),
-        CamelMailOperation::Copy { .. } | CamelMailOperation::RemoveCopy { .. } => {
-            unreachable!("copy operations return before the Graph mutation match")
+        } => Some(
+            service
+                .set_message_label_sync(&location.message_uid, label, *labeled)
+                .map(|()| None)
+                .map_err(|error| error.to_string()),
+        ),
+        CamelMailOperation::Archive { location } => Some(
+            service
+                .move_message_to_folder_name_sync(&location.message_uid, "archive")
+                .map(|()| None)
+                .map_err(|error| error.to_string()),
+        ),
+        CamelMailOperation::SetJunk { location, is_junk } => Some(
+            service
+                .set_message_junk_sync(&location.message_uid, &location.folder_name, *is_junk)
+                .map(|()| None)
+                .map_err(|error| error.to_string()),
+        ),
+        CamelMailOperation::Delete { location } => Some(
+            service
+                .move_message_to_folder_name_sync(&location.message_uid, "trash")
+                .map(|()| None)
+                .map_err(|error| error.to_string()),
+        ),
+        CamelMailOperation::RestoreDeleted { location } => Some(
+            service
+                .move_message_to_folder_name_sync(&location.message_uid, &location.folder_name)
+                .map(|()| None)
+                .map_err(|error| error.to_string()),
+        ),
+        CamelMailOperation::RestoreArchived { location } => Some(
+            service
+                .move_message_to_folder_name_sync(&location.message_uid, &location.folder_name)
+                .map(|()| None)
+                .map_err(|error| error.to_string()),
+        ),
+        CamelMailOperation::MoveCrossAccount { .. }
+        | CamelMailOperation::CopyCrossAccount { .. } => {
+            unreachable!("cross-account Graph operations are handled before single-account match")
         }
-        CamelMailOperation::Archive { location } => {
-            service.move_message_to_folder_name_sync(&location.message_uid, "archive")
-        }
-        CamelMailOperation::SetJunk { location, is_junk } => {
-            service.set_message_junk_sync(&location.message_uid, &location.folder_name, *is_junk)
-        }
-        CamelMailOperation::Delete { location } => {
-            // Evolution's normal delete action moves a message to the
-            // Deleted Items folder so undo/restore remains possible.  A
-            // permanent Graph DELETE is intentionally not used here.
-            service.move_message_to_folder_name_sync(&location.message_uid, "trash")
-        }
-        CamelMailOperation::RestoreDeleted { location } => {
-            service.move_message_to_folder_name_sync(&location.message_uid, &location.folder_name)
-        }
-        CamelMailOperation::RestoreArchived { location } => {
-            service.move_message_to_folder_name_sync(&location.message_uid, &location.folder_name)
-        }
-    };
-    Some(result.map_err(|error| error.to_string()))
+    }
 }
 
 /// Send one complete RFC822 message through the transport configured for an
@@ -4526,9 +5193,6 @@ pub(crate) fn send_message_with_cancellation(
     raw_message: &[u8],
     cancelled: Option<Arc<AtomicBool>>,
 ) -> Result<bool, String> {
-    let (resolved_source_uid, _) = resolve_shared_mailbox_target(source_uid, "");
-    let source_uid = resolved_source_uid.as_str();
-
     if cancelled
         .as_ref()
         .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
@@ -4556,7 +5220,29 @@ pub(crate) fn send_message_with_cancellation(
         );
     }
 
-    if let Some(service) = super::exchange_service::graph_service_for_source_worker(source_uid) {
+    let profiles =
+        crate::services::account_config_service::AccountConfigStore::default().load_cached();
+    let cached_folders = CACHED_FOLDER_NAMES_IN_MEMORY
+        .lock()
+        .ok()
+        .map(|names| names.clone())
+        .unwrap_or_default();
+    let (resolved_source_uid, preferred_sent_folder, graph_source_uid) =
+        resolve_eds_send_or_save_target_with_profiles(
+            source_uid,
+            "Sent",
+            &profiles,
+            &cached_folders,
+        );
+
+    let graph_service = super::exchange_service::graph_service_for_source_worker(source_uid)
+        .or_else(|| {
+            graph_source_uid
+                .as_deref()
+                .filter(|candidate| *candidate != source_uid)
+                .and_then(super::exchange_service::graph_service_for_source_worker)
+        });
+    if let Some(service) = graph_service {
         let service = cancelled
             .as_ref()
             .map(|cancelled| service.with_cancellation_flag(cancelled.clone()))
@@ -4569,8 +5255,15 @@ pub(crate) fn send_message_with_cancellation(
     {
         use std::ffi::{CStr, CString, c_char};
 
-        let source_uid = CString::new(source_uid)
+        let source_uid = CString::new(resolved_source_uid.as_str())
             .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
+        let preferred_sent_folder = preferred_sent_folder
+            .as_deref()
+            .map(|folder| {
+                CString::new(folder)
+                    .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())
+            })
+            .transpose()?;
         if raw_message.is_empty() {
             return Err("The RFC822 message is empty".to_string());
         }
@@ -4583,6 +5276,9 @@ pub(crate) fn send_message_with_cancellation(
         let result = unsafe {
             ffi::meridian_eds_camel_send_message(
                 source_uid.as_ptr(),
+                preferred_sent_folder
+                    .as_ref()
+                    .map_or(std::ptr::null(), |folder| folder.as_ptr()),
                 raw_message.as_ptr(),
                 raw_message.len(),
                 &mut sent_message_saved,
@@ -4604,7 +5300,12 @@ pub(crate) fn send_message_with_cancellation(
 
     #[cfg(not(eds_camel_bridge))]
     {
-        let _ = (source_uid, raw_message, cancelled);
+        let _ = (
+            resolved_source_uid,
+            preferred_sent_folder,
+            raw_message,
+            cancelled,
+        );
         Err("native EDS/Camel adapter is not available in this build".to_string())
     }
 }
@@ -4622,7 +5323,33 @@ pub(crate) fn save_message(
     raw_message: &[u8],
     folder: CamelSaveFolder,
 ) -> Result<(), String> {
-    if let Some(service) = super::exchange_service::graph_service_for_source_worker(source_uid) {
+    let folder_hint = match folder {
+        CamelSaveFolder::Drafts => "Drafts",
+        CamelSaveFolder::Sent => "Sent",
+    };
+    let profiles =
+        crate::services::account_config_service::AccountConfigStore::default().load_cached();
+    let cached_folders = CACHED_FOLDER_NAMES_IN_MEMORY
+        .lock()
+        .ok()
+        .map(|names| names.clone())
+        .unwrap_or_default();
+    let (resolved_source_uid, preferred_folder, graph_source_uid) =
+        resolve_eds_send_or_save_target_with_profiles(
+            source_uid,
+            folder_hint,
+            &profiles,
+            &cached_folders,
+        );
+
+    let graph_service = super::exchange_service::graph_service_for_source_worker(source_uid)
+        .or_else(|| {
+            graph_source_uid
+                .as_deref()
+                .filter(|candidate| *candidate != source_uid)
+                .and_then(super::exchange_service::graph_service_for_source_worker)
+        });
+    if let Some(service) = graph_service {
         let save_as_draft = matches!(folder, CamelSaveFolder::Drafts);
         service
             .send_raw_message_sync(raw_message, save_as_draft)
@@ -4633,8 +5360,15 @@ pub(crate) fn save_message(
         {
             use std::ffi::{CStr, CString, c_char};
 
-            let source_uid = CString::new(source_uid)
+            let source_uid = CString::new(resolved_source_uid.as_str())
                 .map_err(|_| "EDS source UID contains an invalid NUL byte".to_string())?;
+            let preferred_folder = preferred_folder
+                .as_deref()
+                .map(|folder| {
+                    CString::new(folder)
+                        .map_err(|_| "EDS folder name contains an invalid NUL byte".to_string())
+                })
+                .transpose()?;
             if raw_message.is_empty() {
                 return Err("The RFC822 message is empty".to_string());
             }
@@ -4649,6 +5383,9 @@ pub(crate) fn save_message(
             let result = unsafe {
                 ffi::meridian_eds_camel_save_message(
                     source_uid.as_ptr(),
+                    preferred_folder
+                        .as_ref()
+                        .map_or(std::ptr::null(), |folder| folder.as_ptr()),
                     raw_message.as_ptr(),
                     raw_message.len(),
                     folder,
@@ -4670,7 +5407,7 @@ pub(crate) fn save_message(
 
         #[cfg(not(eds_camel_bridge))]
         {
-            let _ = (source_uid, raw_message, folder);
+            let _ = (resolved_source_uid, preferred_folder, raw_message, folder);
             Err("native EDS/Camel adapter is not available in this build".to_string())
         }
     }
@@ -4705,4 +5442,123 @@ fn c_strings(pointer: *mut *mut std::ffi::c_char, count: usize) -> Vec<String> {
 
     let pointers = unsafe { std::slice::from_raw_parts(pointer, count) };
     pointers.iter().map(|pointer| c_string(*pointer)).collect()
+}
+
+#[cfg(test)]
+mod shared_mailbox_target_tests {
+    use super::*;
+    use crate::services::account_config_service::{AccountProfile, AccountProtocol};
+
+    fn make_exchange_profile(id: &str, email: &str, display_name: &str) -> AccountProfile {
+        AccountProfile {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            email: email.to_string(),
+            protocol: AccountProtocol::Exchange,
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolves_shared_mailbox_send_and_draft_targets_for_eds_and_local_parents() {
+        let eds_parent =
+            make_exchange_profile("eds:1710000000.1.0@host", "user@example.com", "User");
+        let mut shared_eds =
+            make_exchange_profile("account:dept@example.com", "dept@example.com", "Department");
+        shared_eds.is_shared_mailbox = true;
+        shared_eds.open_mailbox_other_user = true;
+        shared_eds.foreign_mailbox = "dept@example.com".to_string();
+        shared_eds.parent_account_id = Some(eds_parent.id.clone());
+
+        let profiles = vec![eds_parent.clone(), shared_eds.clone()];
+
+        let (send_uid, send_folder, graph_uid) = resolve_eds_send_or_save_target_with_profiles(
+            "account:dept@example.com",
+            "Sent",
+            &profiles,
+            &[],
+        );
+        assert_eq!(send_uid, "1710000000.1.0@host");
+        assert_eq!(
+            send_folder.as_deref(),
+            Some("Foreign Folders/Postfach — dept@example.com/Gesendete Elemente")
+        );
+        assert_eq!(graph_uid.as_deref(), Some("eds:1710000000.1.0@host"));
+
+        let (draft_uid, draft_folder, _) = resolve_eds_send_or_save_target_with_profiles(
+            "account:dept@example.com",
+            "Drafts",
+            &profiles,
+            &[],
+        );
+        assert_eq!(draft_uid, "1710000000.1.0@host");
+        assert_eq!(
+            draft_folder.as_deref(),
+            Some("Foreign Folders/Postfach — dept@example.com/Entwürfe")
+        );
+
+        let local_parent =
+            make_exchange_profile("account:user@example.com", "user@example.com", "User");
+        let mut shared_local = shared_eds;
+        shared_local.parent_account_id = Some(local_parent.id.clone());
+        let local_profiles = vec![local_parent, shared_local];
+
+        let (local_send_uid, local_send_folder, local_graph_uid) =
+            resolve_eds_send_or_save_target_with_profiles(
+                "account:dept@example.com",
+                "Sent",
+                &local_profiles,
+                &[],
+            );
+        assert_eq!(
+            local_send_uid,
+            format!(
+                "{}-mail",
+                crate::services::account_config_service::eds_source_uid_for_email(
+                    "user@example.com"
+                )
+            )
+        );
+        assert_eq!(
+            local_send_folder.as_deref(),
+            Some("Foreign Folders/Postfach — dept@example.com/Gesendete Elemente")
+        );
+        assert_eq!(local_graph_uid.as_deref(), Some("account:user@example.com"));
+    }
+
+    #[test]
+    fn normalizes_prefixed_non_shared_source_uids_without_foreign_folder_override() {
+        let eds_parent =
+            make_exchange_profile("eds:1710000000.1.0@host", "user@example.com", "User");
+        let local_account =
+            make_exchange_profile("account:second@example.com", "second@example.com", "Second");
+        let profiles = vec![eds_parent, local_account];
+
+        let (uid1, folder1, _) = resolve_eds_send_or_save_target_with_profiles(
+            "eds:1710000000.1.0@host",
+            "Sent",
+            &profiles,
+            &[],
+        );
+        assert_eq!(uid1, "1710000000.1.0@host");
+        assert_eq!(folder1, None);
+
+        let (uid2, folder2, _) = resolve_eds_send_or_save_target_with_profiles(
+            "account:second@example.com",
+            "Drafts",
+            &profiles,
+            &[],
+        );
+        assert_eq!(
+            uid2,
+            format!(
+                "{}-mail",
+                crate::services::account_config_service::eds_source_uid_for_email(
+                    "second@example.com"
+                )
+            )
+        );
+        assert_eq!(folder2, None);
+    }
 }

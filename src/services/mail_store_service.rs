@@ -1552,6 +1552,53 @@ Enjoy using Meridian!\r\n";
         messages
     }
 
+    /// Load the exact raw RFC822 bytes of a local message by its local store ID
+    /// (`local:<path>#<index>` or `local:<path>#<index>::copy::<folder>`).
+    pub fn load_raw_local_message_by_id(&self, id: &str) -> Option<Vec<u8>> {
+        let base_id = id.split_once("::copy::").map_or(id, |(base, _)| base);
+        if let Some(rest) = base_id.strip_prefix("local:") {
+            if let Some((path_str, index_str)) = rest.rsplit_once('#') {
+                if let Ok(index) = index_str.parse::<usize>() {
+                    let path = Path::new(path_str);
+                    if let Ok(raw) = fs::read(path) {
+                        return extract_raw_rfc822_from_local_file(&raw, index);
+                    }
+                }
+            }
+        }
+
+        let mut paths = Vec::new();
+        collect_mail_files(&self.mail_dir, &mut paths);
+        paths.sort();
+        for path in paths {
+            let Ok(raw) = fs::read(&path) else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&raw);
+            if looks_like_mbox(&text) {
+                let mut starts = Vec::new();
+                let mut offset = 0usize;
+                for line in text.split_inclusive('\n') {
+                    if line.starts_with("From ") {
+                        starts.push(offset);
+                    }
+                    offset += line.len();
+                }
+                for (index, start) in starts.iter().enumerate() {
+                    if message_id(&path, index) == base_id {
+                        let end = starts.get(index + 1).copied().unwrap_or(text.len());
+                        let record = &text[*start..end];
+                        let message_start = record.find('\n').map(|line_end| line_end + 1)?;
+                        return Some(record[message_start..].as_bytes().to_vec());
+                    }
+                }
+            } else if message_id(&path, 0) == base_id {
+                return Some(raw);
+            }
+        }
+        None
+    }
+
     pub fn persist_message_state(
         &self,
         id: &str,
@@ -2632,6 +2679,29 @@ fn parse_mbox(path: &Path, raw: &str, unread: bool, mail_root: Option<&Path>) ->
 
 fn message_id(path: &Path, index: usize) -> String {
     format!("local:{}#{index}", path.to_string_lossy())
+}
+
+fn extract_raw_rfc822_from_local_file(raw: &[u8], index: usize) -> Option<Vec<u8>> {
+    let text = String::from_utf8_lossy(raw);
+    if looks_like_mbox(&text) {
+        let mut starts = Vec::new();
+        let mut offset = 0usize;
+        for line in text.split_inclusive('\n') {
+            if line.starts_with("From ") {
+                starts.push(offset);
+            }
+            offset += line.len();
+        }
+        let start = *starts.get(index)?;
+        let end = starts.get(index + 1).copied().unwrap_or(text.len());
+        let record = &text[start..end];
+        let message_start = record.find('\n').map(|line_end| line_end + 1)?;
+        Some(record[message_start..].as_bytes().to_vec())
+    } else if index == 0 {
+        Some(raw.to_vec())
+    } else {
+        None
+    }
 }
 
 fn folder_id_for_path_with_root(path: &Path, mail_root: Option<&Path>) -> String {
@@ -6061,6 +6131,42 @@ JVBERi0xLjQK\r\n\
         assert!(local_records
             .iter()
             .any(|m| m.subject == "Local First Invoice" && m.folder_id == "archive"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_raw_local_message_by_id_reads_eml_copy_suffix_and_mbox_records() {
+        let temp_dir = temporary_directory("raw-local-by-id");
+        let mail_dir = temp_dir.join("mail");
+        let store = MailStoreService::with_mail_dir(&mail_dir);
+
+        let eml_bytes = b"From: Sender <sender@example.org>\r\nTo: Receiver <rcpt@example.org>\r\nSubject: Standalone EML\r\nMessage-ID: <eml-1@example.org>\r\n\r\nStandalone body.\r\n";
+        let eml_path = store
+            .save_raw_message_to_folder(eml_bytes, "standalone-1", "local:inbox")
+            .expect("should save eml");
+        let eml_id = message_id(&eml_path, 0);
+        assert_eq!(
+            store.load_raw_local_message_by_id(&eml_id).as_deref(),
+            Some(eml_bytes.as_slice())
+        );
+        let copy_id = format!("{eml_id}::copy::archive");
+        assert_eq!(
+            store.load_raw_local_message_by_id(&copy_id).as_deref(),
+            Some(eml_bytes.as_slice())
+        );
+
+        let mbox_path = mail_dir.join("archive.mbox");
+        let mbox_payload = "From first@example.org Mon Jan  1 00:00:00 2026\nFrom: First <first@example.org>\nSubject: First Mbox\n\nFirst body\nFrom second@example.org Mon Jan  1 00:01:00 2026\nFrom: Second <second@example.org>\nSubject: Second Mbox\n\nSecond body\n";
+        fs::write(&mbox_path, mbox_payload).expect("should write mbox");
+        let second_id = message_id(&mbox_path, 1);
+        let second_raw = store
+            .load_raw_local_message_by_id(&second_id)
+            .expect("should extract second mbox message");
+        assert_eq!(
+            String::from_utf8_lossy(&second_raw),
+            "From: Second <second@example.org>\nSubject: Second Mbox\n\nSecond body\n"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

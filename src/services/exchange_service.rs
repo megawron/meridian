@@ -1873,6 +1873,15 @@ impl ExchangeService {
         self.move_message_sync(message_id, &folder_id)
     }
 
+    pub fn move_message_to_folder_name_with_result_sync(
+        &self,
+        message_id: &str,
+        folder_name: &str,
+    ) -> Result<Option<ExchangeMailMessage>, ExchangeError> {
+        let folder_id = self.resolve_mail_folder_id_sync(folder_name)?;
+        self.move_message_with_result_sync(message_id, &folder_id)
+    }
+
     pub fn resolve_mail_folder_id_sync(&self, folder_name: &str) -> Result<String, ExchangeError> {
         let wanted = folder_name.trim();
         if wanted.is_empty() {
@@ -1901,14 +1910,29 @@ impl ExchangeService {
         message_id: &str,
         destination_folder_id: &str,
     ) -> Result<(), ExchangeError> {
+        let _ = self.move_message_with_result_sync(message_id, destination_folder_id)?;
+        Ok(())
+    }
+
+    pub fn move_message_with_result_sync(
+        &self,
+        message_id: &str,
+        destination_folder_id: &str,
+    ) -> Result<Option<ExchangeMailMessage>, ExchangeError> {
         let message_id = encode_path_segment(message_id)?;
-        let destination_folder_id = encode_path_segment(destination_folder_id)?;
-        self.request_empty(
+        let destination_folder_id = validate_graph_value(destination_folder_id)?;
+        let moved: Option<GraphMessage> = self.request_optional_json(
             Method::POST,
             &format!("me/messages/{message_id}/move"),
             &[],
             Some(serde_json::json!({"destinationId": destination_folder_id})),
-        )
+        )?;
+        match moved {
+            Some(moved) => self
+                .into_public_messages(vec![moved], destination_folder_id)
+                .map(|mut items| items.pop()),
+            None => Ok(None),
+        }
     }
 
     /// Copy one message inside the signed-in mailbox and return the newly
@@ -1974,6 +1998,55 @@ impl ExchangeService {
         let encoded = base64_encode(raw_message);
         self.request_raw_empty(Method::POST, path, encoded.as_bytes())?;
         Ok(!save_as_draft)
+    }
+
+    pub(crate) fn import_raw_message_to_folder_sync(
+        &self,
+        raw_message: &[u8],
+        folder_name: &str,
+        is_unread: bool,
+        is_flagged: bool,
+    ) -> Result<ExchangeMailMessage, ExchangeError> {
+        if raw_message.is_empty() {
+            return Err(ExchangeError::InvalidQuery(
+                "The RFC822 message is empty".to_string(),
+            ));
+        }
+        let destination_folder_id = self.resolve_mail_folder_id_sync(folder_name)?;
+        let encoded = base64_encode(raw_message);
+        let created: GraphMessage =
+            self.request_raw_json(Method::POST, "me/messages", encoded.as_bytes())?;
+        let _ = self.set_message_read_state_sync(&created.id, !is_unread);
+        if is_flagged {
+            let _ = self.set_message_follow_up_state_sync(
+                &created.id,
+                super::mail_metadata_service::MailFollowUpState::FollowUp,
+            );
+        }
+        if created
+            .parent_folder_id
+            .as_deref()
+            .is_some_and(|parent| parent == destination_folder_id)
+        {
+            return self
+                .into_public_messages(vec![created], destination_folder_id)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    ExchangeError::Decode("Graph did not return an imported message".to_string())
+                });
+        }
+        if let Some(moved) =
+            self.move_message_with_result_sync(&created.id, &destination_folder_id)?
+        {
+            return Ok(moved);
+        }
+        self.into_public_messages(vec![created], destination_folder_id)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                ExchangeError::Decode("Graph did not return an imported message".to_string())
+            })
     }
 
     pub fn update_calendar_event_sync(
@@ -2152,6 +2225,80 @@ impl ExchangeService {
             ));
         }
         Ok(())
+    }
+
+    fn request_optional_json<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        params: &[(String, String)],
+        body: Option<serde_json::Value>,
+    ) -> Result<Option<T>, ExchangeError> {
+        let token = self
+            .access_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
+            .ok_or(ExchangeError::MissingAccessToken)?;
+        let url = self.endpoint(path)?;
+        let response = self.request_payload(
+            token,
+            GraphHttpRequest {
+                method,
+                url,
+                params: params.to_vec(),
+                body: body.map(GraphHttpBody::Json),
+                accept: "application/json",
+            },
+        )?;
+        if !response.status.is_success() {
+            return Err(parse_http_error(
+                response.status,
+                &String::from_utf8_lossy(&response.body),
+            ));
+        }
+        if response.body.iter().all(u8::is_ascii_whitespace) {
+            return Ok(None);
+        }
+        serde_json::from_slice(&response.body)
+            .map(Some)
+            .map_err(|error| ExchangeError::Decode(error.to_string()))
+    }
+
+    fn request_raw_json<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: &[u8],
+    ) -> Result<T, ExchangeError> {
+        if body.is_empty() {
+            return Err(ExchangeError::InvalidQuery(
+                "The RFC822 message is empty".to_string(),
+            ));
+        }
+        let token = self
+            .access_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
+            .ok_or(ExchangeError::MissingAccessToken)?;
+        let url = self.endpoint(path)?;
+        let response = self.request_payload(
+            token,
+            GraphHttpRequest {
+                method,
+                url,
+                params: Vec::new(),
+                body: Some(GraphHttpBody::Raw(body.to_vec())),
+                accept: "application/json",
+            },
+        )?;
+        if !response.status.is_success() {
+            return Err(parse_http_error(
+                response.status,
+                &String::from_utf8_lossy(&response.body),
+            ));
+        }
+        serde_json::from_slice(&response.body)
+            .map_err(|error| ExchangeError::Decode(error.to_string()))
     }
 
     fn request_raw_empty(
@@ -4342,5 +4489,42 @@ mod tests {
             graph_recurrence_rule(&recurrence).as_deref(),
             Some("FREQ=MONTHLY;BYMONTHDAY=15;INTERVAL=2;UNTIL=20261231")
         );
+    }
+
+    #[test]
+    fn graph_message_move_and_raw_import_return_destination_message_ids() {
+        let responses = vec![
+            // 1. list_mail_folders_sync -> resolve "Archive"
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"value\":[{\"id\":\"archive-folder-id\",\"displayName\":\"Archive\",\"totalItemCount\":3,\"unreadItemCount\":0}]}".to_string(),
+            // 2. POST me/messages (MIME import)
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"id\":\"draft-temp-id\",\"parentFolderId\":\"drafts-id\",\"internetMessageId\":\"<imported@example.org>\",\"subject\":\"Imported\"}".to_string(),
+            // 3. PATCH me/messages/draft-temp-id (set isRead)
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}".to_string(),
+            // 4. POST me/messages/draft-temp-id/move -> destinationId archive-folder-id
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"id\":\"moved-final-id\",\"parentFolderId\":\"archive-folder-id\",\"internetMessageId\":\"<imported@example.org>\",\"subject\":\"Imported\"}".to_string(),
+        ];
+        let (base_url, requests, handle) = mock_server_sequence(responses);
+        let service = ExchangeService {
+            server_url: base_url,
+            ..ExchangeService::graph("user@example.org", "token")
+        };
+
+        let raw = b"From: Alice <alice@example.org>\r\nTo: User <user@example.org>\r\nSubject: Imported\r\nMessage-ID: <imported@example.org>\r\n\r\nHello Graph!\r\n";
+        let imported = service
+            .import_raw_message_to_folder_sync(raw, "Archive", false, false)
+            .expect("Graph raw import + move should succeed");
+        let captured = requests.recv().expect("requests should be captured");
+        handle.join().expect("mock server should finish");
+
+        assert_eq!(imported.id, "moved-final-id");
+        assert_eq!(imported.folder_id, "archive-folder-id");
+        assert_eq!(
+            imported.internet_message_id.as_deref(),
+            Some("<imported@example.org>")
+        );
+        assert_eq!(captured.len(), 4);
+        assert!(captured[1].contains("POST /v1.0/me/messages"));
+        assert!(captured[3].contains("POST /v1.0/me/messages/draft-temp-id/move"));
+        assert!(captured[3].contains("\"destinationId\":\"archive-folder-id\""));
     }
 }

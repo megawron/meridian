@@ -1479,6 +1479,234 @@ pub(crate) fn list_openpgp_keys() -> Result<Vec<OpenPgpKey>, String> {
     Ok(parse_openpgp_key_listing(&listing))
 }
 
+/// Import raw or ASCII-armored OpenPGP public key bytes into GnuPG.
+pub(crate) fn import_openpgp_key_bytes(key_bytes: &[u8]) -> Result<usize, String> {
+    if key_bytes.is_empty() {
+        return Err("Empty OpenPGP key data".to_string());
+    }
+    let binary = std::env::var_os("MERIDIAN_GPG_BINARY")
+        .or_else(|| std::env::var_os("EVOLUTION_GPG_BINARY"))
+        .unwrap_or_else(|| "gpg".into());
+    let mut child = Command::new(binary)
+        .args(["--batch", "--status-fd=2", "--import"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to launch gpg --import: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(key_bytes);
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed waiting for gpg --import: {e}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let imported = stderr
+        .lines()
+        .filter(|l| l.starts_with("[GNUPG:] IMPORT_OK "))
+        .count();
+    if imported > 0 || output.status.success() {
+        Ok(imported.max(1))
+    } else {
+        Err("GnuPG rejected the OpenPGP key payload".to_string())
+    }
+}
+
+/// Compute z-base-32 SHA-1 hash of the lowercase local-part per OpenPGP WKD specification.
+pub fn wkd_zbase32_hash(local_part: &str) -> String {
+    const ALPHABET: &[u8; 32] = b"ybndrfg8ejkmcpqxot1uwisza345h769";
+    let lower = local_part.trim().to_lowercase();
+    let digest = sha1_digest(lower.as_bytes());
+    // 160 bits = 32 x 5-bit groups
+    let mut out = String::with_capacity(32);
+    let mut buffer: u32 = 0;
+    let mut bits_left: u32 = 0;
+    for byte in digest {
+        buffer = (buffer << 8) | u32::from(byte);
+        bits_left += 8;
+        while bits_left >= 5 {
+            bits_left -= 5;
+            let idx = ((buffer >> bits_left) & 0x1f) as usize;
+            out.push(ALPHABET[idx] as char);
+        }
+    }
+    out
+}
+
+/// Candidate HTTPS URLs for OpenPGP Web Key Directory (Advanced + Direct methods).
+pub fn wkd_candidate_urls(email: &str) -> Option<[String; 2]> {
+    let trimmed = email.trim();
+    let (local, domain) = trimmed.rsplit_once('@')?;
+    let local_clean = local.trim();
+    let domain_clean = domain.trim().to_ascii_lowercase();
+    if local_clean.is_empty() || domain_clean.is_empty() || domain_clean.contains('/') {
+        return None;
+    }
+    let hash = wkd_zbase32_hash(local_clean);
+    let encoded_local: String = local_clean
+        .bytes()
+        .flat_map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                vec![b as char]
+            } else {
+                format!("%{b:02X}").chars().collect()
+            }
+        })
+        .collect();
+    Some([
+        format!(
+            "https://openpgpkey.{domain_clean}/.well-known/openpgpkey/{domain_clean}/hu/{hash}?l={encoded_local}"
+        ),
+        format!(
+            "https://{domain_clean}/.well-known/openpgpkey/hu/{hash}?l={encoded_local}"
+        ),
+    ])
+}
+
+/// Discover and import a recipient's OpenPGP public key via Web Key Directory (WKD)
+/// or keys.openpgp.org HKP fallback. Runs off the GTK main thread.
+pub fn discover_and_import_openpgp_key(email: &str) -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent("Meridian-WKD/1.0")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    if let Some(urls) = wkd_candidate_urls(email) {
+        for url in urls {
+            if let Ok(resp) = client.get(&url).send() {
+                if resp.status().is_success() {
+                    if let Ok(bytes) = resp.bytes() {
+                        if !bytes.is_empty() && import_openpgp_key_bytes(&bytes).is_ok() {
+                            return Ok(format!("Imported OpenPGP key via WKD for {email}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let clean_email = email.trim();
+    let vks_url = format!(
+        "https://keys.openpgp.org/vks/v1/by-email/{}",
+        clean_email.replace('@', "%40")
+    );
+    if let Ok(resp) = client.get(&vks_url).send() {
+        if resp.status().is_success() {
+            if let Ok(bytes) = resp.bytes() {
+                if !bytes.is_empty() && import_openpgp_key_bytes(&bytes).is_ok() {
+                    return Ok(format!(
+                        "Imported OpenPGP key from keys.openpgp.org for {clean_email}"
+                    ));
+                }
+            }
+        }
+    }
+
+    Err(format!("No OpenPGP key found via WKD or keyserver for {clean_email}"))
+}
+
+/// Parse an incoming `Autocrypt:` header (`addr=...; keydata=...`) into raw key bytes.
+pub fn parse_autocrypt_keydata(header_value: &str) -> Option<(String, Vec<u8>)> {
+    let mut addr = String::new();
+    let mut keydata_b64 = String::new();
+    for part in header_value.split(';') {
+        let Some((k, v)) = part.split_once('=') else {
+            continue;
+        };
+        let key = k.trim().to_ascii_lowercase();
+        let val = v.trim();
+        if key == "addr" {
+            addr = val.to_string();
+        } else if key == "keydata" {
+            keydata_b64 = val.chars().filter(|c| !c.is_whitespace()).collect();
+        }
+    }
+    if addr.is_empty() || keydata_b64.is_empty() {
+        return None;
+    }
+    let decoded = decode_base64_payload(keydata_b64.as_bytes()).ok()?;
+    if decoded.is_empty() {
+        return None;
+    }
+    Some((addr, decoded))
+}
+
+/// Extract an inner Protected Header (`Subject:`) from a decrypted Memory-Hole MIME entity
+/// when the outer RFC822 envelope carried a placeholder `Subject: ...` or `Encrypted Message`.
+pub fn extract_protected_subject(decrypted_mime: &[u8]) -> Option<String> {
+    let (headers, _) = parse_mime_entity(decrypted_mime).ok()?;
+    let content_type = headers.get("content-type")?.to_ascii_lowercase();
+    let has_protected = content_type.contains("protected-headers")
+        || headers.contains_key("subject");
+    if !has_protected {
+        return None;
+    }
+    headers
+        .get("subject")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "...")
+}
+
+fn sha1_digest(data: &[u8]) -> [u8; 20] {
+    let mut h0: u32 = 0x67452301;
+    let mut h1: u32 = 0xEFCDAB89;
+    let mut h2: u32 = 0x98BADCFE;
+    let mut h3: u32 = 0x10325476;
+    let mut h4: u32 = 0xC3D2E1F0;
+
+    let bit_len = (data.len() as u64) * 8;
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while (msg.len() % 64) != 56 {
+        msg.push(0x00);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in msg.chunks_exact(64) {
+        let mut w = [0u32; 80];
+        for (i, word) in chunk.chunks_exact(4).enumerate() {
+            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h0, h1, h2, h3, h4);
+        for (i, &wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                _ => (b ^ c ^ d, 0xCA62C1D6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+        h0 = h0.wrapping_add(a);
+        h1 = h1.wrapping_add(b);
+        h2 = h2.wrapping_add(c);
+        h3 = h3.wrapping_add(d);
+        h4 = h4.wrapping_add(e);
+    }
+
+    let mut out = [0u8; 20];
+    out[0..4].copy_from_slice(&h0.to_be_bytes());
+    out[4..8].copy_from_slice(&h1.to_be_bytes());
+    out[8..12].copy_from_slice(&h2.to_be_bytes());
+    out[12..16].copy_from_slice(&h3.to_be_bytes());
+    out[16..20].copy_from_slice(&h4.to_be_bytes());
+    out
+}
+
 fn parse_openpgp_key_listing(listing: &str) -> Vec<OpenPgpKey> {
     let mut keys = Vec::new();
     let mut current: Option<OpenPgpKey> = None;

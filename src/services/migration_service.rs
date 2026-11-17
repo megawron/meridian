@@ -3607,6 +3607,308 @@ fn parse_bool(value: &str) -> bool {
     )
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThunderbirdMigrationReport {
+    pub imported_accounts: usize,
+    pub imported_filters: usize,
+    pub imported_mail_files: usize,
+}
+
+/// Parse Thunderbird's `prefs.js` `user_pref("key", value);` lines into a flat map.
+pub fn parse_thunderbird_prefs_map(prefs_js: &str) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for line in prefs_js.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("user_pref(\"") else {
+            continue;
+        };
+        let Some((key, after_key)) = rest.split_once("\",") else {
+            continue;
+        };
+        let val_part = after_key.trim().trim_end_matches(");").trim();
+        let val = if let Some(inner) = val_part.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+        {
+            inner.replace("\\\"", "\"").replace("\\\\", "\\")
+        } else {
+            val_part.to_string()
+        };
+        map.insert(key.trim().to_string(), val);
+    }
+    map
+}
+
+/// Extract non-secret IMAP/POP3 + SMTP account profiles from a Thunderbird `prefs.js` map.
+pub fn extract_thunderbird_accounts(prefs_js: &str) -> Vec<AccountProfile> {
+    let map = parse_thunderbird_prefs_map(prefs_js);
+    let Some(accounts_csv) = map.get("mail.accountmanager.accounts") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for acc_key in accounts_csv.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let Some(server_key) = map.get(&format!("mail.account.{acc_key}.server")) else {
+            continue;
+        };
+        let server_type = map
+            .get(&format!("mail.server.{server_key}.type"))
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        if server_type == "none" || server_type == "rss" || server_type == "nntp" {
+            continue;
+        }
+        let host = map
+            .get(&format!("mail.server.{server_key}.hostname"))
+            .cloned()
+            .unwrap_or_default();
+        if host.trim().is_empty() {
+            continue;
+        }
+        let username = map
+            .get(&format!("mail.server.{server_key}.userName"))
+            .cloned()
+            .unwrap_or_default();
+        let id_csv = map
+            .get(&format!("mail.account.{acc_key}.identities"))
+            .cloned()
+            .unwrap_or_default();
+        let first_id = id_csv.split(',').map(str::trim).find(|s| !s.is_empty());
+        let email = first_id
+            .and_then(|id| map.get(&format!("mail.identity.{id}.useremail")))
+            .cloned()
+            .unwrap_or_else(|| {
+                if username.contains('@') {
+                    username.clone()
+                } else {
+                    String::new()
+                }
+            });
+        if email.trim().is_empty() {
+            continue;
+        }
+        let full_name = first_id
+            .and_then(|id| map.get(&format!("mail.identity.{id}.fullName")))
+            .cloned()
+            .unwrap_or_else(|| email.clone());
+        let smtp_key = first_id
+            .and_then(|id| map.get(&format!("mail.identity.{id}.smtpServer")))
+            .cloned()
+            .or_else(|| map.get("mail.smtp.defaultserver").cloned())
+            .unwrap_or_default();
+        let smtp_host = map
+            .get(&format!("mail.smtpserver.{smtp_key}.hostname"))
+            .cloned()
+            .unwrap_or_else(|| host.clone());
+        let smtp_port = map
+            .get(&format!("mail.smtpserver.{smtp_key}.port"))
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(587);
+        let imap_port = map
+            .get(&format!("mail.server.{server_key}.port"))
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(if server_type == "pop3" { 995 } else { 993 });
+        let socket_type = map
+            .get(&format!("mail.server.{server_key}.socketType"))
+            .and_then(|s| s.parse::<u8>().ok())
+            .unwrap_or(3);
+        let tls_mode = match socket_type {
+            2 => "starttls".to_string(),
+            0 => "none".to_string(),
+            _ => "tls".to_string(),
+        };
+        let protocol = if server_type == "pop3" {
+            AccountProtocol::Pop3
+        } else {
+            AccountProtocol::ImapSmtp
+        };
+        out.push(AccountProfile {
+            id: format!("tb-{acc_key}"),
+            display_name: full_name,
+            email,
+            protocol,
+            imap_host: host,
+            smtp_host,
+            tls_mode,
+            username,
+            imap_port,
+            smtp_port,
+            enabled: true,
+            ..Default::default()
+        });
+    }
+    out
+}
+
+/// Parse Thunderbird `msgFilterRules.dat` into `MailFilterRule` items.
+pub fn parse_thunderbird_msg_filter_rules(raw: &str) -> Vec<MailFilterRule> {
+    let mut rules = Vec::new();
+    let mut cur_name = String::new();
+    let mut cur_enabled = true;
+    let mut cur_cond = String::new();
+    let mut cur_action = String::new();
+    let mut cur_action_val = String::new();
+
+    let flush = |name: &mut String,
+                 enabled: bool,
+                 cond_raw: &mut String,
+                 act_raw: &mut String,
+                 act_val: &mut String,
+                 out: &mut Vec<MailFilterRule>| {
+        if name.trim().is_empty() {
+            cond_raw.clear();
+            act_raw.clear();
+            act_val.clear();
+            return;
+        }
+        let lower_cond = cond_raw.to_ascii_lowercase();
+        let field = if lower_cond.contains("(from,") {
+            FilterField::Sender
+        } else if lower_cond.contains("(to,") || lower_cond.contains("(to or cc,") {
+            FilterField::Recipient
+        } else if lower_cond.contains("(body,") {
+            FilterField::Body
+        } else {
+            FilterField::Subject
+        };
+        let val = cond_raw
+            .rsplit_once(',')
+            .map(|(_, r)| r.trim_end_matches(')').trim_matches('"').trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "*".to_string());
+        let condition = FilterCondition {
+            field,
+            operator: FilterOperator::Contains,
+            value: val,
+        };
+        let action = match act_raw.as_str() {
+            "Move to folder" if !act_val.is_empty() => {
+                let leaf = act_val.rsplit('/').next().unwrap_or(act_val).to_string();
+                FilterAction::MoveToFolder(leaf)
+            }
+            "Mark read" => FilterAction::MarkRead,
+            "Mark flagged" => FilterAction::SetFlagged,
+            "Delete" => FilterAction::Delete,
+            "JunkScore" => FilterAction::SetJunk,
+            _ => FilterAction::MarkRead,
+        };
+        out.push(MailFilterRule {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: std::mem::take(name),
+            enabled,
+            scope: FilterScope::Incoming,
+            condition: condition.clone(),
+            action: action.clone(),
+            conditions: vec![condition],
+            actions: vec![action],
+            match_all: !lower_cond.starts_with("or "),
+        });
+        cond_raw.clear();
+        act_raw.clear();
+        act_val.clear();
+    };
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("name=") {
+            flush(
+                &mut cur_name,
+                cur_enabled,
+                &mut cur_cond,
+                &mut cur_action,
+                &mut cur_action_val,
+                &mut rules,
+            );
+            cur_name = rest.trim_matches('"').to_string();
+            cur_enabled = true;
+        } else if let Some(rest) = trimmed.strip_prefix("enabled=") {
+            cur_enabled = !rest.trim_matches('"').eq_ignore_ascii_case("no");
+        } else if let Some(rest) = trimmed.strip_prefix("condition=") {
+            cur_cond = rest.trim_matches('"').to_string();
+        } else if let Some(rest) = trimmed.strip_prefix("action=") {
+            if cur_action.is_empty() {
+                cur_action = rest.trim_matches('"').to_string();
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("actionValue=")
+            && cur_action_val.is_empty()
+        {
+            cur_action_val = rest.trim_matches('"').to_string();
+        }
+    }
+    flush(
+        &mut cur_name,
+        cur_enabled,
+        &mut cur_cond,
+        &mut cur_action,
+        &mut cur_action_val,
+        &mut rules,
+    );
+    rules
+}
+
+/// Import accounts, message filters, and local mbox archives from a Thunderbird profile directory.
+pub fn import_thunderbird_profile(profile_dir: &Path) -> io::Result<ThunderbirdMigrationReport> {
+    let mut report = ThunderbirdMigrationReport::default();
+    let prefs_path = profile_dir.join("prefs.js");
+    if let Ok(prefs_raw) = fs::read_to_string(&prefs_path) {
+        let accounts = extract_thunderbird_accounts(&prefs_raw);
+        let store = AccountConfigStore::default();
+        for acc in accounts {
+            if store.upsert(acc).is_ok() {
+                report.imported_accounts += 1;
+            }
+        }
+    }
+
+    // Walk ImapMail/ and Mail/ up to depth 4 for msgFilterRules.dat and mbox files
+    fn walk_tb_mail(dir: &Path, depth: usize, report: &mut ThunderbirdMigrationReport) {
+        if depth > 4 {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk_tb_mail(&path, depth + 1, report);
+                continue;
+            }
+            let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if fname == "msgFilterRules.dat" {
+                if let Ok(raw) = fs::read_to_string(&path) {
+                    let rules = parse_thunderbird_msg_filter_rules(&raw);
+                    let fstore = MailFilterStore::default();
+                    for rule in rules {
+                        if fstore.upsert(rule).is_ok() {
+                            report.imported_filters += 1;
+                        }
+                    }
+                }
+            } else if path.extension().is_none()
+                && !fname.starts_with('.')
+                && let Ok(meta) = entry.metadata()
+                && meta.len() > 0
+                && meta.len() <= 256 * 1024 * 1024
+            {
+                if let Ok(imported) = MailStoreService::new().import_files(&[path])
+                    && imported > 0
+                {
+                    report.imported_mail_files += 1;
+                }
+            }
+        }
+    }
+
+    for sub in ["Mail", "ImapMail"] {
+        let p = profile_dir.join(sub);
+        if p.is_dir() {
+            walk_tb_mail(&p, 0, &mut report);
+        }
+    }
+
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5066,5 +5368,55 @@ Password=must-not-be-retained
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("temporary directory should be created");
         path
+    }
+
+    #[test]
+    fn thunderbird_prefs_and_filter_rules_parse_cleanly() {
+        let sample_prefs = r#"
+user_pref("mail.accountmanager.accounts", "account1,account2");
+user_pref("mail.account.account1.server", "server1");
+user_pref("mail.account.account1.identities", "id1");
+user_pref("mail.server.server1.type", "imap");
+user_pref("mail.server.server1.hostname", "imap.example.org");
+user_pref("mail.server.server1.port", 993);
+user_pref("mail.server.server1.socketType", 3);
+user_pref("mail.server.server1.userName", "alice@example.org");
+user_pref("mail.identity.id1.fullName", "Alice Example");
+user_pref("mail.identity.id1.useremail", "alice@example.org");
+user_pref("mail.identity.id1.smtpServer", "smtp1");
+user_pref("mail.smtpserver.smtp1.hostname", "smtp.example.org");
+user_pref("mail.smtpserver.smtp1.port", 587);
+user_pref("mail.account.account2.server", "server2");
+user_pref("mail.server.server2.type", "none");
+"#;
+        let accounts = extract_thunderbird_accounts(sample_prefs);
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].email, "alice@example.org");
+        assert_eq!(accounts[0].display_name, "Alice Example");
+        assert_eq!(accounts[0].imap_host, "imap.example.org");
+        assert_eq!(accounts[0].smtp_host, "smtp.example.org");
+        assert_eq!(accounts[0].imap_port, 993);
+        assert_eq!(accounts[0].smtp_port, 587);
+
+        let sample_filters = r#"
+version="9"
+logging="no"
+name="Invoices"
+enabled="yes"
+type="17"
+action="Move to folder"
+actionValue="imap://alice@imap.example.org/Finance"
+condition="AND (from,contains,billing@vendor.org)"
+"#;
+        let rules = parse_thunderbird_msg_filter_rules(sample_filters);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "Invoices");
+        assert!(rules[0].enabled);
+        assert_eq!(rules[0].condition.field, FilterField::Sender);
+        assert_eq!(rules[0].condition.value, "billing@vendor.org");
+        assert_eq!(
+            rules[0].action,
+            FilterAction::MoveToFolder("Finance".to_string())
+        );
     }
 }

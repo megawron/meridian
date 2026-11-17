@@ -217,6 +217,18 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("../native/eds_camel_bridge.h").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir
+            .join("../native/eds_camel_folder_copy.h")
+            .display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir
+            .join("../native/eds_camel_message_identity.h")
+            .display()
+    );
     println!("cargo:rerun-if-changed={}", ecal_bridge.display());
     println!(
         "cargo:rerun-if-changed={}",
