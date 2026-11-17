@@ -212,6 +212,13 @@ fn main() {
     emit_link_metadata(&ecal);
     emit_link_metadata(&ebook);
     emit_link_metadata(&ebook_contacts);
+    emit_pkg_config_rerun(&[
+        "camel-1.2",
+        "libedataserver-1.2",
+        "libecal-2.0",
+        "libebook-1.2",
+        "libebook-contacts-1.2",
+    ]);
     println!("cargo:rerun-if-changed={}", bridge.display());
     println!(
         "cargo:rerun-if-changed={}",
@@ -249,6 +256,22 @@ fn main() {
     println!("cargo:rustc-cfg=eds_camel_bridge");
     println!("cargo:rustc-cfg=eds_ecal_bridge");
     println!("cargo:rustc-cfg=eds_ebook_bridge");
+}
+
+fn emit_pkg_config_rerun(packages: &[&str]) {
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR");
+    let pkg_config = env::var_os("PKG_CONFIG").unwrap_or_else(|| "pkg-config".into());
+    for pkg in packages {
+        if let Ok(output) = Command::new(&pkg_config).args(["--path", pkg]).output() {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    println!("cargo:rerun-if-changed={path}");
+                }
+            }
+        }
+    }
 }
 
 fn emit_meridian_version(manifest_dir: &Path) {
