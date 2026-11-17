@@ -267,7 +267,8 @@ pub fn create_shortcuts_window<W: IsA<gtk::Window>>(
         (gettext("Save Draft"), "<Control>s"),
         (gettext("Save as EML"), "<Control><Shift>s"),
         (gettext("New Message"), "<Control>n"),
-        (gettext("Close / Discard"), "<Control>w Escape"),
+        (gettext("Save Draft & Close"), "<Control>w Escape"),
+        (gettext("Discard Draft & Close"), "<Control><Shift>w"),
     ] {
         let shortcut = gtk::ShortcutsShortcut::builder()
             .title(&title)

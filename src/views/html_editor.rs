@@ -1905,6 +1905,25 @@ impl HtmlEditor {
         self.evaluate_or_queue(script);
     }
 
+    /// Replace the editable DOM contents while recording an undo snapshot before
+    /// and after so the user can still revert with Ctrl+Z / the Undo button.
+    pub fn replace_html_preserving_undo(&self, html: &str) {
+        let Ok(encoded) = serde_json::to_string(html) else {
+            return;
+        };
+        let caret_js = "try { const first = document.body.firstElementChild || document.body.firstChild; if (first) { const range = document.createRange(); range.setStart(first, 0); range.collapse(true); const sel = window.getSelection(); if (sel) { sel.removeAllRanges(); sel.addRange(range); } } } catch (e) {}";
+        let script = if self.plain_text_mode() {
+            format!(
+                "window.__meridianUserEdited = true; if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.body.innerHTML = {encoded}; document.body.textContent = document.body.innerText; {caret_js} if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();"
+            )
+        } else {
+            format!(
+                "window.__meridianUserEdited = true; if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); document.body.innerHTML = {encoded}; {caret_js} if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();"
+            )
+        };
+        self.evaluate_or_queue(script);
+    }
+
     /// Replace the editor with literal text, regardless of the current mode.
     pub fn set_text(&self, text: &str) {
         let Ok(encoded) = serde_json::to_string(text) else {
@@ -1933,6 +1952,24 @@ impl HtmlEditor {
             )
         };
         self.evaluate_or_queue(script);
+    }
+
+    /// Push configured snippet trigger words (`trigger -> sanitized_html`) into
+    /// the editor so typing `<trigger>` followed by Space expands inline with Undo support.
+    pub fn set_snippet_triggers(&self, triggers: &[(String, String)]) {
+        let mut map = std::collections::BTreeMap::new();
+        for (trig, html) in triggers {
+            let key = trig.trim();
+            if !key.is_empty() {
+                map.insert(
+                    key.to_string(),
+                    crate::services::html_sanitizer::sanitize_html(html),
+                );
+            }
+        }
+        if let Ok(json_map) = serde_json::to_string(&map) {
+            self.evaluate_or_queue(format!("window.__meridianSnippets = {json_map};"));
+        }
     }
 
     /// Replace an existing signature in the DOM or insert a new one.
@@ -1965,6 +2002,38 @@ impl HtmlEditor {
     }}
     const temp = document.createElement('div');
     temp.innerHTML = {encoded};
+    if (window.__plainTextMode) {{
+        const htmlSigNode = temp.firstElementChild || temp;
+        const plainSigText = typeof window.meridianExtractPlainText === 'function'
+            ? window.meridianExtractPlainText(temp)
+            : (temp.textContent || '');
+        window.__meridianPrePlainSigHtml = htmlSigNode.outerHTML;
+        window.__meridianPrePlainSigText = plainSigText;
+        const plainSig = document.createElement('span');
+        plainSig.id = '_evolution_signature_';
+        plainSig.className = 'evolution-signature';
+        plainSig.textContent = plainSigText;
+        if (el) {{
+            el.replaceWith(plainSig);
+        }} else if ({top_signature}) {{
+            const nlBefore = document.createTextNode('\\n\\n');
+            const nlAfter = document.createTextNode('\\n');
+            const origFirst = document.body.firstChild;
+            document.body.prepend(nlBefore);
+            if (origFirst) {{
+                document.body.insertBefore(plainSig, origFirst);
+                document.body.insertBefore(nlAfter, origFirst);
+            }} else {{
+                document.body.appendChild(plainSig);
+            }}
+        }} else {{
+            if (document.body.textContent && !document.body.textContent.endsWith('\\n')) {{
+                document.body.appendChild(document.createTextNode('\\n'));
+            }}
+            document.body.appendChild(plainSig);
+        }}
+        return;
+    }}
     const newSig = temp.firstElementChild || temp;
     const findQuoteTarget = () => {{
         const attr = document.querySelector('.meridian-quote-attribution');
@@ -2704,6 +2773,82 @@ impl HtmlEditor {
         self.set_spell_checking_languages(&languages);
     }
 
+    pub(crate) fn populate_spellcheck_context_menu(&self, context_menu: &webkit6::ContextMenu) {
+        context_menu.append(&webkit6::ContextMenuItem::new_separator());
+
+        let toggle_action = gio::SimpleAction::new_stateful(
+            "meridian-spellcheck-enabled",
+            None,
+            &self.spell_checking_enabled().to_variant(),
+        );
+        let editor_weak_toggle = self.downgrade();
+        toggle_action.connect_activate(move |action, _| {
+            let Some(editor) = editor_weak_toggle.upgrade() else {
+                return;
+            };
+            let next = !editor.spell_checking_enabled();
+            action.set_state(&next.to_variant());
+            editor.set_spell_checking_enabled(next);
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_composer_inline_spelling(next);
+            }
+        });
+        context_menu.append(&webkit6::ContextMenuItem::from_gaction(
+            &toggle_action,
+            &gettext("Check Spelling While Typing"),
+            None,
+        ));
+
+        let current_langs = self
+            .spell_checking_languages()
+            .into_iter()
+            .map(|l| l.trim().replace('_', "-"))
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut options = discover_spellcheck_language_options();
+        if !current_langs.is_empty() && !options.iter().any(|(code, _)| code == &current_langs) {
+            options.push((current_langs.clone(), current_langs.clone()));
+        }
+
+        let lang_action = gio::SimpleAction::new_stateful(
+            "meridian-spellcheck-language",
+            Some(glib::VariantTy::STRING),
+            &current_langs.to_variant(),
+        );
+        let editor_weak_lang = self.downgrade();
+        lang_action.connect_activate(move |action, param| {
+            let Some(code) = param.and_then(|v| v.str()) else {
+                return;
+            };
+            action.set_state(&code.to_variant());
+            if let Some(editor) = editor_weak_lang.upgrade() {
+                let langs: Vec<&str> = code
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                editor.set_spell_checking_languages(&langs);
+                if let Some(settings) = AppSettings::try_new() {
+                    settings.set_spellcheck_languages(code);
+                }
+            }
+        });
+
+        let submenu = webkit6::ContextMenu::new();
+        for (code, label) in options {
+            submenu.append(&webkit6::ContextMenuItem::from_gaction(
+                &lang_action,
+                &label,
+                Some(&code.to_variant()),
+            ));
+        }
+        context_menu.append(&webkit6::ContextMenuItem::with_submenu(
+            &gettext("Spelling Language"),
+            &submenu,
+        ));
+    }
+
     pub fn plain_text_mode(&self) -> bool {
         self.imp().plain_text_mode.get()
     }
@@ -2738,16 +2883,83 @@ impl HtmlEditor {
             }
         }
         let script = if plain_text {
-            "document.body.textContent = document.body.innerText; document.body.style.whiteSpace = 'pre-wrap';"
-                .to_string()
+            concat!(
+                "(function() {",
+                "window.__meridianPrePlainHtml = document.body.innerHTML;",
+                "const sigEl = document.getElementById('_evolution_signature_') || document.querySelector('.evolution-signature');",
+                "let sigPlain = null;",
+                "window.__meridianPrePlainSigHtml = sigEl ? sigEl.outerHTML : null;",
+                "if (sigEl && sigEl.parentNode) {",
+                "  sigPlain = typeof window.meridianExtractPlainText === 'function' ? window.meridianExtractPlainText(sigEl) : (sigEl.textContent || '');",
+                "  sigEl.parentNode.replaceChild(document.createTextNode('\\uE000SIG\\uE000'), sigEl);",
+                "}",
+                "window.__meridianPrePlainSigText = sigPlain;",
+                "const fullPlain = typeof window.meridianExtractPlainText === 'function' ? window.meridianExtractPlainText(document.body) : document.body.innerText;",
+                "document.body.innerHTML = '';",
+                "document.body.style.whiteSpace = 'pre-wrap';",
+                "const token = '\\uE000SIG\\uE000';",
+                "const idx = sigPlain !== null ? fullPlain.indexOf(token) : -1;",
+                "if (idx >= 0) {",
+                "  const before = fullPlain.slice(0, idx);",
+                "  const after = fullPlain.slice(idx + token.length);",
+                "  if (before.length > 0) document.body.appendChild(document.createTextNode(before));",
+                "  const span = document.createElement('span');",
+                "  span.id = '_evolution_signature_';",
+                "  span.className = 'evolution-signature';",
+                "  span.textContent = sigPlain;",
+                "  document.body.appendChild(span);",
+                "  if (after.length > 0) document.body.appendChild(document.createTextNode(after));",
+                "} else {",
+                "  document.body.textContent = fullPlain;",
+                "}",
+                "window.__meridianPrePlainText = typeof window.meridianExtractPlainText === 'function' ? window.meridianExtractPlainText(document.body) : (document.body.textContent || '');",
+                "})()"
+            )
+            .to_string()
         } else {
             concat!(
-                "const text = document.body.innerText;",
-                "document.body.innerHTML = '';",
-                "const lines = text.split(/\\n/);",
-                "for (const line of lines) { const p = document.createElement('p'); ",
-                "p.textContent = line || '\\u00a0'; document.body.appendChild(p); }",
-                "document.body.style.whiteSpace = 'normal';"
+                "(function() {",
+                "const extract = (el) => typeof window.meridianExtractPlainText === 'function' ? window.meridianExtractPlainText(el) : (el.innerText || '');",
+                "const curPlain = extract(document.body);",
+                "if (typeof window.__meridianPrePlainHtml === 'string' && typeof window.__meridianPrePlainText === 'string' && curPlain === window.__meridianPrePlainText) {",
+                "  document.body.innerHTML = window.__meridianPrePlainHtml;",
+                "} else {",
+                "  const sigEl = document.getElementById('_evolution_signature_') || document.querySelector('.evolution-signature');",
+                "  const canRestoreSig = !!(sigEl && sigEl.parentNode && typeof window.__meridianPrePlainSigHtml === 'string' && typeof window.__meridianPrePlainSigText === 'string' && extract(sigEl) === window.__meridianPrePlainSigText);",
+                "  const token = '\\uE000SIG\\uE000';",
+                "  if (canRestoreSig) {",
+                "    sigEl.parentNode.replaceChild(document.createTextNode(token), sigEl);",
+                "  }",
+                "  const text = extract(document.body);",
+                "  document.body.innerHTML = '';",
+                "  const appendTextLines = (chunk) => {",
+                "    const lines = chunk.split(/\\n/);",
+                "    for (const line of lines) {",
+                "      const p = document.createElement('p');",
+                "      if (line.length === 0) { p.innerHTML = '<br>'; } else { p.textContent = line; }",
+                "      document.body.appendChild(p);",
+                "    }",
+                "  };",
+                "  const idx = canRestoreSig ? text.indexOf(token) : -1;",
+                "  if (idx >= 0) {",
+                "    const before = text.slice(0, idx).replace(/\\n+$/, '');",
+                "    const after = text.slice(idx + token.length).replace(/^\\n+/, '');",
+                "    if (before.length > 0) appendTextLines(before);",
+                "    const sigHolder = document.createElement('div');",
+                "    sigHolder.innerHTML = window.__meridianPrePlainSigHtml;",
+                "    while (sigHolder.firstChild) { document.body.appendChild(sigHolder.firstChild); }",
+                "    if (after.length > 0) appendTextLines(after);",
+                "  } else {",
+                "    appendTextLines(text);",
+                "  }",
+                "}",
+                "document.body.style.whiteSpace = 'normal';",
+                "window.__meridianPrePlainHtml = null;",
+                "window.__meridianPrePlainText = null;",
+                "window.__meridianPrePlainSigHtml = null;",
+                "window.__meridianPrePlainSigText = null;",
+                "if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "})()"
             )
             .to_string()
         };
@@ -4018,9 +4230,13 @@ impl HtmlEditor {
         web_view.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
         set_accessible_label(&web_view, &gettext("Email message body"));
 
-        web_view.connect_context_menu(|_, _, hit_test_result| {
+        let editor_weak_ctx = self.downgrade();
+        web_view.connect_context_menu(move |_, context_menu, hit_test_result| {
             if hit_test_result.context_is_image() {
                 return true;
+            }
+            if let Some(editor) = editor_weak_ctx.upgrade() {
+                editor.populate_spellcheck_context_menu(context_menu);
             }
             false
         });
@@ -4827,10 +5043,19 @@ impl HtmlEditor {
                 "function meridianExtractPlainText(root) {{",
                 "    const blocks = new Set(['P', 'DIV', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'BLOCKQUOTE', 'TR']);",
                 "    let out = '';",
-                "    const walk = function(node) {{",
+                "    const walk = function(node, preserveWs) {{",
                 "        if (!node) return;",
                 "        if (node.nodeType === 3) {{",
-                "            out += node.nodeValue;",
+                "            let val = node.nodeValue || '';",
+                "            if (!preserveWs) {{",
+                "                const prev = node.previousSibling;",
+                "                const next = node.nextSibling;",
+                "                if (/^[ \\t]*[\\r\\n][ \\t\\r\\n]*$/.test(val) && ((prev && prev.nodeType === 1) || (next && next.nodeType === 1))) {{",
+                "                    return;",
+                "                }}",
+                "                val = val.replace(/\\r?\\n+/g, ' ');",
+                "            }}",
+                "            out += val;",
                 "            return;",
                 "        }}",
                 "        if (node.nodeType !== 1) return;",
@@ -4844,14 +5069,16 @@ impl HtmlEditor {
                 "        if (isBlock && out.length > 0 && !out.endsWith('\\n')) {{",
                 "            out += '\\n';",
                 "        }}",
+                "        const childPreserve = preserveWs || tag === 'PRE' || (node.style && node.style.whiteSpace === 'pre-wrap');",
                 "        for (let i = 0; i < node.childNodes.length; i++) {{",
-                "            walk(node.childNodes[i]);",
+                "            walk(node.childNodes[i], childPreserve);",
                 "        }}",
                 "        if (isBlock && !out.endsWith('\\n')) {{",
                 "            out += '\\n';",
                 "        }}",
                 "    }};",
-                "    walk(root);",
+                "    const rootPreserve = Boolean(root && root.style && root.style.whiteSpace === 'pre-wrap');",
+                "    walk(root, rootPreserve);",
                 "    return out.replace(/\\u00a0/g, ' ').replace(/\\n+$/, '');",
                 "}};",
                 "window.meridianExtractPlainText = meridianExtractPlainText;",
@@ -5657,6 +5884,26 @@ impl HtmlEditor {
                 "                const parentEl = node.nodeType === 1 ? node : node.parentElement;",
                 "                if (parentEl && !parentEl.closest('pre, code')) {{",
                 "                    if (e.data === ' ' && node.nodeType === 3) {{",
+                "                        if (window.__meridianSnippets && typeof window.__meridianSnippets === 'object') {{",
+                "                            const txtBefore = (node.nodeValue || '').slice(0, r.startOffset);",
+                "                            const mSnip = txtBefore.match(/(?:^|\\s)(\\S+)$/);",
+                "                            if (mSnip && Object.prototype.hasOwnProperty.call(window.__meridianSnippets, mSnip[1])) {{",
+                "                                const trigWord = mSnip[1];",
+                "                                const snipHtml = window.__meridianSnippets[trigWord];",
+                "                                e.preventDefault();",
+                "                                window.meridianRecordUndoSnapshot(true);",
+                "                                const trRange = document.createRange();",
+                "                                trRange.setStart(node, r.startOffset - trigWord.length);",
+                "                                trRange.setEnd(node, r.startOffset);",
+                "                                sel.removeAllRanges();",
+                "                                sel.addRange(trRange);",
+                "                                document.execCommand('insertHTML', false, snipHtml + ' ');",
+                "                                window.meridianRecordUndoSnapshot(true);",
+                "                                if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged();",
+                "                                if (typeof window.notifyMeridianSelectionState === 'function') window.notifyMeridianSelectionState();",
+                "                                return;",
+                "                            }}",
+                "                        }}",
                 "                        const block = parentEl.closest('p, div, h1, h2, h3, li') || document.body;",
                 "                        const preRange = document.createRange();",
                 "                        preRange.selectNodeContents(block);",
@@ -7254,6 +7501,55 @@ pub fn parse_image_data_uri_or_path(src: &str, alt: &str) -> Option<(Vec<u8>, St
     }
 }
 
+pub(crate) fn discover_spellcheck_language_options() -> Vec<(String, String)> {
+    let mut options: Vec<(String, String)> = vec![
+        (String::new(), gettext("System Default")),
+        ("de-DE".to_string(), gettext("German")),
+        ("en-US".to_string(), gettext("English")),
+        ("de-DE,en-US".to_string(), gettext("German & English")),
+    ];
+    let mut extra_codes = std::collections::BTreeSet::new();
+    for dir in ["/usr/share/hunspell", "/usr/share/myspell"] {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("dic") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        let normalized = stem.replace('_', "-");
+                        if !matches!(normalized.as_str(), "de-DE" | "en-US" | "de" | "en") {
+                            extra_codes.insert(normalized);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for code in extra_codes {
+        let lang_prefix = code.split('-').next().unwrap_or(&code);
+        let label = match lang_prefix {
+            "de" => format!("{} ({code})", gettext("German")),
+            "en" => format!("{} ({code})", gettext("English")),
+            "fr" => format!("{} ({code})", gettext("French")),
+            "es" => format!("{} ({code})", gettext("Spanish")),
+            "it" => format!("{} ({code})", gettext("Italian")),
+            "pt" => format!("{} ({code})", gettext("Portuguese")),
+            "nl" => format!("{} ({code})", gettext("Dutch")),
+            "pl" => format!("{} ({code})", gettext("Polish")),
+            "ru" => format!("{} ({code})", gettext("Russian")),
+            "tr" => format!("{} ({code})", gettext("Turkish")),
+            "sv" => format!("{} ({code})", gettext("Swedish")),
+            "da" => format!("{} ({code})", gettext("Danish")),
+            "nb" | "nn" | "no" => format!("{} ({code})", gettext("Norwegian")),
+            "fi" => format!("{} ({code})", gettext("Finnish")),
+            "cs" => format!("{} ({code})", gettext("Czech")),
+            "uk" => format!("{} ({code})", gettext("Ukrainian")),
+            _ => code.clone(),
+        };
+        options.push((code, label));
+    }
+    options
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7675,6 +7971,32 @@ mod tests {
                 expected_idx
             );
         }
+    }
+
+    #[test]
+    fn test_plain_text_toggle_round_trip_snapshots_and_spellcheck_options() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let opts = discover_spellcheck_language_options();
+        assert!(opts.iter().any(|(code, _)| code.is_empty()));
+        assert!(opts.iter().any(|(code, _)| code == "de-DE"));
+        assert!(opts.iter().any(|(code, _)| code == "en-US"));
+
+        let editor = HtmlEditor::new();
+        editor.imp().pending_scripts.borrow_mut().clear();
+
+        editor.set_plain_text_mode(true);
+        editor.set_plain_text_mode(false);
+
+        let scripts = editor.imp().pending_scripts.borrow().clone();
+        assert!(scripts.iter().any(|s| s.contains("__meridianPrePlainHtml")));
+        assert!(scripts.iter().any(|s| s.contains("__meridianPrePlainSigHtml")));
+        assert!(scripts.iter().any(|s| s.contains("canRestoreSig")));
     }
 }
 

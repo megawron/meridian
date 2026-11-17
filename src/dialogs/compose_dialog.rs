@@ -62,6 +62,313 @@ pub struct SignatureChoice {
     pub html: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ComposerTemplateSource {
+    Template(String),
+    Draft(String),
+    Snippet(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ComposerTemplateItem {
+    source: ComposerTemplateSource,
+    title: String,
+    subtitle: Option<String>,
+    subject: String,
+    body_html: String,
+    insert_at_cursor: bool,
+    trigger: String,
+}
+
+fn contains_template_variable(text: &str) -> bool {
+    text.split("{{")
+        .skip(1)
+        .any(|rest| rest.find("}}").is_some_and(|idx| !rest[..idx].trim().is_empty()))
+}
+
+fn draft_has_template_variables(draft: &DraftMessage) -> bool {
+    contains_template_variable(&draft.subject) || contains_template_variable(&draft.html_body)
+}
+
+fn template_body_preview_text(raw_html: &str) -> String {
+    let without_sig = strip_evolution_signature_html(raw_html);
+    let mut text = String::with_capacity(without_sig.len());
+    // Track (had_nested_block, had_content) for nested <div>/<p>/<li> blocks so
+    // wrapper tags like <div><p>Hi</p></div> or <p>Hi<br></p> never double-emit \n.
+    let mut block_stack: Vec<(bool, bool)> = Vec::new();
+    let mut rest = without_sig.as_str();
+
+    while let Some(lt) = rest.find('<') {
+        let chunk = &rest[..lt];
+        if !chunk.is_empty() {
+            text.push_str(chunk);
+            if chunk.chars().any(|c| !c.is_whitespace()) {
+                if let Some(top) = block_stack.last_mut() {
+                    top.1 = true;
+                }
+            }
+        }
+        let after_lt = &rest[lt + 1..];
+        if let Some(gt) = after_lt.find('>') {
+            let tag = after_lt[..gt].trim().to_ascii_lowercase();
+            let is_closing = tag.starts_with('/');
+            let tag_name = tag
+                .trim_start_matches('/')
+                .split(|c: char| c.is_whitespace() || c == '/')
+                .next()
+                .unwrap_or("");
+            let is_block = matches!(
+                tag_name,
+                "p" | "div" | "li" | "tr" | "blockquote" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
+            );
+
+            if tag_name == "br" && !is_closing {
+                let tail = after_lt[gt + 1..].trim_start();
+                let before_block_end = tail.starts_with("</p>")
+                    || tail.starts_with("</div>")
+                    || tail.starts_with("</li>");
+                if !before_block_end {
+                    text.push('\n');
+                    if let Some(top) = block_stack.last_mut() {
+                        top.1 = true;
+                    }
+                }
+            } else if is_block && !is_closing {
+                if let Some(parent) = block_stack.last_mut() {
+                    parent.0 = true;
+                }
+                block_stack.push((false, false));
+                if tag_name == "li" {
+                    text.push_str("• ");
+                }
+            } else if is_block && is_closing {
+                if let Some((had_child_block, _)) = block_stack.pop() {
+                    if !had_child_block {
+                        text.push('\n');
+                    }
+                } else {
+                    text.push('\n');
+                }
+            } else if tag_name == "img" && !is_closing {
+                if let Some(top) = block_stack.last_mut() {
+                    top.1 = true;
+                }
+            }
+            rest = &after_lt[gt + 1..];
+        } else {
+            text.push('<');
+            rest = after_lt;
+        }
+    }
+    text.push_str(rest);
+
+    let decoded = text
+        .replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'");
+
+    let mut lines: Vec<String> = decoded
+        .lines()
+        .map(|l| l.trim().to_string())
+        .collect();
+    while lines.first().is_some_and(|l| l.is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    let mut collapsed = Vec::with_capacity(lines.len());
+    let mut blank_run = 0usize;
+    for line in lines {
+        if line.is_empty() {
+            blank_run += 1;
+            if blank_run <= 1 {
+                collapsed.push(String::new());
+            }
+        } else {
+            blank_run = 0;
+            collapsed.push(line);
+        }
+    }
+    collapsed.join("\n")
+}
+
+fn collect_template_items_from_sources(
+    templates: &[MailTemplate],
+    drafts: &[DraftMessage],
+    snippets: &[MailSnippet],
+    current_draft_id: Option<&str>,
+) -> Vec<ComposerTemplateItem> {
+    let mut items = Vec::new();
+    let mut seen_signatures: std::collections::HashSet<(String, String, bool)> =
+        std::collections::HashSet::new();
+
+    for template in templates {
+        let subj_key = template.subject.trim().to_lowercase();
+        let body_key = template_body_preview_text(&template.body_html).to_lowercase();
+        if subj_key.is_empty() && body_key.is_empty() {
+            continue;
+        }
+        if !seen_signatures.insert((subj_key, body_key, false)) {
+            continue;
+        }
+        let title = if template.name.trim().is_empty() {
+            if template.subject.trim().is_empty() {
+                gettext("Untitled template")
+            } else {
+                template.subject.clone()
+            }
+        } else {
+            template.name.clone()
+        };
+        let subtitle = (!template.subject.trim().is_empty() && template.subject.trim() != title.trim())
+            .then(|| template.subject.clone());
+        items.push(ComposerTemplateItem {
+            source: ComposerTemplateSource::Template(template.id.clone()),
+            title,
+            subtitle,
+            subject: template.subject.clone(),
+            body_html: template.body_html.clone(),
+            insert_at_cursor: false,
+            trigger: String::new(),
+        });
+    }
+
+    for draft in drafts {
+        if current_draft_id.is_some_and(|id| !id.is_empty() && id == draft.id) {
+            continue;
+        }
+        if !draft_has_template_variables(draft) {
+            continue;
+        }
+        let subj_key = draft.subject.trim().to_lowercase();
+        let body_key = template_body_preview_text(&draft.html_body).to_lowercase();
+        if !seen_signatures.insert((subj_key, body_key, false)) {
+            continue;
+        }
+        let custom_name = draft
+            .smime_options
+            .as_ref()
+            .and_then(|o| o.template_name.as_ref())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let title = custom_name.clone().unwrap_or_else(|| {
+            if draft.subject.trim().is_empty() {
+                gettext("Untitled template")
+            } else {
+                draft.subject.clone()
+            }
+        });
+        let subtitle = custom_name.and_then(|name| {
+            (!draft.subject.trim().is_empty() && draft.subject.trim() != name.trim())
+                .then(|| draft.subject.clone())
+        });
+        items.push(ComposerTemplateItem {
+            source: ComposerTemplateSource::Draft(draft.id.clone()),
+            title,
+            subtitle,
+            subject: draft.subject.clone(),
+            body_html: draft.html_body.clone(),
+            insert_at_cursor: false,
+            trigger: String::new(),
+        });
+    }
+
+    for snippet in snippets {
+        let body_key = template_body_preview_text(&snippet.body_html).to_lowercase();
+        if !seen_signatures.insert((snippet.name.trim().to_lowercase(), body_key, true)) {
+            continue;
+        }
+        let trigger = snippet.trigger.trim().to_string();
+        items.push(ComposerTemplateItem {
+            source: ComposerTemplateSource::Snippet(snippet.id.clone()),
+            title: snippet.name.clone(),
+            subtitle: (!trigger.is_empty()).then(|| trigger.clone()),
+            subject: String::new(),
+            body_html: snippet.body_html.clone(),
+            insert_at_cursor: true,
+            trigger,
+        });
+    }
+
+    items
+}
+
+fn rename_template_item_in_store(source: &ComposerTemplateSource, new_name: &str) -> std::io::Result<()> {
+    let trimmed = new_name.trim();
+    match source {
+        ComposerTemplateSource::Template(id) => {
+            if trimmed.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Template name cannot be empty",
+                ));
+            }
+            let store = TemplateStore::default();
+            if let Some(mut tpl) = store.load().into_iter().find(|t| &t.id == id) {
+                tpl.name = trimmed.to_string();
+                store.upsert(tpl)?;
+            }
+            Ok(())
+        }
+        ComposerTemplateSource::Draft(id) => {
+            let store = DraftStoreService::default();
+            let _ = store.set_draft_template_name(
+                id,
+                (!trimmed.is_empty()).then(|| trimmed.to_string()),
+            )?;
+            Ok(())
+        }
+        ComposerTemplateSource::Snippet(id) => {
+            if trimmed.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Snippet name cannot be empty",
+                ));
+            }
+            let store = SnippetStore::default();
+            if let Some(mut snp) = store.load().into_iter().find(|s| &s.id == id) {
+                snp.name = trimmed.to_string();
+                store.upsert(snp)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn fit_attachment_chip_count(
+    widths: &[i32],
+    available_px: i32,
+    chip_gap: i32,
+    overflow_pill_px: i32,
+) -> usize {
+    if widths.is_empty() {
+        return 0;
+    }
+    let n = widths.len();
+    let total_w: i32 = widths.iter().sum::<i32>() + ((n as i32 - 1).max(0) * chip_gap);
+    if total_w <= available_px {
+        return n;
+    }
+    let mut used = 0i32;
+    let mut fit = 0usize;
+    for (idx, &w) in widths.iter().enumerate() {
+        let next_used = if idx == 0 { w } else { used + chip_gap + w };
+        if next_used + chip_gap + overflow_pill_px <= available_px {
+            used = next_used;
+            fit = idx + 1;
+        } else {
+            break;
+        }
+    }
+    fit
+}
+
 #[derive(Debug, Clone, Default)]
 struct ComposeIdentity {
     source_uid: String,
@@ -95,6 +402,7 @@ impl Default for ComposeOperation {
 #[derive(Debug)]
 enum SendWorkerEvent {
     DraftSaved(DraftMessage),
+    UndoCountdown(u32),
     TransportStarted,
     Cancelled,
     Finished(Result<SendCompletion, String>),
@@ -119,6 +427,7 @@ const COMPOSER_ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ("save-as-eml", "<Control><Shift>s"),
     ("close", "<Control>w"),
     ("close", "Escape"),
+    ("discard", "<Control><Shift>w"),
     ("new-message", "<Control>n"),
     ("attach", "<Control>m"),
     ("toggle-format-toolbar", "<Control><Shift>f"),
@@ -131,6 +440,7 @@ const COMPOSER_ACTION_SHORTCUTS: &[(&str, &str)] = &[
 
 const COMPOSER_OPERATION_ACTIONS: &[&str] = &[
     "send",
+    "schedule-send",
     "save-draft",
     "discard",
     "save-as-eml",
@@ -195,6 +505,7 @@ mod imp {
         pub calendar_component: RefCell<Option<String>>,
         pub html_editor: RefCell<Option<crate::views::HtmlEditor>>,
         pub format_button: RefCell<Option<gtk::ToggleButton>>,
+        pub template_menu_button: RefCell<Option<gtk::MenuButton>>,
         pub plain_text_button: RefCell<Option<gtk::ToggleButton>>,
         pub request_read_receipt_button: RefCell<Option<gtk::ToggleButton>>,
         pub priority_button: RefCell<Option<gtk::ToggleButton>>,
@@ -220,6 +531,9 @@ mod imp {
         pub attachment_bar_chip_box: RefCell<Option<gtk::Box>>,
         pub attachment_bar_separator: RefCell<Option<gtk::Separator>>,
         pub attachment_bar_add_btn: RefCell<Option<gtk::Button>>,
+        pub attachment_right_actions: RefCell<Option<gtk::Box>>,
+        pub last_allocated_width: Cell<i32>,
+        pub last_applied_template_subject: RefCell<Option<String>>,
         pub attachment_detail_revealer: RefCell<Option<gtk::Revealer>>,
         pub attachment_sheet_handle_btn: RefCell<Option<gtk::Button>>,
         pub attachment_scrolled: RefCell<Option<gtk::ScrolledWindow>>,
@@ -277,6 +591,7 @@ mod imp {
         pub on_send_success: RefCell<Option<Box<dyn Fn() + 'static>>>,
         pub btn_open_in_new_window: RefCell<Option<gtk::Button>>,
         pub btn_attach: RefCell<Option<gtk::Button>>,
+        pub composer_ext_box: RefCell<Option<gtk::Box>>,
         pub is_modal: Cell<bool>,
         pub stored_parent: RefCell<Option<gtk::Widget>>,
     }
@@ -322,7 +637,19 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for ComposeDialog {}
+    impl WidgetImpl for ComposeDialog {
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            self.parent_size_allocate(width, height, baseline);
+            if width > 0 && self.last_allocated_width.replace(width) != width {
+                let dialog_weak = self.obj().downgrade();
+                glib::idle_add_local_once(move || {
+                    if let Some(dialog) = dialog_weak.upgrade() {
+                        dialog.update_attachment_bar_chips();
+                    }
+                });
+            }
+        }
+    }
     impl AdwDialogImpl for ComposeDialog {}
 }
 
@@ -540,6 +867,13 @@ impl ComposeDialog {
         let charset = self.imp().charset.borrow().clone();
         let pgp_key = self.pgp_key_for_message();
         let smime_options = self.smime_options_for_message();
+        let template_name = self
+            .imp()
+            .persisted_draft
+            .borrow()
+            .as_ref()
+            .and_then(|d| d.smime_options.as_ref())
+            .and_then(|o| o.template_name.clone());
 
         DraftMessage {
             id: draft_id,
@@ -564,6 +898,7 @@ impl ComposeDialog {
                 priority,
                 charset,
                 smime: smime_options,
+                template_name,
             }),
         }
     }
@@ -703,6 +1038,11 @@ impl ComposeDialog {
                 original_html,
                 style,
             ));
+        }
+        if let Some((matched_uid, matched_from)) =
+            resolve_reply_alias_identity(&[original_to, original_cc])
+        {
+            dialog.set_requested_account(Some(matched_uid), Some(matched_from));
         }
         dialog.prepare_focus_for_reply();
         dialog.mark_saved();
@@ -968,6 +1308,11 @@ impl ComposeDialog {
             dialog.set_row_cc_visible(true);
         }
         dialog.set_title(&format!("Reply to All: {subject}"));
+        if let Some((matched_uid, matched_from)) =
+            resolve_reply_alias_identity(&[original_to, original_cc])
+        {
+            dialog.set_requested_account(Some(matched_uid), Some(matched_from));
+        }
         dialog.prepare_focus_for_reply();
         dialog.mark_saved();
         dialog
@@ -1103,7 +1448,7 @@ impl ComposeDialog {
 
         let btn_close = gtk::Button::builder()
             .label(gettext("Close"))
-            .tooltip_text(gettext("Close and save draft (Ctrl+W)"))
+            .tooltip_text(gettext("Close (Ctrl+W to save & close, Ctrl+Shift+W to discard)"))
             .css_classes(["composer-close-btn"])
             .valign(gtk::Align::Center)
             .margin_end(6)
@@ -1113,11 +1458,12 @@ impl ComposeDialog {
             #[weak(rename_to = dialog)]
             self,
             move |_| {
-                dialog.close();
+                dialog.request_interactive_close();
             }
         ));
         header_bar.pack_start(&btn_close);
         self.imp().btn_close.replace(Some(btn_close.clone()));
+        self.imp().btn_discard.replace(None);
 
         let btn_open_in_new_window = gtk::Button::builder()
             .icon_name("window-new-symbolic")
@@ -1166,13 +1512,30 @@ impl ComposeDialog {
         header_bar.pack_start(&btn_format);
         self.imp().format_button.replace(Some(btn_format.clone()));
 
-        let btn_discard = gtk::Button::builder()
-            .icon_name("user-trash-symbolic")
-            .tooltip_text(gettext("Discard draft"))
-            .valign(gtk::Align::Center)
+        let templates_popover = gtk::Popover::builder()
+            .halign(gtk::Align::Start)
+            .position(gtk::PositionType::Bottom)
             .build();
-        set_accessible_label(&btn_discard, &gettext("Discard draft"));
-        self.imp().btn_discard.replace(Some(btn_discard.clone()));
+        let btn_templates = gtk::MenuButton::builder()
+            .icon_name("x-office-document-symbolic")
+            .tooltip_text(gettext("Insert template"))
+            .popover(&templates_popover)
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        set_accessible_label(&btn_templates, &gettext("Templates"));
+        header_bar.pack_start(&btn_templates);
+        self.imp().template_menu_button.replace(Some(btn_templates.clone()));
+
+        let composer_ext_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        header_bar.pack_start(&composer_ext_box);
+        self.imp().composer_ext_box.replace(Some(composer_ext_box));
 
         let btn_save_draft = gtk::Button::builder()
             .icon_name("document-save-symbolic")
@@ -1191,32 +1554,88 @@ impl ComposeDialog {
             .build();
         set_accessible_label(&btn_send, &gettext("Send email"));
 
-        // Header actions (packed right-to-left: Send)
+        let smime_mode = AppSettings::try_new()
+            .map(|settings| settings.crypto_protocol() == "smime")
+            .unwrap_or(false);
+        let composer_menu = gio::Menu::new();
+        let sec_send = gio::Menu::new();
+        sec_send.append(Some(&gettext("Schedule Send…")), Some("compose.schedule-send"));
+        sec_send.append(Some(&gettext("Save as Template…")), Some("compose.save-template"));
+        composer_menu.append_section(None, &sec_send);
+
+        let sec_opts = gio::Menu::new();
+        sec_opts.append(
+            Some(&gettext("Sign Message")),
+            Some(if smime_mode {
+                "compose.smime-sign"
+            } else {
+                "compose.pgp-sign"
+            }),
+        );
+        sec_opts.append(
+            Some(&gettext("Encrypt Message")),
+            Some(if smime_mode {
+                "compose.smime-encrypt"
+            } else {
+                "compose.pgp-encrypt"
+            }),
+        );
+        sec_opts.append(
+            Some(&gettext("High Priority")),
+            Some("compose.prioritize-message"),
+        );
+        sec_opts.append(
+            Some(&gettext("Request Read Receipt")),
+            Some("compose.request-read-receipt"),
+        );
+        sec_opts.append(Some(&gettext("Plain Text Mode")), Some("compose.plain-text"));
+        composer_menu.append_section(None, &sec_opts);
+
+        let sec_file = gio::Menu::new();
+        sec_file.append(Some(&gettext("Save as EML…")), Some("compose.save-as-eml"));
+        sec_file.append(Some(&gettext("Print…")), Some("compose.print"));
+        composer_menu.append_section(None, &sec_file);
+
+        let btn_more_menu = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .menu_model(&composer_menu)
+            .tooltip_text(gettext("Message options"))
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        set_accessible_label(&btn_more_menu, &gettext("Message options"));
+
+        // Header actions (packed right-to-left: Send, Options menu)
         header_bar.pack_end(&btn_send);
+        header_bar.pack_end(&btn_more_menu);
 
 
         let btn_priority = gtk::ToggleButton::builder()
             .icon_name("mail-mark-important-symbolic")
-            .tooltip_text(gettext("Mark message as important"))
-            .css_classes(["flat"])
+            .tooltip_text(gettext("Mark as high priority"))
+            .css_classes(["flat", "composer-inline-toggle", "composer-priority-inline"])
+            .valign(gtk::Align::Center)
             .build();
-        set_accessible_label(&btn_priority, &gettext("Mark message as important"));
+        set_accessible_label(&btn_priority, &gettext("Mark as high priority"));
 
         let request_read_receipt = AppSettings::try_new()
             .map(|settings| settings.request_read_receipt())
             .unwrap_or(false);
         let btn_request_read_receipt = gtk::ToggleButton::builder()
-            .icon_name("mail-send-receive-symbolic")
-            .tooltip_text(gettext("Request read receipt for this message"))
+            .icon_name("mail-read-symbolic")
+            .tooltip_text(gettext("Request read receipt"))
             .active(request_read_receipt)
+            .visible(false)
             .css_classes(["flat"])
             .build();
-
-        let btn_insert_template = gtk::Button::builder()
-            .icon_name("document-open-symbolic")
-            .tooltip_text(gettext("Insert template or snippet"))
-            .css_classes(["flat"])
+        let read_receipt_status_icon = gtk::Image::builder()
+            .icon_name("mail-read-symbolic")
+            .tooltip_text(gettext("Read receipt requested"))
+            .css_classes(["accent", "composer-inline-status"])
+            .valign(gtk::Align::Center)
+            .visible(request_read_receipt)
             .build();
+        set_accessible_label(&read_receipt_status_icon, &gettext("Read receipt requested"));
 
         let btn_save_template = gtk::Button::builder()
             .icon_name("document-save-as-symbolic")
@@ -1234,15 +1653,28 @@ impl ComposeDialog {
             .map(|settings| settings.sign_new_messages())
             .unwrap_or(false);
         let btn_sign = gtk::ToggleButton::builder()
-            .icon_name("security-high-symbolic")
+            .icon_name("application-certificate-symbolic")
             .tooltip_text(gettext("Sign message (OpenPGP or S/MIME)"))
             .active(sign_by_default)
+            .visible(false)
             .css_classes(["flat"])
             .build();
+        let sign_status_icon = gtk::Image::builder()
+            .icon_name("application-certificate-symbolic")
+            .tooltip_text(gettext("Digitally signed (OpenPGP or S/MIME)"))
+            .css_classes(["accent", "composer-inline-status"])
+            .valign(gtk::Align::Center)
+            .visible(sign_by_default)
+            .build();
+        set_accessible_label(&sign_status_icon, &gettext("Digitally signed"));
 
+        let encrypt_by_default = AppSettings::try_new()
+            .map(|settings| settings.encrypt_new_messages())
+            .unwrap_or(false);
         let btn_encrypt = gtk::ToggleButton::builder()
             .icon_name("changes-prevent-symbolic")
             .tooltip_text(gettext("Encrypt message (OpenPGP or S/MIME)"))
+            .active(encrypt_by_default)
             .css_classes(["flat"])
             .build();
 
@@ -1397,7 +1829,8 @@ impl ComposeDialog {
 
         let source_model = gtk::StringList::new(&["Loading senders…"]);
         let combo_from = gtk::DropDown::new(Some(source_model.clone()), None::<&gtk::Expression>);
-        combo_from.set_hexpand(true);
+        combo_from.set_hexpand(false);
+        combo_from.set_halign(gtk::Align::Start);
         combo_from.add_css_class("composer-dropdown");
         combo_from.set_factory(Some(&make_clean_dropdown_factory()));
         combo_from.set_list_factory(Some(&make_clean_dropdown_factory()));
@@ -1483,13 +1916,22 @@ impl ComposeDialog {
             lbl_signature.add_controller(click);
         }
 
+        let from_identity_cluster = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .hexpand(true)
+            .halign(gtk::Align::Fill)
+            .build();
+        from_identity_cluster.append(&combo_from);
+        from_identity_cluster.append(&sign_status_icon);
+
         let from_row_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
             .hexpand(true)
             .visible(show_from)
             .build();
-        from_row_box.append(&combo_from);
+        from_row_box.append(&from_identity_cluster);
         from_row_box.append(&lbl_signature);
         from_row_box.append(&combo_signature);
 
@@ -1678,11 +2120,13 @@ impl ComposeDialog {
 
         let row_subject = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
+            .spacing(8)
             .css_classes(["composer-header-row", "composer-row-subject", "last-visible-row"])
             .build();
         row_subject.append(&lbl_subject);
         row_subject.append(&entry_subject);
+        row_subject.append(&read_receipt_status_icon);
+        row_subject.append(&btn_priority);
 
         let label_size_group = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
         label_size_group.add_widget(&lbl_from);
@@ -1729,123 +2173,88 @@ impl ComposeDialog {
 
         content_box.append(&header_card);
 
-        let options_badges_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
-            .margin_start(16)
-            .margin_end(16)
-            .margin_top(6)
-            .margin_bottom(0)
-            .visible(false)
-            .build();
-        content_box.append(&options_badges_box);
-
-        let update_options_badges = {
-            let badges_box = options_badges_box.clone();
+        let sync_inline_compose_indicators = {
+            let b_send = btn_send.clone();
             let b_sign = btn_sign.clone();
+            let i_sign = sign_status_icon.clone();
             let b_encrypt = btn_encrypt.clone();
             let b_priority = btn_priority.clone();
             let b_receipt = btn_request_read_receipt.clone();
+            let i_receipt = read_receipt_status_icon.clone();
 
             std::rc::Rc::new(move || {
-                while let Some(child) = badges_box.first_child() {
-                    badges_box.remove(&child);
-                }
-
-                let mut count = 0;
-
-                let add_badge = |box_ref: &gtk::Box,
-                                 icon: &str,
-                                 label: &str,
-                                 tooltip: &str,
-                                 target_btn: &gtk::ToggleButton| {
-                    let pill_btn = gtk::Button::builder()
-                        .css_classes(["flat", "pill", "caption"])
-                        .tooltip_text(tooltip)
-                        .build();
-                    let content = gtk::Box::builder()
-                        .orientation(gtk::Orientation::Horizontal)
-                        .spacing(6)
-                        .build();
-                    let img = gtk::Image::from_icon_name(icon);
-                    let lbl = gtk::Label::builder().label(label).build();
-                    let close_img = gtk::Image::from_icon_name("window-close-symbolic");
-                    close_img.set_pixel_size(12);
-                    content.append(&img);
-                    content.append(&lbl);
-                    content.append(&close_img);
-                    pill_btn.set_child(Some(&content));
-
-                    let target = target_btn.clone();
-                    pill_btn.connect_clicked(move |_| {
-                        target.set_active(false);
-                    });
-
-                    box_ref.append(&pill_btn);
-                };
-
-                if b_sign.is_active() {
-                    add_badge(
-                        &badges_box,
-                        "security-high-symbolic",
-                        "Signed",
-                        "Disable signing",
-                        &b_sign,
-                    );
-                    count += 1;
-                }
                 if b_encrypt.is_active() {
-                    add_badge(
-                        &badges_box,
-                        "changes-prevent-symbolic",
-                        "Encrypted",
-                        "Disable encryption",
-                        &b_encrypt,
-                    );
-                    count += 1;
-                }
-                if b_priority.is_active() {
-                    add_badge(
-                        &badges_box,
-                        "mail-mark-important-symbolic",
-                        "High Priority",
-                        "Reset priority",
-                        &b_priority,
-                    );
-                    count += 1;
-                }
-                if b_receipt.is_active() {
-                    add_badge(
-                        &badges_box,
-                        "mail-send-receive-symbolic",
-                        "Read Receipt",
-                        "Remove read receipt",
-                        &b_receipt,
-                    );
-                    count += 1;
+                    b_send.set_label(&gettext("Send Encrypted"));
+                    b_send.set_tooltip_text(Some(&gettext("Send encrypted email now (Ctrl+Enter)")));
+                    set_accessible_label(&b_send, &gettext("Send Encrypted"));
+                } else {
+                    b_send.set_label(&gettext("Send"));
+                    b_send.set_tooltip_text(Some(&gettext("Send email now (Ctrl+Enter)")));
+                    set_accessible_label(&b_send, &gettext("Send email"));
                 }
 
-                badges_box.set_visible(count > 0);
+                i_sign.set_visible(b_sign.is_active());
+
+                b_priority.set_tooltip_text(Some(&if b_priority.is_active() {
+                    gettext("High priority (click to clear)")
+                } else {
+                    gettext("Mark as high priority")
+                }));
+
+                i_receipt.set_visible(b_receipt.is_active());
             })
         };
 
         {
-            let u = update_options_badges.clone();
-            btn_sign.connect_toggled(move |_| u());
+            let u = sync_inline_compose_indicators.clone();
+            let dialog_weak_sign = self.downgrade();
+            btn_sign.connect_toggled(move |btn| {
+                u();
+                let suppress = dialog_weak_sign
+                    .upgrade()
+                    .is_some_and(|d| d.imp().suppress_setting_persistence.get());
+                if !suppress {
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_sign_new_messages(btn.is_active());
+                    }
+                }
+            });
         }
         {
-            let u = update_options_badges.clone();
-            btn_encrypt.connect_toggled(move |_| u());
+            let u = sync_inline_compose_indicators.clone();
+            let dialog_weak_encrypt = self.downgrade();
+            btn_encrypt.connect_toggled(move |btn| {
+                u();
+                let suppress = dialog_weak_encrypt
+                    .upgrade()
+                    .is_some_and(|d| d.imp().suppress_setting_persistence.get());
+                if !suppress {
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_encrypt_new_messages(btn.is_active());
+                    }
+                }
+            });
         }
         {
-            let u = update_options_badges.clone();
+            let u = sync_inline_compose_indicators.clone();
             btn_priority.connect_toggled(move |_| u());
         }
         {
-            let u = update_options_badges.clone();
-            btn_request_read_receipt.connect_toggled(move |_| u());
+            let u = sync_inline_compose_indicators.clone();
+            let dialog_weak_receipt = self.downgrade();
+            btn_request_read_receipt.connect_toggled(move |btn| {
+                u();
+                let suppress = dialog_weak_receipt
+                    .upgrade()
+                    .is_some_and(|d| d.imp().suppress_setting_persistence.get());
+                if !suppress {
+                    if let Some(settings) = AppSettings::try_new() {
+                        settings.set_request_read_receipt(btn.is_active());
+                    }
+                }
+            });
         }
-        update_options_badges();
+        sync_inline_compose_indicators();
 
         // Rich WebKitGTK 6.0 WYSIWYG HTML Editor
         let html_editor = crate::views::HtmlEditor::new();
@@ -1853,6 +2262,7 @@ impl ComposeDialog {
         html_editor.set_plain_text_mode(initial_plain);
         html_editor.set_vexpand(true);
         html_editor.set_toolbar_scrollable(false);
+        btn_format.set_visible(!initial_plain);
         btn_format.set_sensitive(!initial_plain);
         let initial_toolbar_visible = !initial_plain && btn_format.is_active();
         header_card.set_margin_bottom(if initial_toolbar_visible { 0 } else { 8 });
@@ -1923,7 +2333,7 @@ impl ComposeDialog {
                     && (keyval == gdk::Key::F || keyval == gdk::Key::f)
                 {
                     if let Some(btn) = dialog.imp().format_button.borrow().as_ref() {
-                        if btn.is_sensitive() {
+                        if btn.is_visible() && btn.is_sensitive() {
                             btn.set_active(!btn.is_active());
                             return glib::Propagation::Stop;
                         }
@@ -2026,6 +2436,7 @@ impl ComposeDialog {
             if header_txt_for_mode.is_active() != is_plain {
                 header_txt_for_mode.set_active(is_plain);
             }
+            btn_format_for_mode.set_visible(!is_plain);
             btn_format_for_mode.set_sensitive(!is_plain);
             header_mode_switcher_for_mode.set_visible(false);
             editor_for_composer_mode.set_format_toolbar_visible(!is_plain && btn_format_for_mode.is_active());
@@ -2233,6 +2644,7 @@ impl ComposeDialog {
         self.imp().attachment_bar_chip_box.replace(Some(chip_box));
         self.imp().attachment_bar_separator.replace(Some(separator));
         self.imp().attachment_bar_add_btn.replace(Some(btn_add_attachment));
+        self.imp().attachment_right_actions.replace(Some(right_actions));
         self.imp().attachment_view_toggle_box.replace(Some(view_toggle_box));
         self.imp().attachment_btn_icons.replace(Some(btn_icons));
         self.imp().attachment_btn_list.replace(Some(btn_list));
@@ -2599,6 +3011,48 @@ impl ComposeDialog {
             .child(&attachment_section_box)
             .build();
 
+        {
+            let hc = header_card.clone();
+            let fmt_rev_weak = html_editor
+                .imp()
+                .format_toolbar_revealer
+                .borrow()
+                .as_ref()
+                .map(|r| r.downgrade());
+            let sync_gap = move |att_rev: &gtk::Revealer| {
+                let fmt_open = fmt_rev_weak
+                    .as_ref()
+                    .and_then(|w| w.upgrade())
+                    .is_some_and(|r| r.reveals_child());
+                hc.set_margin_bottom(if fmt_open {
+                    0
+                } else if att_rev.reveals_child() {
+                    4
+                } else {
+                    8
+                });
+            };
+            attachment_section_revealer.connect_notify_local(Some("reveal-child"), move |rev, _| {
+                sync_gap(rev);
+            });
+        }
+        if let Some(fmt_rev) = html_editor.imp().format_toolbar_revealer.borrow().as_ref() {
+            let hc = header_card.clone();
+            let att_rev_weak = attachment_section_revealer.downgrade();
+            fmt_rev.connect_notify_local(Some("reveal-child"), move |rev, _| {
+                let att_open = att_rev_weak
+                    .upgrade()
+                    .is_some_and(|r| r.reveals_child());
+                hc.set_margin_bottom(if rev.reveals_child() {
+                    0
+                } else if att_open {
+                    4
+                } else {
+                    8
+                });
+            });
+        }
+
         content_box.append(&attachment_section_revealer);
         content_box.append(&html_editor);
 
@@ -2713,10 +3167,9 @@ impl ComposeDialog {
         self.add_breakpoint(bp_wide);
         self.imp().compose_controls.replace(vec![
             btn_close.clone().upcast(),
-            btn_discard.clone().upcast(),
             btn_attach.clone().upcast(),
             btn_format.clone().upcast(),
-            btn_insert_template.clone().upcast(),
+            btn_templates.clone().upcast(),
             btn_save_template.clone().upcast(),
             btn_save_snippet.clone().upcast(),
             attachment_bar_widget,
@@ -2886,188 +3339,9 @@ impl ComposeDialog {
         );
 
         let dialog_weak_for_templates = self.downgrade();
-        let entry_subject_for_templates = entry_subject.clone();
-        let html_editor_for_templates = html_editor.clone();
-        let header_bar_for_templates = header_bar.clone();
-        btn_insert_template.connect_clicked(move |_| {
-            let popover = gtk::Popover::new();
-            popover.set_parent(&header_bar_for_templates);
-            popover.set_has_arrow(true);
-
-            let list = gtk::ListBox::builder()
-                .selection_mode(gtk::SelectionMode::None)
-                .css_classes(["boxed-list"])
-                .build();
-            let templates = TemplateStore::default().load();
-            let snippets = SnippetStore::default().load();
-            if templates.is_empty() && snippets.is_empty() {
-                let empty_templates_label = gettext("No templates or snippets saved yet");
-                list.append(
-                    &gtk::Label::builder()
-                        .label(&empty_templates_label)
-                        .margin_top(12)
-                        .margin_bottom(12)
-                        .margin_start(12)
-                        .margin_end(12)
-                        .css_classes(["dim-label"])
-                        .build(),
-                );
-            } else {
-                let no_subject_text = gettext("No subject");
-                for template in &templates {
-                    let row = adw::ActionRow::builder()
-                        .title(&template.name)
-                        .subtitle(if template.subject.trim().is_empty() {
-                            no_subject_text.as_str()
-                        } else {
-                            template.subject.as_str()
-                        })
-                        .activatable(true)
-                        .build();
-                    let apply_button = gtk::Button::builder()
-                        .icon_name("insert-text-symbolic")
-                        .tooltip_text(gettext("Insert template"))
-                        .css_classes(["flat"])
-                        .valign(gtk::Align::Center)
-                        .build();
-                    let delete_button = gtk::Button::builder()
-                        .icon_name("user-trash-symbolic")
-                        .tooltip_text(gettext("Delete template"))
-                        .css_classes(["flat", "error"])
-                        .valign(gtk::Align::Center)
-                        .build();
-                    row.add_suffix(&apply_button);
-                    row.add_suffix(&delete_button);
-
-                    let body = sanitize_html(&template.body_html);
-                    let subject = template.subject.clone();
-                    let editor_for_apply = html_editor_for_templates.clone();
-                    let subject_for_apply = entry_subject_for_templates.clone();
-                    let popover_for_apply = popover.clone();
-                    let dialog_for_apply = dialog_weak_for_templates.clone();
-                    apply_button.connect_clicked(move |_| {
-                        editor_for_apply.set_html(&body);
-                        if subject_for_apply.text().trim().is_empty() {
-                            subject_for_apply.set_text(&subject);
-                        }
-                        if let Some(dialog) = dialog_for_apply.upgrade() {
-                            dialog.imp().user_typed_in_editor.set(true);
-                            dialog.mark_changed();
-                        }
-                        popover_for_apply.popdown();
-                    });
-
-                    let template_id = template.id.clone();
-                    let row_for_delete = row.clone();
-                    let popover_for_delete = popover.clone();
-                    delete_button.connect_clicked(move |button| {
-                        let template_id_for_action = template_id.clone();
-                        let row_for_action = row_for_delete.clone();
-                        let popover_for_action = popover_for_delete.clone();
-                        crate::dialogs::run_destructive_action(
-                            button,
-                            "Delete template?",
-                            "The template will be permanently removed from application storage.",
-                            "Delete",
-                            move || match TemplateStore::default().delete(&template_id_for_action) {
-                                Ok(true) => {
-                                    row_for_action.set_visible(false);
-                                    popover_for_action.popdown();
-                                }
-                                Ok(false) => tracing::debug!(
-                                    template_id = %template_id_for_action,
-                                    "Template was already removed"
-                                ),
-                                Err(error) => {
-                                    tracing::warn!(%error, "Could not delete mail template")
-                                }
-                            },
-                        );
-                    });
-
-                    let apply_button_for_row = apply_button.clone();
-                    row.connect_activated(move |_| apply_button_for_row.emit_clicked());
-                    list.append(&row);
-                }
-            }
-
-            if !templates.is_empty() && !snippets.is_empty() {
-                list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-            }
-            for snippet in snippets {
-                let row = adw::ActionRow::builder()
-                    .title(&snippet.name)
-                    .subtitle(if snippet.trigger.trim().is_empty() {
-                        "Snippet"
-                    } else {
-                        snippet.trigger.as_str()
-                    })
-                    .activatable(true)
-                    .build();
-                let apply_button = gtk::Button::builder()
-                    .icon_name("insert-text-symbolic")
-                    .tooltip_text(gettext("Insert snippet at cursor position"))
-                    .css_classes(["flat"])
-                    .valign(gtk::Align::Center)
-                    .build();
-                let delete_button = gtk::Button::builder()
-                    .icon_name("user-trash-symbolic")
-                    .tooltip_text(gettext("Delete snippet"))
-                    .css_classes(["flat", "error"])
-                    .valign(gtk::Align::Center)
-                    .build();
-                row.add_suffix(&apply_button);
-                row.add_suffix(&delete_button);
-
-                let body = snippet.body_html.clone();
-                let editor_for_apply = html_editor_for_templates.clone();
-                let popover_for_apply = popover.clone();
-                let dialog_for_apply = dialog_weak_for_templates.clone();
-                apply_button.connect_clicked(move |_| {
-                    editor_for_apply.insert_html(&body);
-                    if let Some(dialog) = dialog_for_apply.upgrade() {
-                        dialog.imp().user_typed_in_editor.set(true);
-                        dialog.mark_changed();
-                    }
-                    popover_for_apply.popdown();
-                });
-
-                let snippet_id = snippet.id.clone();
-                let row_for_delete = row.clone();
-                let popover_for_delete = popover.clone();
-                delete_button.connect_clicked(move |button| {
-                    let snippet_id_for_action = snippet_id.clone();
-                    let row_for_action = row_for_delete.clone();
-                    let popover_for_action = popover_for_delete.clone();
-                    crate::dialogs::run_destructive_action(
-                        button,
-                        &gettext("Delete snippet?"),
-                        &gettext("The snippet will be permanently removed from application storage."),
-                        &gettext("Delete"),
-                        move || match SnippetStore::default().delete(&snippet_id_for_action) {
-                            Ok(true) => {
-                                row_for_action.set_visible(false);
-                                popover_for_action.popdown();
-                            }
-                            Ok(false) => tracing::debug!(
-                                snippet_id = %snippet_id_for_action,
-                                "Snippet was already removed"
-                            ),
-                            Err(error) => {
-                                tracing::warn!(%error, "Could not delete mail snippet")
-                            }
-                        },
-                    );
-                });
-
-                let apply_button_for_row = apply_button.clone();
-                row.connect_activated(move |_| apply_button_for_row.emit_clicked());
-                list.append(&row);
-            }
-            popover.set_child(Some(&list));
-            popover.popup();
+        templates_popover.connect_show(move |popover| {
             if let Some(dialog) = dialog_weak_for_templates.upgrade() {
-                dialog.show_toast(&gettext("Loading templates from application storage"));
+                dialog.populate_templates_popover(popover);
             }
         });
 
@@ -3116,16 +3390,19 @@ impl ComposeDialog {
                 let popover_for_result = popover_for_save.clone();
                 editor.read_html(move |result| match result {
                     Ok(body_html) => {
+                        let clean_template_html =
+                            sanitize_html(&strip_evolution_signature_html(&body_html));
                         let template = MailTemplate {
                             id: format!("template-{}", uuid::Uuid::new_v4()),
                             name,
                             subject,
-                            body_html: sanitize_html(&body_html),
+                            body_html: clean_template_html,
                         };
                         match TemplateStore::default().upsert(template) {
                             Ok(()) => {
                                 popover_for_result.popdown();
                                 if let Some(dialog) = dialog_weak_for_result.upgrade() {
+                                    dialog.refresh_template_button();
                                     dialog.show_toast(&gettext("Template saved"));
                                 }
                             }
@@ -3216,6 +3493,8 @@ impl ComposeDialog {
                             Ok(()) => {
                                 popover_for_result.popdown();
                                 if let Some(dialog) = dialog_weak_for_result.upgrade() {
+                                    dialog.sync_live_snippet_triggers();
+                                    dialog.refresh_template_button();
                                     dialog.show_toast(&gettext("Snippet saved"));
                                 }
                             }
@@ -3346,6 +3625,7 @@ impl ComposeDialog {
                             priority,
                             charset: charset.clone(),
                             smime: smime_options.clone(),
+                            template_name: None,
                         }),
                     };
                     let outgoing = OutgoingMessage {
@@ -3375,7 +3655,17 @@ impl ComposeDialog {
                         true,
                     );
 
-                let (sender, receiver) = async_channel::bounded(4);
+                    let undo_delay_secs = AppSettings::try_new()
+                        .map(|s| s.composer_undo_send_seconds())
+                        .unwrap_or(0);
+                    let mail_merge_enabled =
+                        crate::services::extension_service::ExtensionRegistry::default()
+                            .is_enabled("meridian.mail-merge");
+                    let auto_collect_contacts = AppSettings::try_new()
+                        .map(|s| s.contacts_auto_collect())
+                        .unwrap_or(false);
+
+                let (sender, receiver) = async_channel::bounded(16);
                 std::thread::spawn(move || {
                     let store = DraftStoreService::default();
                     let Some(_send_claim) = store.try_claim_send(&draft.id) else {
@@ -3405,11 +3695,49 @@ impl ComposeDialog {
                         let _ = sender.send_blocking(SendWorkerEvent::Cancelled);
                         return;
                     }
+                    if undo_delay_secs > 0 {
+                        for remaining in (1..=undo_delay_secs).rev() {
+                            let _ = sender.send_blocking(SendWorkerEvent::UndoCountdown(remaining));
+                            for _ in 0..10 {
+                                if cancel_for_worker.is_cancel_requested() {
+                                    let _ = sender.send_blocking(SendWorkerEvent::Cancelled);
+                                    return;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                        }
+                    }
                     let raw_message = match mail_composer_service::build_rfc822(&outgoing) {
                         Ok(raw_message) => raw_message,
-                        Err(error) => {
-                            let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(error)));
-                            return;
+                        Err(first_error) => {
+                            if outgoing.pgp_encrypt {
+                                let mut imported_any = false;
+                                for field in [&outgoing.to, &outgoing.cc, &outgoing.bcc] {
+                                    for token in field.split(',') {
+                                        let email = extract_bare_email(token);
+                                        if email.contains('@')
+                                            && crate::services::crypto_service::discover_and_import_openpgp_key(&email).is_ok()
+                                        {
+                                            imported_any = true;
+                                        }
+                                    }
+                                }
+                                if imported_any {
+                                    match mail_composer_service::build_rfc822(&outgoing) {
+                                        Ok(retried) => retried,
+                                        Err(err2) => {
+                                            let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(err2)));
+                                            return;
+                                        }
+                                    }
+                                } else {
+                                    let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(first_error)));
+                                    return;
+                                }
+                            } else {
+                                let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(first_error)));
+                                return;
+                            }
                         }
                     };
                     // Atomically close the cancellation window. If the UI won
@@ -3420,18 +3748,73 @@ impl ComposeDialog {
                         return;
                     }
                     let _ = sender.send_blocking(SendWorkerEvent::TransportStarted);
-                    let result = camel_mail_service::send_message(
-                        &outgoing.source_uid,
-                        &raw_message,
-                    )
-                    .map(|sent_message_saved| {
-                        let cleanup = store.delete_if_matches(&draft);
-                        SendCompletion {
-                            sent_message_saved,
-                            local_draft_deleted: matches!(cleanup, Ok(true)),
-                            cleanup_error: cleanup.err().map(|error| error.to_string()),
+
+                    let to_recipients: Vec<String> = outgoing
+                        .to
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect();
+                    let use_merge = mail_merge_enabled
+                        && to_recipients.len() >= 1
+                        && (crate::services::extension_service::has_mail_merge_placeholders(&outgoing.html_body)
+                            || crate::services::extension_service::has_mail_merge_placeholders(&outgoing.subject));
+
+                    let result = if use_merge {
+                        let mut all_saved = true;
+                        let mut merge_err: Option<String> = None;
+                        for rcpt in &to_recipients {
+                            let mut per_rcpt = outgoing.clone();
+                            per_rcpt.to = rcpt.clone();
+                            per_rcpt.cc.clear();
+                            per_rcpt.subject =
+                                crate::services::extension_service::expand_mail_merge_for_recipient(
+                                    &outgoing.subject,
+                                    rcpt,
+                                );
+                            per_rcpt.html_body =
+                                crate::services::extension_service::expand_mail_merge_for_recipient(
+                                    &outgoing.html_body,
+                                    rcpt,
+                                );
+                            match mail_composer_service::build_rfc822(&per_rcpt)
+                                .and_then(|raw| camel_mail_service::send_message(&per_rcpt.source_uid, &raw))
+                            {
+                                Ok(saved_sent) => all_saved &= saved_sent,
+                                Err(err) => {
+                                    merge_err = Some(err);
+                                    break;
+                                }
+                            }
                         }
-                    });
+                        match merge_err {
+                            Some(err) => Err(err),
+                            None => {
+                                let cleanup = store.delete_if_matches(&draft);
+                                Ok(SendCompletion {
+                                    sent_message_saved: all_saved,
+                                    local_draft_deleted: matches!(cleanup, Ok(true)),
+                                    cleanup_error: cleanup.err().map(|e| e.to_string()),
+                                })
+                            }
+                        }
+                    } else {
+                        camel_mail_service::send_message(&outgoing.source_uid, &raw_message).map(
+                            |sent_message_saved| {
+                                let cleanup = store.delete_if_matches(&draft);
+                                SendCompletion {
+                                    sent_message_saved,
+                                    local_draft_deleted: matches!(cleanup, Ok(true)),
+                                    cleanup_error: cleanup.err().map(|error| error.to_string()),
+                                }
+                            },
+                        )
+                    };
+
+                    if result.is_ok() && auto_collect_contacts {
+                        auto_collect_outgoing_recipients(&[&outgoing.to, &outgoing.cc]);
+                    }
                     let _ = sender.send_blocking(SendWorkerEvent::Finished(result));
                 });
 
@@ -3464,6 +3847,13 @@ impl ComposeDialog {
                                 dialog.imp().local_draft_persisted.set(true);
                                 dialog.imp().persisted_draft.replace(Some(saved_draft));
                                 dialog.mark_saved();
+                            }
+                            SendWorkerEvent::UndoCountdown(secs) => {
+                                dialog.set_operation_status(
+                                    operation_id,
+                                    &format!("Sending in {secs}s…"),
+                                    true,
+                                );
                             }
                             SendWorkerEvent::TransportStarted => {
                                 dialog.mark_transport_started(operation_id);
@@ -3553,7 +3943,8 @@ impl ComposeDialog {
                                 && !source.display_name.eq_ignore_ascii_case("Search Folders")))
                 })
                 .collect();
-            let local_choices = local_account_choices();
+            let local_profiles = AccountConfigStore::default().load();
+            let local_choices = local_account_choices_from_profiles(&local_profiles);
             let mut identities: Vec<ComposeIdentity> = Vec::new();
             let mut seen_addresses = std::collections::HashSet::new();
 
@@ -3569,6 +3960,23 @@ impl ComposeDialog {
                     address
                 };
 
+                let has_enabled_shared_local_profile = local_profiles.iter().any(|p| {
+                    p.enabled
+                        && p.is_shared_mailbox
+                        && (p.id.eq_ignore_ascii_case(&source.uid)
+                            || p.id.eq_ignore_ascii_case(&format!("eds:{}", source.uid))
+                            || p.email.eq_ignore_ascii_case(&address)
+                            || (!p.foreign_mailbox.trim().is_empty()
+                                && p.foreign_mailbox.eq_ignore_ascii_case(&address))
+                            || source
+                                .foreign_mail
+                                .as_deref()
+                                .is_some_and(|fm| p.email.eq_ignore_ascii_case(fm)))
+                });
+                if has_enabled_shared_local_profile {
+                    continue;
+                }
+
                 if !seen_addresses.insert(address.clone()) {
                     continue;
                 }
@@ -3579,7 +3987,6 @@ impl ComposeDialog {
                     format!("{} <{}>", source.display_name, address)
                 };
 
-                let local_profiles = AccountConfigStore::default().load();
                 let matched_sig = local_profiles
                     .iter()
                     .find(|p| {
@@ -3639,16 +4046,25 @@ impl ComposeDialog {
                     let selected_uid_without_prefix = selected_uid
                         .strip_prefix("evolution-source:")
                         .or_else(|| selected_uid.strip_prefix("eds:"))
+                        .or_else(|| selected_uid.strip_prefix("account:"))
                         .unwrap_or(selected_uid);
                     let source_uid_matches = |identity: &ComposeIdentity| {
                         let id_without_prefix = identity
                             .source_uid
                             .strip_prefix("evolution-source:")
                             .or_else(|| identity.source_uid.strip_prefix("eds:"))
+                            .or_else(|| identity.source_uid.strip_prefix("account:"))
                             .unwrap_or(&identity.source_uid);
-                        identity.source_uid == selected_uid
-                            || identity.source_uid == selected_uid_without_prefix
-                            || id_without_prefix == selected_uid_without_prefix
+                        identity.source_uid.eq_ignore_ascii_case(selected_uid)
+                            || identity
+                                .source_uid
+                                .eq_ignore_ascii_case(selected_uid_without_prefix)
+                            || id_without_prefix.eq_ignore_ascii_case(selected_uid_without_prefix)
+                            || (selected_uid_without_prefix.contains('@')
+                                && compose_identity_matches_from(
+                                    identity,
+                                    selected_uid_without_prefix,
+                                ))
                     };
                     let index = requested_from
                         .as_deref()
@@ -3805,6 +4221,13 @@ impl ComposeDialog {
                         priority,
                         charset: charset.clone(),
                         smime: smime_options.clone(),
+                        template_name: dialog
+                            .imp()
+                            .persisted_draft
+                            .borrow()
+                            .as_ref()
+                            .and_then(|d| d.smime_options.as_ref())
+                            .and_then(|o| o.template_name.clone()),
                     }),
                 };
                     if !draft_has_user_content(&draft) {
@@ -3942,6 +4365,7 @@ impl ComposeDialog {
                                     dialog.imp().local_draft_persisted.set(true);
                                     dialog.imp().persisted_draft.replace(Some(saved_draft));
                                     dialog.mark_saved();
+                                    dialog.refresh_template_button();
                                 }
                                 DraftWorkerEvent::Cancelled => {
                                     dialog.imp().close_after_save.set(false);
@@ -4006,14 +4430,13 @@ impl ComposeDialog {
             &btn_close,
             &btn_send,
             &btn_save_draft,
-            &btn_discard,
             &btn_attach,
             &btn_plain_text,
             &btn_request_read_receipt,
             &btn_priority,
             &btn_sign,
             &btn_encrypt,
-            &btn_insert_template,
+            &btn_templates,
             &btn_save_template,
             &btn_save_snippet,
         );
@@ -4022,6 +4445,23 @@ impl ComposeDialog {
         self.set_child(Some(&toolbar_view));
         adw::prelude::AdwDialogExt::set_focus(self, Some(&entry_to));
         self.install_file_drop_target();
+        self.sync_live_snippet_triggers();
+        self.refresh_template_button();
+        self.refresh_composer_extension_actions();
+
+        {
+            let dialog_weak_ext = self.downgrade();
+            let rx = crate::services::extension_service::subscribe_extension_updates();
+            glib::spawn_future_local(async move {
+                while rx.recv().await.is_ok() {
+                    if let Some(d) = dialog_weak_ext.upgrade() {
+                        d.refresh_composer_extension_actions();
+                    } else {
+                        break;
+                    }
+                }
+            });
+        }
 
         self.start_local_autosave();
         self.imp().suppress_dirty_tracking.set(false);
@@ -4033,14 +4473,13 @@ impl ComposeDialog {
         btn_close: &gtk::Button,
         btn_send: &gtk::Button,
         btn_save_draft: &gtk::Button,
-        btn_discard: &gtk::Button,
         btn_attach: &gtk::Button,
         btn_plain_text: &gtk::ToggleButton,
         btn_request_read_receipt: &gtk::ToggleButton,
         btn_priority: &gtk::ToggleButton,
         btn_sign: &gtk::ToggleButton,
         btn_encrypt: &gtk::ToggleButton,
-        btn_insert_template: &gtk::Button,
+        btn_templates: &gtk::MenuButton,
         btn_save_template: &gtk::Button,
         btn_save_snippet: &gtk::Button,
     ) {
@@ -4054,6 +4493,15 @@ impl ComposeDialog {
             }
         });
         group.add_action(&action_send);
+
+        let action_schedule_send = gio::SimpleAction::new("schedule-send", None);
+        let dialog_for_schedule = self.downgrade();
+        action_schedule_send.connect_activate(move |_, _| {
+            if let Some(dialog) = dialog_for_schedule.upgrade() {
+                dialog.present_schedule_send_dialog();
+            }
+        });
+        group.add_action(&action_schedule_send);
 
         let action_save_draft = gio::SimpleAction::new("save-draft", None);
         let save_draft_button = btn_save_draft.clone();
@@ -4072,7 +4520,6 @@ impl ComposeDialog {
             }
         });
         group.add_action(&action_discard);
-        btn_discard.set_action_name(Some("compose.discard"));
 
         let action_save_as_eml = gio::SimpleAction::new("save-as-eml", None);
         let dialog_for_save_as = self.downgrade();
@@ -4190,9 +4637,11 @@ impl ComposeDialog {
         group.add_action(&action_toggle_fullscreen);
 
         let action_insert_template = gio::SimpleAction::new("insert-template", None);
-        let btn_insert_for_action = btn_insert_template.clone();
+        let btn_templates_for_action = btn_templates.clone();
         action_insert_template.connect_activate(move |_, _| {
-            btn_insert_for_action.emit_clicked();
+            if btn_templates_for_action.is_visible() {
+                btn_templates_for_action.popup();
+            }
         });
         group.add_action(&action_insert_template);
 
@@ -4335,7 +4784,7 @@ impl ComposeDialog {
         action_toggle_format.connect_activate(move |_, _| {
             if let Some(dialog) = dialog_weak_for_format.upgrade() {
                 if let Some(btn) = dialog.imp().format_button.borrow().as_ref() {
-                    if btn.is_sensitive() {
+                    if btn.is_visible() && btn.is_sensitive() {
                         btn.set_active(!btn.is_active());
                     }
                 }
@@ -4566,6 +5015,96 @@ impl ComposeDialog {
             return false;
         }
         self.imp().dirty_revision.get() != self.imp().saved_revision.get()
+    }
+
+    fn request_interactive_close(&self) {
+        if !gtk::prelude::WidgetExt::is_mapped(self)
+            || (!self.has_user_content() && !self.imp().local_draft_persisted.get())
+        {
+            self.close();
+            return;
+        }
+        if self.imp().close_prompt_open.get() {
+            return;
+        }
+        self.imp().close_prompt_open.set(true);
+        let prompt = adw::Dialog::builder()
+            .title(gettext("Save Draft?"))
+            .content_width(320)
+            .can_close(true)
+            .build();
+
+        let body = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(16)
+            .margin_start(18)
+            .margin_end(18)
+            .margin_top(18)
+            .margin_bottom(16)
+            .build();
+        let heading = gtk::Label::builder()
+            .label(gettext("Save Draft?"))
+            .xalign(0.0)
+            .use_markup(false)
+            .css_classes(["title-4"])
+            .build();
+        body.append(&heading);
+
+        let btn_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let btn_discard_prompt = gtk::Button::builder()
+            .label(gettext("Discard"))
+            .css_classes(["destructive-action"])
+            .build();
+        let spacer = gtk::Box::builder().hexpand(true).build();
+        let btn_cancel_prompt = gtk::Button::builder()
+            .label(gettext("Cancel"))
+            .build();
+        let btn_save_prompt = gtk::Button::builder()
+            .label(gettext("Save"))
+            .css_classes(["suggested-action"])
+            .build();
+        btn_row.append(&btn_discard_prompt);
+        btn_row.append(&spacer);
+        btn_row.append(&btn_cancel_prompt);
+        btn_row.append(&btn_save_prompt);
+        body.append(&btn_row);
+        prompt.set_child(Some(&body));
+
+        let dialog_weak_closed = self.downgrade();
+        prompt.connect_closed(move |_| {
+            if let Some(dialog) = dialog_weak_closed.upgrade() {
+                dialog.imp().close_prompt_open.set(false);
+            }
+        });
+
+        let dialog_weak_discard = self.downgrade();
+        let prompt_for_discard = prompt.clone();
+        btn_discard_prompt.connect_clicked(move |_| {
+            prompt_for_discard.force_close();
+            if let Some(dialog) = dialog_weak_discard.upgrade() {
+                dialog.discard_and_close();
+            }
+        });
+
+        let prompt_for_cancel = prompt.clone();
+        btn_cancel_prompt.connect_clicked(move |_| {
+            prompt_for_cancel.force_close();
+        });
+
+        let dialog_weak_save = self.downgrade();
+        let prompt_for_save = prompt.clone();
+        btn_save_prompt.connect_clicked(move |_| {
+            prompt_for_save.force_close();
+            if let Some(dialog) = dialog_weak_save.upgrade() {
+                let _ = dialog.close();
+            }
+        });
+
+        prompt.set_default_widget(Some(&btn_save_prompt));
+        prompt.present(Some(self));
     }
 
     fn discard_and_close(&self) {
@@ -5039,6 +5578,644 @@ impl ComposeDialog {
         }
     }
 
+    pub fn sync_live_snippet_triggers(&self) {
+        let Some(editor) = self.imp().html_editor.borrow().as_ref().cloned() else {
+            return;
+        };
+        let snippets = SnippetStore::default().load();
+        let pairs: Vec<(String, String)> = snippets
+            .into_iter()
+            .filter(|s| !s.trigger.trim().is_empty())
+            .map(|s| (s.trigger, self.expand_composer_variables(&s.body_html)))
+            .collect();
+        editor.set_snippet_triggers(&pairs);
+    }
+
+    pub fn expand_composer_variables(&self, raw_html: &str) -> String {
+        let now = chrono::Local::now();
+        let to_raw = self
+            .imp()
+            .entry_to
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+        let first_rcpt = to_raw.split(',').next().unwrap_or("").trim();
+        let to_email = extract_bare_email(first_rcpt);
+        let to_name = format_sender_display_name(first_rcpt);
+        let subject = self
+            .imp()
+            .entry_subject
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+
+        raw_html
+            .replace("{{date}}", &now.format("%Y-%m-%d").to_string())
+            .replace("{{Date}}", &now.format("%Y-%m-%d").to_string())
+            .replace("{{time}}", &now.format("%H:%M").to_string())
+            .replace("{{Time}}", &now.format("%H:%M").to_string())
+            .replace("{{to_name}}", &to_name)
+            .replace("{{FirstName}}", to_name.split_whitespace().next().unwrap_or(&to_name))
+            .replace("{{to_email}}", &to_email)
+            .replace("{{subject}}", &subject)
+    }
+
+    pub fn refresh_template_button(&self) {
+        let Some(btn) = self.imp().template_menu_button.borrow().as_ref().cloned() else {
+            return;
+        };
+        let has_items = !self.collect_template_items().is_empty();
+        btn.set_visible(has_items);
+    }
+
+    fn collect_template_items(&self) -> Vec<ComposerTemplateItem> {
+        let current_draft_id = self.imp().draft_id.borrow().clone();
+        let templates = TemplateStore::default().load();
+        let drafts = DraftStoreService::default().load();
+        let snippets = SnippetStore::default().load();
+        collect_template_items_from_sources(&templates, &drafts, &snippets, Some(&current_draft_id))
+    }
+
+    fn populate_templates_popover(&self, popover: &gtk::Popover) {
+        let items = self.collect_template_items();
+        if let Some(btn) = self.imp().template_menu_button.borrow().as_ref() {
+            btn.set_visible(!items.is_empty());
+        }
+
+        let list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .css_classes(["boxed-list"])
+            .build();
+
+        if items.is_empty() {
+            list.append(
+                &gtk::Label::builder()
+                    .label(gettext("No templates saved yet"))
+                    .margin_top(12)
+                    .margin_bottom(12)
+                    .margin_start(12)
+                    .margin_end(12)
+                    .css_classes(["dim-label"])
+                    .build(),
+            );
+            popover.set_child(Some(&list));
+            return;
+        }
+
+        let root_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .build();
+
+        let left_column = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .width_request(260)
+            .hexpand(false)
+            .halign(gtk::Align::Start)
+            .build();
+
+        let rename_bar_revealer = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .transition_duration(120)
+            .reveal_child(false)
+            .build();
+        let rename_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_top(6)
+            .margin_start(6)
+            .margin_end(6)
+            .build();
+        let rename_entry = gtk::Entry::builder()
+            .hexpand(true)
+            .placeholder_text(gettext("Template name"))
+            .build();
+        let rename_save_btn = gtk::Button::builder()
+            .icon_name("object-select-symbolic")
+            .tooltip_text(gettext("Save name"))
+            .css_classes(["suggested-action"])
+            .build();
+        let rename_cancel_btn = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .tooltip_text(gettext("Cancel"))
+            .css_classes(["flat"])
+            .build();
+        rename_bar.append(&rename_entry);
+        rename_bar.append(&rename_save_btn);
+        rename_bar.append(&rename_cancel_btn);
+        rename_bar_revealer.set_child(Some(&rename_bar));
+        left_column.append(&rename_bar_revealer);
+
+        let rename_target: std::rc::Rc<RefCell<Option<ComposerTemplateSource>>> =
+            std::rc::Rc::new(RefCell::new(None));
+
+        let commit_rename = {
+            let dialog_weak = self.downgrade();
+            let popover_weak = popover.downgrade();
+            let entry = rename_entry.clone();
+            let target_cell = rename_target.clone();
+            let revealer = rename_bar_revealer.clone();
+            move || {
+                let Some(source) = target_cell.borrow_mut().take() else {
+                    revealer.set_reveal_child(false);
+                    return;
+                };
+                let new_name = entry.text().to_string();
+                match rename_template_item_in_store(&source, &new_name) {
+                    Ok(()) => {
+                        revealer.set_reveal_child(false);
+                        if let (Some(dialog), Some(p)) =
+                            (dialog_weak.upgrade(), popover_weak.upgrade())
+                        {
+                            dialog.refresh_template_button();
+                            dialog.populate_templates_popover(&p);
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = dialog_weak.upgrade() {
+                            dialog.show_toast(&format!("{}: {error}", gettext("Could not rename")));
+                        }
+                    }
+                }
+            }
+        };
+        {
+            let commit = commit_rename.clone();
+            rename_save_btn.connect_clicked(move |_| commit());
+        }
+        {
+            let commit = commit_rename.clone();
+            rename_entry.connect_activate(move |_| commit());
+        }
+        {
+            let revealer = rename_bar_revealer.clone();
+            let target_cell = rename_target.clone();
+            rename_cancel_btn.connect_clicked(move |_| {
+                target_cell.borrow_mut().take();
+                revealer.set_reveal_child(false);
+            });
+        }
+        {
+            let key_ctrl = gtk::EventControllerKey::new();
+            let revealer = rename_bar_revealer.clone();
+            let target_cell = rename_target.clone();
+            key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
+                if keyval == gdk::Key::Escape && revealer.reveals_child() {
+                    target_cell.borrow_mut().take();
+                    revealer.set_reveal_child(false);
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            rename_entry.add_controller(key_ctrl);
+        }
+
+        let preview_revealer = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideRight)
+            .transition_duration(140)
+            .reveal_child(false)
+            .build();
+        let preview_inner = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .width_request(300)
+            .margin_start(10)
+            .margin_end(0)
+            .margin_top(2)
+            .margin_bottom(2)
+            .css_classes(["composer-template-preview"])
+            .build();
+        let lbl_preview_subject = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .margin_end(14)
+            .use_markup(false)
+            .css_classes(["heading"])
+            .build();
+        let lbl_preview_meta = gtk::Label::builder()
+            .xalign(0.0)
+            .margin_end(14)
+            .use_markup(false)
+            .css_classes(["caption", "dim-label"])
+            .visible(false)
+            .build();
+        let lbl_preview_body = gtk::Label::builder()
+            .xalign(0.0)
+            .yalign(0.0)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .margin_end(14)
+            .use_markup(false)
+            .selectable(false)
+            .build();
+        let preview_scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .overlay_scrolling(true)
+            .propagate_natural_height(true)
+            .max_content_height(260)
+            .hexpand(true)
+            .child(&lbl_preview_body)
+            .build();
+        preview_inner.append(&lbl_preview_subject);
+        preview_inner.append(&lbl_preview_meta);
+        preview_inner.append(&preview_scrolled);
+        preview_revealer.set_child(Some(&preview_inner));
+
+        for item in items {
+            let row_builder = adw::ActionRow::builder()
+                .title(&item.title)
+                .use_markup(false)
+                .activatable(true);
+            let row = if let Some(sub) = item.subtitle.as_deref() {
+                row_builder.subtitle(sub).build()
+            } else {
+                row_builder.build()
+            };
+
+            let rename_btn = gtk::Button::builder()
+                .icon_name("document-edit-symbolic")
+                .tooltip_text(gettext("Rename template"))
+                .css_classes(["flat", "composer-template-rename-btn"])
+                .valign(gtk::Align::Center)
+                .build();
+            set_accessible_label(&rename_btn, &gettext("Rename template"));
+            row.add_suffix(&rename_btn);
+
+            {
+                let source_for_rename = item.source.clone();
+                let current_title = item.title.clone();
+                let target_cell = rename_target.clone();
+                let entry = rename_entry.clone();
+                let revealer = rename_bar_revealer.clone();
+                rename_btn.connect_clicked(move |_| {
+                    *target_cell.borrow_mut() = Some(source_for_rename.clone());
+                    entry.set_text(&current_title);
+                    revealer.set_reveal_child(true);
+                    entry.grab_focus();
+                    entry.select_region(0, -1);
+                });
+            }
+
+            {
+                let motion = gtk::EventControllerMotion::new();
+                let preview_rev = preview_revealer.clone();
+                let subj_lbl = lbl_preview_subject.clone();
+                let meta_lbl = lbl_preview_meta.clone();
+                let body_lbl = lbl_preview_body.clone();
+                let subj_text = if item.subject.trim().is_empty() {
+                    item.title.clone()
+                } else {
+                    item.subject.clone()
+                };
+                let meta_text = if !item.trigger.is_empty() {
+                    format!("{} {}", gettext("Shortcut:"), item.trigger)
+                } else {
+                    String::new()
+                };
+                let body_preview = {
+                    let preview = template_body_preview_text(&item.body_html);
+                    if preview.is_empty() {
+                        gettext("(Empty body)")
+                    } else {
+                        preview
+                    }
+                };
+                motion.connect_enter(move |_, _, _| {
+                    subj_lbl.set_label(&subj_text);
+                    if meta_text.is_empty() {
+                        meta_lbl.set_visible(false);
+                    } else {
+                        meta_lbl.set_label(&meta_text);
+                        meta_lbl.set_visible(true);
+                    }
+                    body_lbl.set_label(&body_preview);
+                    preview_rev.set_reveal_child(true);
+                });
+                row.add_controller(motion);
+            }
+
+            let dialog_weak = self.downgrade();
+            let popover_weak = popover.downgrade();
+            row.connect_activated(move |_| {
+                let Some(dialog) = dialog_weak.upgrade() else {
+                    return;
+                };
+                if let Some(editor) = dialog.imp().html_editor.borrow().as_ref() {
+                    let clean_body = strip_evolution_signature_html(&item.body_html);
+                    let expanded = sanitize_html(&dialog.expand_composer_variables(&clean_body));
+                    editor.replace_html_preserving_undo(&expanded);
+                    dialog.reapply_current_signature_to_editor();
+                    if !item.subject.trim().is_empty() {
+                        if let Some(entry_subject) = dialog.imp().entry_subject.borrow().as_ref() {
+                            let cur_subj = entry_subject.text().to_string();
+                            let prev_tpl_subj =
+                                dialog.imp().last_applied_template_subject.borrow().clone();
+                            if cur_subj.trim().is_empty()
+                                || prev_tpl_subj.as_deref() == Some(cur_subj.as_str())
+                            {
+                                let next_subj = dialog.expand_composer_variables(&item.subject);
+                                entry_subject.set_text(&next_subj);
+                                dialog
+                                    .imp()
+                                    .last_applied_template_subject
+                                    .replace(Some(next_subj));
+                            }
+                        }
+                    }
+                    dialog.imp().user_typed_in_editor.set(true);
+                    dialog.mark_changed();
+                }
+                if let Some(p) = popover_weak.upgrade() {
+                    p.popdown();
+                }
+            });
+            list.append(&row);
+        }
+
+        let scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .max_content_height(320)
+            .child(&list)
+            .build();
+        left_column.append(&scrolled);
+
+        root_box.append(&left_column);
+        root_box.append(&preview_revealer);
+        popover.set_child(Some(&root_box));
+    }
+
+    pub fn refresh_composer_extension_actions(&self) {
+        let Some(container) = self.imp().composer_ext_box.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            container.remove(&child);
+        }
+        let registry = crate::services::extension_service::ExtensionRegistry::default();
+        let actions = registry.enabled_header_actions(
+            crate::services::extension_service::ExtensionSurface::Composer,
+        );
+        if actions.is_empty() {
+            container.set_visible(false);
+            return;
+        }
+        for (_ext, btn_spec) in actions {
+            let btn = gtk::Button::builder()
+                .icon_name(&btn_spec.icon_name)
+                .tooltip_text(&btn_spec.tooltip)
+                .css_classes(["flat"])
+                .valign(gtk::Align::Center)
+                .build();
+            let cmd_id = btn_spec.command.clone();
+            let dialog_weak = self.downgrade();
+            btn.connect_clicked(move |_| {
+                let Some(dialog) = dialog_weak.upgrade() else {
+                    return;
+                };
+                dialog.run_composer_extension_command(&cmd_id);
+            });
+            container.append(&btn);
+        }
+        container.set_visible(true);
+    }
+
+    fn run_composer_extension_command(&self, command_id: &str) {
+        let to = self
+            .imp()
+            .entry_to
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+        let subject = self
+            .imp()
+            .entry_subject
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+        let ctx = crate::services::extension_service::ExtensionExecutionContext {
+            command_id: command_id.to_string(),
+            active_surface: "composer".to_string(),
+            composer_to: Some(to),
+            composer_subject: Some(subject),
+            ..Default::default()
+        };
+        let cmd_owned = command_id.to_string();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let res = crate::services::extension_service::ExtensionRegistry::default()
+                .execute_command(&cmd_owned, &ctx);
+            let _ = sender.send_blocking(res);
+        });
+        let dialog_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(dialog) = dialog_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(resp) => {
+                    if let Some(html) = resp.insert_composer_html {
+                        dialog.insert_html_fragment(&html);
+                    }
+                    if let Some(new_subj) = resp.replace_composer_subject
+                        && let Some(entry) = dialog.imp().entry_subject.borrow().as_ref()
+                    {
+                        entry.set_text(&new_subj);
+                    }
+                    if let Some(toast) = resp.toast {
+                        dialog.show_toast(&toast);
+                    }
+                }
+                Err(err) => dialog.show_toast(&err),
+            }
+        });
+    }
+
+    fn present_schedule_send_dialog(&self) {
+        if self.imp().operation.get() != ComposeOperation::Idle {
+            return;
+        }
+        let sheet = adw::Dialog::builder()
+            .title(gettext("Schedule Send"))
+            .content_width(440)
+            .content_height(430)
+            .follows_content_size(false)
+            .build();
+        let toolbar_view = adw::ToolbarView::new();
+        let header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .build();
+        let btn_cancel = gtk::Button::with_label(&gettext("Cancel"));
+        let sheet_weak = sheet.downgrade();
+        btn_cancel.connect_clicked(move |_| {
+            if let Some(s) = sheet_weak.upgrade() {
+                s.close();
+            }
+        });
+        let btn_confirm = gtk::Button::builder()
+            .label(gettext("Schedule"))
+            .css_classes(["suggested-action"])
+            .build();
+        header.pack_start(&btn_cancel);
+        header.pack_end(&btn_confirm);
+        toolbar_view.add_top_bar(&header);
+
+        let page = adw::PreferencesPage::new();
+        let group_presets = adw::PreferencesGroup::builder()
+            .title(gettext("Quick Times"))
+            .build();
+        for (label, target_utc) in crate::services::scheduled_send_service::schedule_presets_utc() {
+            let row = adw::ActionRow::builder()
+                .title(&label)
+                .activatable(true)
+                .build();
+            let dialog_weak = self.downgrade();
+            let sheet_for_row = sheet.downgrade();
+            row.connect_activated(move |_| {
+                if let Some(s) = sheet_for_row.upgrade() {
+                    s.close();
+                }
+                if let Some(dialog) = dialog_weak.upgrade() {
+                    dialog.enqueue_scheduled_send(target_utc);
+                }
+            });
+            group_presets.add(&row);
+        }
+        page.add(&group_presets);
+
+        let tomorrow = (chrono::Local::now() + chrono::Duration::days(1)).date_naive();
+        let formatted_tomorrow = crate::dialogs::event_dialog::format_date_for_locale_entry(tomorrow);
+        let date_hint = match AppSettings::try_new()
+            .map(|s| s.resolved_date_format())
+            .unwrap_or_else(|| AppSettings::system_locale_date_format().to_string())
+            .as_str()
+        {
+            "german" => "DD.MM.YYYY",
+            "us" => "MM/DD/YYYY",
+            _ => "YYYY-MM-DD",
+        };
+        let group_custom = adw::PreferencesGroup::builder()
+            .title(gettext("Custom Date & Time"))
+            .build();
+        let row_date = adw::EntryRow::builder()
+            .title(format!("{} ({})", gettext("Date"), date_hint))
+            .text(formatted_tomorrow)
+            .build();
+        let row_time = adw::EntryRow::builder()
+            .title(gettext("Time (HH:MM)"))
+            .text("08:00")
+            .build();
+        group_custom.add(&row_date);
+        group_custom.add(&row_time);
+        page.add(&group_custom);
+
+        let dialog_weak_custom = self.downgrade();
+        let sheet_weak_custom = sheet.downgrade();
+        let date_hint_for_err = date_hint.to_string();
+        btn_confirm.connect_clicked(move |_| {
+            let Some(d) = crate::dialogs::event_dialog::parse_date_lenient(row_date.text().trim()) else {
+                if let Some(dlg) = dialog_weak_custom.upgrade() {
+                    dlg.show_toast(&format!("{}: {}", gettext("Invalid date format"), date_hint_for_err));
+                }
+                return;
+            };
+            let Ok(t) = chrono::NaiveTime::parse_from_str(row_time.text().trim(), "%H:%M") else {
+                if let Some(dlg) = dialog_weak_custom.upgrade() {
+                    dlg.show_toast(&gettext("Invalid time; use HH:MM"));
+                }
+                return;
+            };
+            let Some(local_dt) =
+                chrono::TimeZone::from_local_datetime(&chrono::Local, &d.and_time(t)).single()
+            else {
+                return;
+            };
+            let target_utc = local_dt.with_timezone(&chrono::Utc);
+            if target_utc <= chrono::Utc::now() {
+                if let Some(dlg) = dialog_weak_custom.upgrade() {
+                    dlg.show_toast(&gettext("Scheduled time must be in the future"));
+                }
+                return;
+            }
+            if let Some(s) = sheet_weak_custom.upgrade() {
+                s.close();
+            }
+            if let Some(dlg) = dialog_weak_custom.upgrade() {
+                dlg.enqueue_scheduled_send(target_utc);
+            }
+        });
+
+        toolbar_view.set_content(Some(&page));
+        sheet.set_child(Some(&toolbar_view));
+        sheet.present(Some(self));
+    }
+
+    fn enqueue_scheduled_send(&self, deliver_at_utc: chrono::DateTime<chrono::Utc>) {
+        let Some(editor) = self.imp().html_editor.borrow().as_ref().cloned() else {
+            return;
+        };
+        let dialog_weak = self.downgrade();
+        self.validate_and_confirm_send(move || {
+            let Some(dialog) = dialog_weak.upgrade() else {
+                return;
+            };
+            let dlg_for_content = dialog.downgrade();
+            editor.read_content(move |res| {
+                let Some(dlg) = dlg_for_content.upgrade() else {
+                    return;
+                };
+                let Ok(content) = res else {
+                    dlg.show_toast(&gettext("Could not read message body"));
+                    return;
+                };
+                let Ok(outgoing) = dlg.current_outgoing_message(content.body, content.plain_text)
+                else {
+                    dlg.show_toast(&gettext("Please check sender and recipient fields"));
+                    return;
+                };
+                match crate::services::scheduled_send_service::ScheduledSendStore::default()
+                    .enqueue(outgoing, deliver_at_utc, None)
+                {
+                    Ok(_) => {
+                        let draft_id = dlg.imp().draft_id.borrow().clone();
+                        if !draft_id.is_empty() {
+                            let _ = DraftStoreService::default().delete(&draft_id);
+                        }
+                        dlg.imp().local_draft_persisted.set(false);
+                        dlg.notify_mail_page_drafts_changed();
+                        let local_display = deliver_at_utc
+                            .with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d %H:%M")
+                            .to_string();
+                        dlg.show_toast(&format!(
+                            "{}: {}",
+                            gettext("Message scheduled for"),
+                            local_display
+                        ));
+                        dlg.imp().close_confirmed.set(true);
+                        dlg.set_can_close(true);
+                        dlg.close();
+                    }
+                    Err(err) => {
+                        dlg.show_toast(&format!("{}: {err}", gettext("Could not schedule message")));
+                    }
+                }
+            });
+        });
+    }
+
     pub fn is_row_cc_visible(&self) -> bool {
         self.imp()
             .row_cc_widgets
@@ -5408,6 +6585,31 @@ impl ComposeDialog {
         }
     }
 
+    fn reapply_current_signature_to_editor(&self) {
+        let Some(combo_sig) = self.imp().combo_signature.borrow().as_ref().cloned() else {
+            return;
+        };
+        let idx = combo_sig.selected() as usize;
+        let choices = self.imp().signature_choices.borrow();
+        let Some(choice) = choices.get(idx) else {
+            return;
+        };
+        if choice.html.trim().is_empty() {
+            return;
+        }
+        let top_signature = self
+            .imp()
+            .settings
+            .borrow()
+            .as_ref()
+            .map(|s| s.composer_top_signature())
+            .unwrap_or(true);
+        let markup = format_signature_markup(&choice.html);
+        if let Some(editor) = self.imp().html_editor.borrow().as_ref() {
+            editor.replace_or_insert_signature(&markup, top_signature);
+        }
+    }
+
     fn apply_default_signature(&self) {
         let Some(combo_sig) = self.imp().combo_signature.borrow().as_ref().cloned() else {
             return;
@@ -5601,6 +6803,13 @@ impl ComposeDialog {
                     priority,
                     charset,
                     smime: smime_options,
+                    template_name: dialog
+                        .imp()
+                        .persisted_draft
+                        .borrow()
+                        .as_ref()
+                        .and_then(|d| d.smime_options.as_ref())
+                        .and_then(|o| o.template_name.clone()),
                 }),
             };
             if !draft_has_user_content(&draft) {
@@ -6361,34 +7570,64 @@ impl ComposeDialog {
             return;
         }
 
-        let win_w = if let Some(win) = self.root().and_downcast::<gtk::Window>() {
-            win.width().max(win.default_width())
-        } else if self.width() > 0 {
-            self.width()
+        let bar_w = self
+            .imp()
+            .attachment_bar
+            .borrow()
+            .as_ref()
+            .map(|b| b.width())
+            .unwrap_or(0);
+        let fallback_w = if let Some(win) = self.root().and_downcast::<gtk::Window>() {
+            (win.width().max(win.default_width()) - 32).max(200)
+        } else if self.width() > 32 {
+            self.width() - 32
         } else {
-            780
+            920
         };
+        let available_bar_w = if bar_w > 60 { bar_w } else { fallback_w };
 
-        let max_chips = if win_w < 550 {
-            1
-        } else if win_w < 750 {
-            2
-        } else if win_w < 1000 {
-            3
-        } else {
-            4
-        };
+        let title_w = self
+            .imp()
+            .attachment_title_box
+            .borrow()
+            .as_ref()
+            .map(|w| w.preferred_size().1.width())
+            .unwrap_or(28)
+            .max(28);
+        let right_w = self
+            .imp()
+            .attachment_right_actions
+            .borrow()
+            .as_ref()
+            .map(|w| w.preferred_size().1.width())
+            .unwrap_or(32)
+            .max(28);
+        let budget = (available_bar_w - title_w - right_w - 36).max(64);
 
-        let visible_count = total_count.min(max_chips);
-        let visible_attachments: Vec<_> = attachments.iter().take(visible_count).collect();
+        let candidate_chips: Vec<(gtk::Widget, i32)> = attachments
+            .iter()
+            .map(|att| {
+                let chip = create_attachment_chip(att, self.downgrade());
+                let nat_w = chip.preferred_size().1.width().max(64);
+                (chip, nat_w)
+            })
+            .collect();
+        let chip_widths: Vec<i32> = candidate_chips.iter().map(|(_, w)| *w).collect();
 
-        for att in visible_attachments {
-            let chip = create_attachment_chip(att, self.downgrade());
+        let sample_overflow = gtk::Button::builder()
+            .label(&format!("+{total_count} …"))
+            .css_classes(["flat", "circular", "attachment-overflow-btn"])
+            .build();
+        let overflow_w = sample_overflow.preferred_size().1.width().max(52);
+
+        let fit_count = fit_attachment_chip_count(&chip_widths, budget, 6, overflow_w);
+
+        for (chip, _) in candidate_chips.into_iter().take(fit_count) {
             chip_box.append(&chip);
         }
 
-        if total_count > max_chips {
-            let remaining = total_count - max_chips;
+        if total_count > fit_count {
+            let remaining = total_count - fit_count;
             let tip = if remaining == 1 {
                 gettext("1 more attachment (Click to expand)")
             } else {
@@ -6571,6 +7810,12 @@ impl ComposeDialog {
                 tb.set_tooltip_text(Some(&format!("{count_str} ({size_str})")));
             }
             self.apply_attachment_view_state();
+            let dialog_weak = self.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(dialog) = dialog_weak.upgrade() {
+                    dialog.update_attachment_bar_chips();
+                }
+            });
         }
     }
 }
@@ -7203,13 +8448,115 @@ impl Default for ComposeDialog {
     }
 }
 
-fn local_account_choices() -> Vec<ComposeIdentity> {
-    AccountConfigStore::default()
-        .load()
-        .into_iter()
+fn local_account_choices_from_profiles(profiles: &[AccountProfile]) -> Vec<ComposeIdentity> {
+    profiles
+        .iter()
+        .cloned()
         .filter(|profile| profile.enabled)
         .flat_map(compose_identities_for_profile)
         .collect()
+}
+
+fn extract_bare_email(token: &str) -> String {
+    let trimmed = token.trim();
+    if let (Some(lt), Some(gt)) = (trimmed.rfind('<'), trimmed.rfind('>'))
+        && lt < gt
+    {
+        return trimmed[lt + 1..gt].trim().to_string();
+    }
+    trimmed.trim_matches('"').trim().to_string()
+}
+
+/// Match `To`/`Cc` headers of an incoming message against configured accounts,
+/// aliases, and `+tag` sub-addresses (`user+tag@domain` -> `user@domain`).
+fn resolve_reply_alias_identity(header_fields: &[&str]) -> Option<(String, String)> {
+    let profiles = AccountConfigStore::default().load();
+    let enabled_profiles: Vec<&AccountProfile> = profiles.iter().filter(|p| p.enabled).collect();
+    if enabled_profiles.is_empty() {
+        return None;
+    }
+
+    for field in header_fields {
+        for token in field.split(',') {
+            let candidate_addr = extract_bare_email(token);
+            if !candidate_addr.contains('@') {
+                continue;
+            }
+            // 1. Exact alias or primary match
+            for profile in &enabled_profiles {
+                if profile.email.eq_ignore_ascii_case(&candidate_addr)
+                    || profile
+                        .aliases
+                        .iter()
+                        .any(|a| extract_bare_email(a).eq_ignore_ascii_case(&candidate_addr))
+                {
+                    let from_str = if profile.display_name.trim().is_empty() {
+                        candidate_addr.clone()
+                    } else {
+                        format!("{} <{}>", profile.display_name.trim(), candidate_addr)
+                    };
+                    return Some((profile.id.clone(), from_str));
+                }
+            }
+            // 2. Plus-addressing (`local+tag@domain`) match against primary or alias
+            if let Some((local_plus, domain)) = candidate_addr.rsplit_once('@')
+                && let Some((base_local, _tag)) = local_plus.split_once('+')
+            {
+                let base_addr = format!("{base_local}@{domain}");
+                for profile in &enabled_profiles {
+                    if profile.email.eq_ignore_ascii_case(&base_addr)
+                        || profile
+                            .aliases
+                            .iter()
+                            .any(|a| extract_bare_email(a).eq_ignore_ascii_case(&base_addr))
+                    {
+                        return Some((profile.id.clone(), profile.email.clone()));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn auto_collect_outgoing_recipients(header_fields: &[&str]) {
+    let store = ContactStoreService::with_writable_contact_dir(
+        crate::services::app_data_dir().join("vcards"),
+    );
+    let existing = store.load_contacts();
+    let mut known_emails: std::collections::HashSet<String> = existing
+        .iter()
+        .flat_map(|r| {
+            let mut emails = vec![r.contact.email.to_ascii_lowercase()];
+            emails.extend(r.contact.emails.iter().map(|e| e.to_ascii_lowercase()));
+            emails
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for field in header_fields {
+        for token in field.split(',') {
+            let addr = extract_bare_email(token);
+            if !addr.contains('@') || is_internal_microsoft_routing_address(&addr) {
+                continue;
+            }
+            let lower = addr.to_ascii_lowercase();
+            if !known_emails.insert(lower) {
+                continue;
+            }
+            let display = format_sender_display_name(token);
+            let uid = uuid::Uuid::new_v4().to_string();
+            let fn_val = if display.trim().is_empty() {
+                addr.clone()
+            } else {
+                display.trim().to_string()
+            };
+            let vcard = format!(
+                "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:{uid}\r\nFN:{fn_val}\r\nEMAIL;TYPE=INTERNET:{addr}\r\nEND:VCARD\r\n"
+            );
+            let _ = store.import_vcard_content(&vcard);
+        }
+    }
 }
 
 fn preferred_composer_account_id() -> Option<String> {
@@ -7240,7 +8587,14 @@ fn compose_identities_for_profile(profile: AccountProfile) -> Vec<ComposeIdentit
     let source_uid = profile.id;
     let display_name = profile.display_name.trim().to_string();
     let reply_to = profile.reply_to.trim().to_string();
-    let primary_address = profile.email.trim().to_string();
+    let primary_address = if (profile.is_shared_mailbox || profile.open_mailbox_other_user)
+        && !profile.foreign_mailbox.trim().is_empty()
+        && profile.foreign_mailbox.contains('@')
+    {
+        profile.foreign_mailbox.trim().to_string()
+    } else {
+        profile.email.trim().to_string()
+    };
     let (primary_label, primary_from) =
         if display_name.is_empty() || display_name.eq_ignore_ascii_case(&primary_address) {
             (primary_address.clone(), primary_address.clone())
@@ -9546,6 +10900,9 @@ mod tests {
         assert!(COMPOSER_OPERATION_ACTIONS.contains(&"print-preview"));
         assert!(COMPOSER_ACTION_SHORTCUTS
             .iter()
+            .any(|(action, shortcut)| *action == "discard" && *shortcut == "<Control><Shift>w"));
+        assert!(COMPOSER_ACTION_SHORTCUTS
+            .iter()
             .any(|(action, shortcut)| *action == "toggle-format-toolbar" && *shortcut == "<Control><Shift>f"));
     }
 
@@ -10063,6 +11420,52 @@ mod tests {
             reconciled_composer_default_account("external-eds", &[disabled]),
             "external-eds"
         );
+    }
+
+    #[test]
+    fn shared_mailbox_identity_preserves_delegate_sender_in_rfc822() {
+        let shared_profile = AccountProfile {
+            id: "account:dept@example.org".to_string(),
+            display_name: "Department Team".to_string(),
+            email: "user@example.org".to_string(),
+            protocol: crate::services::account_config_service::AccountProtocol::Exchange,
+            is_shared_mailbox: true,
+            open_mailbox_other_user: true,
+            foreign_mailbox: "dept@example.org".to_string(),
+            parent_account_id: Some("eds:host-account".to_string()),
+            enabled: true,
+            ..Default::default()
+        };
+        let identities = local_account_choices_from_profiles(&[shared_profile]);
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].source_uid, "account:dept@example.org");
+        assert_eq!(identities[0].from, "Department Team <dept@example.org>");
+
+        let outgoing = OutgoingMessage {
+            source_uid: identities[0].source_uid.clone(),
+            from: identities[0].from.clone(),
+            reply_to: String::new(),
+            request_read_receipt: false,
+            to: "recipient@example.org".to_string(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Shared Mailbox Outgoing".to_string(),
+            html_body: "<p>Hello from shared mailbox</p>".to_string(),
+            plain_text: true,
+            priority: false,
+            charset: "UTF-8".to_string(),
+            attachments: Vec::new(),
+            calendar_method: None,
+            calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
+        };
+        let raw = mail_composer_service::build_rfc822(&outgoing).expect("valid RFC822 message");
+        let rendered = String::from_utf8_lossy(&raw);
+        assert!(rendered.contains("From: Department Team <dept@example.org>"));
+        assert!(!rendered.contains("user@example.org"));
     }
 
     #[test]
@@ -11170,6 +12573,128 @@ mod tests {
         reply_all_dialog.close();
         forward_dialog.close();
         while context.iteration(false) {}
+    }
+
+    #[test]
+    fn drafts_with_template_variables_unify_with_templates_and_snippets() {
+        let regular_draft = DraftMessage {
+            id: "draft-1".to_string(),
+            from: String::new(),
+            reply_to: String::new(),
+            source_uid: String::new(),
+            to: String::new(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Normal draft".to_string(),
+            html_body: "<p>Just a draft with empty {{}} braces.</p>".to_string(),
+            plain_text: false,
+            updated_at: String::new(),
+            attachments: Vec::new(),
+            calendar_method: None,
+            calendar_component: None,
+            pgp_sign: false,
+            pgp_encrypt: false,
+            pgp_key: String::new(),
+            smime_options: None,
+        };
+        let template_draft = DraftMessage {
+            id: "draft-2".to_string(),
+            subject: "Welcome {{FirstName}}".to_string(),
+            html_body: "<p>Hello {{to_name}},</p><p>Sent on {{date}}.</p>".to_string(),
+            ..regular_draft.clone()
+        };
+        let renamed_template_draft = DraftMessage {
+            id: "draft-3".to_string(),
+            subject: "Welcome {{FirstName}}".to_string(),
+            html_body: "<p>Alternative version</p>".to_string(),
+            smime_options: Some(DraftComposerOptions {
+                template_name: Some("Onboarding B".to_string()),
+                ..DraftComposerOptions::default()
+            }),
+            ..regular_draft.clone()
+        };
+        let own_template_draft = DraftMessage {
+            id: "draft-current".to_string(),
+            subject: "Self {{date}}".to_string(),
+            ..regular_draft.clone()
+        };
+
+        assert!(!draft_has_template_variables(&regular_draft));
+        assert!(draft_has_template_variables(&template_draft));
+
+        let templates = vec![MailTemplate {
+            id: "tpl-1".to_string(),
+            name: "Quote Follow-up".to_string(),
+            subject: "Following up".to_string(),
+            body_html: "<p>Hi {{FirstName}}</p>".to_string(),
+        }];
+        let snippets = vec![MailSnippet {
+            id: "snp-1".to_string(),
+            name: "Regards".to_string(),
+            trigger: "/regards".to_string(),
+            body_html: "<p>Best regards</p>".to_string(),
+        }];
+
+        let items = collect_template_items_from_sources(
+            &templates,
+            &[
+                regular_draft,
+                template_draft,
+                renamed_template_draft,
+                own_template_draft,
+            ],
+            &snippets,
+            Some("draft-current"),
+        );
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0].title, "Quote Follow-up");
+        assert_eq!(items[0].subtitle.as_deref(), Some("Following up"));
+        assert!(!items[0].insert_at_cursor);
+        assert_eq!(items[1].title, "Welcome {{FirstName}}");
+        assert_eq!(items[1].subtitle, None);
+        assert!(!items[1].insert_at_cursor);
+        assert_eq!(items[2].title, "Onboarding B");
+        assert_eq!(items[2].subtitle.as_deref(), Some("Welcome {{FirstName}}"));
+        assert_eq!(items[3].title, "Regards");
+        assert_eq!(items[3].subtitle.as_deref(), Some("/regards"));
+        assert!(items[3].insert_at_cursor);
+
+        assert_eq!(
+            template_body_preview_text("<p>Hello {{to_name}},</p><p>Sent &amp; sealed.</p>"),
+            "Hello {{to_name}},\nSent & sealed."
+        );
+        assert_eq!(
+            template_body_preview_text(
+                "<div><p>Line 1<br></p></div><p><br></p><p>Line 2</p><div id=\"_evolution_signature_\" class=\"evolution-signature\"><p>-- <br>Martin</p></div>"
+            ),
+            "Line 1\n\nLine 2"
+        );
+
+        let duplicate_template = vec![
+            MailTemplate {
+                id: "tpl-a".to_string(),
+                name: "Duplicate A".to_string(),
+                subject: "Following up".to_string(),
+                body_html: "<p>Hi {{FirstName}}</p>".to_string(),
+            },
+            MailTemplate {
+                id: "tpl-b".to_string(),
+                name: "Duplicate B".to_string(),
+                subject: "Following up".to_string(),
+                body_html: "<p>Hi {{FirstName}}</p><div id=\"_evolution_signature_\"><p>-- Sig</p></div>".to_string(),
+            },
+        ];
+        assert_eq!(
+            collect_template_items_from_sources(&duplicate_template, &[], &[], None).len(),
+            1
+        );
+
+        assert_eq!(fit_attachment_chip_count(&[120, 120, 120], 400, 6, 56), 3);
+        assert_eq!(fit_attachment_chip_count(&[120, 120, 120], 310, 6, 56), 2);
+        assert_eq!(fit_attachment_chip_count(&[120, 120, 120], 250, 6, 56), 1);
+
+        let empty = collect_template_items_from_sources(&[], &[], &[], None);
+        assert!(empty.is_empty());
     }
 }
 
