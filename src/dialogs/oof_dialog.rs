@@ -96,11 +96,39 @@ impl OutOfOfficeDialog {
 
         let page = adw::PreferencesPage::new();
 
+        let all_accounts: Vec<crate::services::account_config_service::AccountProfile> =
+            AccountConfigStore::default()
+                .load()
+                .into_iter()
+                .filter(|a| a.enabled)
+                .collect();
         let graph_service = graph_service_for_configured_account();
         let saved_settings = OutOfOfficeStore::default().load();
 
         // Group 1: Untitled
         let group_schedule = adw::PreferencesGroup::new();
+
+        let account_combo = if !all_accounts.is_empty() {
+            let labels: Vec<String> = all_accounts
+                .iter()
+                .map(|a| {
+                    if a.display_name.trim().is_empty() {
+                        a.email.clone()
+                    } else {
+                        format!("{} ({})", a.display_name, a.email)
+                    }
+                })
+                .collect();
+            let str_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+            let combo = adw::ComboRow::builder()
+                .title(gettext("Account"))
+                .model(&gtk::StringList::new(&str_refs))
+                .build();
+            group_schedule.add(&combo);
+            Some(combo)
+        } else {
+            None
+        };
 
         let row_enabled = adw::SwitchRow::builder()
             .title(gettext("Send Automatic Replies"))
@@ -208,6 +236,8 @@ impl OutOfOfficeDialog {
         let rich_internal_for_save = rich_internal.clone();
         let rich_external_for_save = rich_external.clone();
         let graph_service_for_save = graph_service.clone();
+        let accounts_for_save = all_accounts.clone();
+        let account_combo_for_save = account_combo.clone();
         let save_button_for_save = btn_save.clone();
 
         btn_save.connect_clicked(move |_| {
@@ -236,8 +266,80 @@ impl OutOfOfficeDialog {
                 return;
             }
 
+            let selected_profile = account_combo_for_save
+                .as_ref()
+                .and_then(|c| accounts_for_save.get(c.selected() as usize))
+                .cloned();
+
             match OutOfOfficeStore::default().save(&settings) {
                 Ok(()) => {
+                    if let Some(ref prof) = selected_profile
+                        && prof.protocol == AccountProtocol::ImapSmtp
+                        && !prof.imap_host.trim().is_empty()
+                    {
+                        save_button_for_save.set_sensitive(false);
+                        let prof_clone = prof.clone();
+                        let settings_for_sieve = settings.clone();
+                        let dialog_weak = dialog_for_save.downgrade();
+                        let save_btn = save_button_for_save.clone();
+                        let (tx, rx) = async_channel::bounded(1);
+                        thread::spawn(move || {
+                            let secret = crate::services::credential_service::CredentialService::fetch_password(&prof_clone.id)
+                                .ok()
+                                .flatten()
+                                .unwrap_or_default();
+                            if secret.is_empty() {
+                                let _ = tx.send_blocking(Err("No stored password for ManageSieve".to_string()));
+                                return;
+                            }
+                            let cfg = crate::services::sieve_service::ManageSieveConfig {
+                                host: prof_clone.imap_host.clone(),
+                                port: 4190,
+                                username: if prof_clone.username.trim().is_empty() {
+                                    prof_clone.email.clone()
+                                } else {
+                                    prof_clone.username.clone()
+                                },
+                                secret,
+                                use_oauth2: prof_clone.auth_method.to_ascii_lowercase().contains("oauth"),
+                            };
+                            let script = crate::services::sieve_service::generate_sieve_vacation_script(
+                                &settings_for_sieve,
+                                std::slice::from_ref(&prof_clone.email),
+                            );
+                            let res = crate::services::sieve_service::upload_and_activate_sieve_script(
+                                &cfg,
+                                "meridian-vacation",
+                                &script,
+                            );
+                            let _ = tx.send_blocking(res);
+                        });
+                        glib::spawn_future_local(async move {
+                            let res = rx.recv().await;
+                            let Some(dialog) = dialog_weak.upgrade() else {
+                                return;
+                            };
+                            save_btn.set_sensitive(true);
+                            match res {
+                                Ok(Ok(())) => {
+                                    show_dialog_toast(
+                                        &dialog,
+                                        &gettext("Out-of-office vacation script activated via ManageSieve"),
+                                    );
+                                    dialog.close();
+                                }
+                                _ => {
+                                    show_dialog_toast(
+                                        &dialog,
+                                        &gettext("Out-of-office settings saved locally"),
+                                    );
+                                    dialog.close();
+                                }
+                            }
+                        });
+                        return;
+                    }
+
                     let Some(service) = graph_service_for_save.clone() else {
                         show_dialog_toast(
                             &dialog_for_save,

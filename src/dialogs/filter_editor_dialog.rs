@@ -1156,11 +1156,24 @@ impl FilterEditorDialog {
         });
         header_bar.pack_start(&btn_cancel);
 
+        let btn_sieve = gtk::Button::builder()
+            .label(gettext("Sieve…"))
+            .tooltip_text(gettext("Export or upload server-side Sieve script"))
+            .css_classes(["flat"])
+            .build();
+        let dlg_for_sieve = self.downgrade();
+        btn_sieve.connect_clicked(move |_| {
+            if let Some(dlg) = dlg_for_sieve.upgrade() {
+                dlg.present_sieve_export_sheet();
+            }
+        });
+
         let btn_save = gtk::Button::builder()
             .label(gettext("Save"))
             .css_classes(["suggested-action"])
             .build();
         header_bar.pack_end(&btn_save);
+        header_bar.pack_end(&btn_sieve);
         toolbar_view.add_top_bar(&header_bar);
 
         let content_scroll = gtk::ScrolledWindow::builder()
@@ -1479,6 +1492,140 @@ impl FilterEditorDialog {
         content_scroll.set_child(Some(&content_box));
         toolbar_view.set_content(Some(&content_scroll));
         self.set_child(Some(&toolbar_view));
+    }
+
+    fn present_sieve_export_sheet(&self) {
+        let rules = MailFilterStore::default().load();
+        let sieve_script = crate::services::sieve_service::compile_filters_to_sieve(&rules);
+
+        let sheet = adw::Dialog::builder()
+            .title(gettext("Server-Side Sieve Script"))
+            .content_width(580)
+            .content_height(460)
+            .build();
+        let tv = adw::ToolbarView::new();
+        let hb = adw::HeaderBar::new();
+
+        let btn_copy = gtk::Button::builder()
+            .label(gettext("Copy"))
+            .css_classes(["flat"])
+            .build();
+        let script_for_copy = sieve_script.clone();
+        let dlg_for_copy = self.downgrade();
+        btn_copy.connect_clicked(move |b| {
+            b.display().clipboard().set_text(&script_for_copy);
+            if let Some(d) = dlg_for_copy.upgrade() {
+                d.show_toast(&gettext("Sieve script copied to clipboard"));
+            }
+        });
+        hb.pack_start(&btn_copy);
+
+        let imap_accounts: Vec<_> =
+            crate::services::account_config_service::AccountConfigStore::default()
+                .load()
+                .into_iter()
+                .filter(|a| {
+                    a.enabled
+                        && a.protocol
+                            == crate::services::account_config_service::AccountProtocol::ImapSmtp
+                        && !a.imap_host.trim().is_empty()
+                })
+                .collect();
+
+        if let Some(first_imap) = imap_accounts.into_iter().next() {
+            let btn_upload = gtk::Button::builder()
+                .label(gettext("Upload to Server"))
+                .css_classes(["suggested-action"])
+                .build();
+            let script_for_upload = sieve_script.clone();
+            let dlg_weak = self.downgrade();
+            let sheet_weak = sheet.downgrade();
+            btn_upload.connect_clicked(move |btn| {
+                btn.set_sensitive(false);
+                let b_clone = btn.clone();
+                let prof = first_imap.clone();
+                let body = script_for_upload.clone();
+                let (tx, rx) = async_channel::bounded(1);
+                std::thread::spawn(move || {
+                    let secret =
+                        crate::services::credential_service::CredentialService::fetch_password(
+                            &prof.id,
+                        )
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    if secret.is_empty() {
+                        let _ = tx.send_blocking(Err(
+                            "No stored password for ManageSieve".to_string(),
+                        ));
+                        return;
+                    }
+                    let cfg = crate::services::sieve_service::ManageSieveConfig {
+                        host: prof.imap_host.clone(),
+                        port: 4190,
+                        username: if prof.username.trim().is_empty() {
+                            prof.email.clone()
+                        } else {
+                            prof.username.clone()
+                        },
+                        secret,
+                        use_oauth2: prof.auth_method.to_ascii_lowercase().contains("oauth"),
+                    };
+                    let res = crate::services::sieve_service::upload_and_activate_sieve_script(
+                        &cfg,
+                        "meridian-filters",
+                        &body,
+                    );
+                    let _ = tx.send_blocking(res);
+                });
+                let dw = dlg_weak.clone();
+                let sw = sheet_weak.clone();
+                glib::spawn_future_local(async move {
+                    let res = rx.recv().await;
+                    b_clone.set_sensitive(true);
+                    if let Some(d) = dw.upgrade() {
+                        match res {
+                            Ok(Ok(())) => {
+                                d.show_toast(&gettext("Sieve filter script uploaded and activated"));
+                                if let Some(s) = sw.upgrade() {
+                                    s.close();
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                d.show_toast(&format!("{}: {e}", gettext("ManageSieve failed")));
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                });
+            });
+            hb.pack_end(&btn_upload);
+        }
+
+        tv.add_top_bar(&hb);
+
+        let scroll = gtk::ScrolledWindow::builder()
+            .vexpand(true)
+            .hexpand(true)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(8)
+            .margin_bottom(12)
+            .build();
+        let view = gtk::TextView::builder()
+            .editable(false)
+            .monospace(true)
+            .top_margin(10)
+            .bottom_margin(10)
+            .left_margin(10)
+            .right_margin(10)
+            .css_classes(["card"])
+            .build();
+        view.buffer().set_text(&sieve_script);
+        scroll.set_child(Some(&view));
+        tv.set_content(Some(&scroll));
+        sheet.set_child(Some(&tv));
+        sheet.present(Some(self));
     }
 
     fn show_toast(&self, message: &str) {
