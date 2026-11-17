@@ -24,6 +24,7 @@ use crate::{APP_ID, RESOURCE_PATH};
 pub(crate) const ACCELERATOR_BINDINGS: &[(&str, &[&str])] = &[
     ("app.quit", &["<Ctrl>Q"]),
     ("app.global-search", &["<Ctrl><Shift>G"]),
+    ("win.command-palette", &["<Ctrl><Shift>P"]),
     ("app.preferences", &["<Ctrl>comma"]),
     ("win.show-help-overlay", &["<Ctrl>question", "F1", "<Ctrl>slash"]),
     ("win.search", &["<Ctrl>F"]),
@@ -155,6 +156,7 @@ mod imp {
         pub reminder_check_in_progress: Cell<bool>,
         pub reminder_initial_check_done: Cell<bool>,
         pub reminder_actions_in_flight: RefCell<HashSet<String>>,
+        pub background_hold_guard: RefCell<Option<gio::ApplicationHoldGuard>>,
     }
 
     #[glib::object_subclass]
@@ -558,7 +560,11 @@ impl MeridianApplication {
             self,
             move |_, _| {
                 tracing::info!("Quit action triggered");
+                app.imp().background_hold_guard.borrow_mut().take();
                 for window in app.windows() {
+                    if let Ok(mw) = window.clone().downcast::<MeridianWindow>() {
+                        mw.prepare_explicit_quit();
+                    }
                     window.close();
                 }
                 app.quit();
@@ -1129,9 +1135,17 @@ impl MeridianApplication {
                 candidates.sort_by(|l, r| l.due_at.cmp(&r.due_at).then_with(|| l.key.cmp(&r.key)));
                 candidates.dedup_by(|l, r| l.key == r.key);
             }
+            let scheduled_sent =
+                crate::services::scheduled_send_service::dispatch_due_scheduled_messages(
+                    &crate::services::scheduled_send_service::ScheduledSendStore::default(),
+                );
+            let resurfaced_snoozes = crate::services::snooze_service::SnoozeStore::default()
+                .pop_expired_snoozes(chrono::Utc::now());
             let result = ReminderStore::new()
                 .and_then(|mut store| scheduler.claim_due_reminders(&mut store, &candidates));
-            if let Err(error) = sender.send_blocking(result) {
+            if let Err(error) =
+                sender.send_blocking((result, scheduled_sent, resurfaced_snoozes))
+            {
                 tracing::debug!(%error, "Reminder result was dropped before delivery");
             }
         });
@@ -1142,17 +1156,49 @@ impl MeridianApplication {
                 return;
             };
             app.imp().reminder_check_in_progress.set(false);
-            let due = match receiver.recv().await {
-                Ok(Ok(due)) => due,
-                Ok(Err(error)) => {
+            let (due_res, scheduled_sent, resurfaced_snoozes) = match receiver.recv().await {
+                Ok(tuple) => tuple,
+                Err(error) => {
+                    tracing::debug!(%error, "Reminder result channel closed");
+                    return;
+                }
+            };
+            if !scheduled_sent.is_empty() || !resurfaced_snoozes.is_empty() {
+                for subj in &scheduled_sent {
+                    let notif = gio::Notification::new(&gettext("Scheduled Email Sent"));
+                    if !subj.trim().is_empty() {
+                        notif.set_body(Some(subj));
+                    }
+                    app.send_notification(Some(&format!("sched-{}", uuid::Uuid::new_v4())), &notif);
+                }
+                for snoozed in &resurfaced_snoozes {
+                    let notif = gio::Notification::new(&gettext("Snoozed Email"));
+                    let body = if snoozed.subject.trim().is_empty() {
+                        snoozed.sender.clone()
+                    } else {
+                        format!("{} — {}", snoozed.sender, snoozed.subject)
+                    };
+                    notif.set_body(Some(&body));
+                    app.send_notification(
+                        Some(&format!("snooze-{}", snoozed.message_key)),
+                        &notif,
+                    );
+                }
+                for win in app.windows() {
+                    if let Ok(mw) = win.downcast::<MeridianWindow>()
+                        && let Some(mp) = mw.mail_page()
+                    {
+                        mp.refresh_mail();
+                    }
+                }
+            }
+            let due = match due_res {
+                Ok(due) => due,
+                Err(error) => {
                     app.show_reminder_error(&format!(
                         "{}: {error}",
                         gettext("Could not save reminder state")
                     ));
-                    return;
-                }
-                Err(error) => {
-                    tracing::debug!(%error, "Reminder result channel closed");
                     return;
                 }
             };
@@ -1211,13 +1257,32 @@ impl MeridianApplication {
         });
     }
 
-    /// Set up keyboard accelerators for actions.
+    /// Set up keyboard accelerators for actions, applying optional user overrides
+    /// from `<app_data_dir>/keybindings.json`.
     fn setup_accels(&self) {
         for (action, accelerators) in ACCELERATOR_BINDINGS {
             self.set_accels_for_action(action, accelerators);
         }
 
+        let overrides_path = crate::services::app_data_dir().join("keybindings.json");
+        if let Ok(raw) = std::fs::read_to_string(&overrides_path)
+            && let Ok(map) =
+                serde_json::from_str::<std::collections::BTreeMap<String, Vec<String>>>(&raw)
+        {
+            for (action, accels) in map {
+                let refs: Vec<&str> = accels.iter().map(String::as_str).collect();
+                self.set_accels_for_action(&action, &refs);
+            }
+        }
+
         tracing::debug!("Keyboard accelerators registered");
+    }
+
+    pub fn enter_background_mode(&self) {
+        if self.imp().background_hold_guard.borrow().is_none() {
+            let guard = self.hold();
+            self.imp().background_hold_guard.replace(Some(guard));
+        }
     }
 
     /// Show the About dialog using AdwAboutDialog.

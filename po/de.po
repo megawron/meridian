@@ -16370,3 +16370,400 @@ msgstr "_Hinzufügen"
 #: src/dialogs/preferences_dialog.rs
 msgid "Open a shared Exchange mailbox (group mailbox such as team@example.com). Access is authorized via your primary Exchange account without a separate password."
 msgstr "Öffnet ein freigegebenes Exchange-Postfach (Gruppenpostfach wie team@example.com). Der Zugriff erfolgt über Ihr primäres Exchange-Konto ohne separates Passwort."
+
+#: src/views/contacts_page.rs
+msgid "Filter"
+msgstr "Filter"
+
+#: src/views/contacts_page.rs
+msgid "New Contact List…"
+msgstr "Neue Kontaktliste …"
+
+#: src/views/contacts_page.rs
+msgid "No Contact Selected"
+msgstr "Kein Kontakt ausgewählt"
+
+#: src/views/contacts_page.rs
+msgid "Select a contact to view details."
+msgstr "Wählen Sie einen Kontakt aus, um Details anzuzeigen."
+
+#: src/views/contacts_page.rs
+msgid "Open Website"
+msgstr "Webseite öffnen"
+
+#: src/views/contacts_page.rs
+msgid "Related"
+msgstr "Beziehung"
+
+#: src/views/contacts_page.rs
+msgid "Jump to '{letter}'"
+msgstr "Zu ‚{letter}‘ springen"
+
+msgid "Schedule Send…"
+msgstr "Zeitversetzt senden …"
+
+msgid "Schedule Send"
+msgstr "Zeitversetzt senden"
+
+msgid "Message scheduled for delivery"
+msgstr "Nachricht für zeitversetzten Versand eingeplant"
+
+msgid "Sending in {} s…"
+msgstr "Wird in {} s gesendet …"
+
+msgid "Send cancelled"
+msgstr "Versand abgebrochen"
+
+msgid "Undo Send delay"
+msgstr "Verzögerung für Versand-Rücknahme"
+
+msgid "5 seconds"
+msgstr "5 Sekunden"
+
+msgid "10 seconds"
+msgstr "10 Sekunden"
+
+msgid "30 seconds"
+msgstr "30 Sekunden"
+
+msgid "Keep running in background"
+msgstr "Im Hintergrund weiterlaufen lassen"
+
+msgid "Single-key mail shortcuts"
+msgstr "Ein-Tasten-Tastenkürzel für E-Mails"
+
+msgid "Save outgoing recipients automatically"
+msgstr "Empfänger ausgehender E-Mails automatisch speichern"
+
+msgid "Extensions & Add-ons…"
+msgstr "Erweiterungen & Add-ons …"
+
+msgid "Extensions & Add-ons"
+msgstr "Erweiterungen & Add-ons"
+
+msgid "Command Palette…"
+msgstr "Befehlspalette …"
+
+msgid "Command Palette"
+msgstr "Befehlspalette"
+
+msgid "Type a command or search actions…"
+msgstr "Befehl eingeben oder Aktion suchen …"
+
+msgid "Optional Built-in Features"
+msgstr "Optionale Zusatzfunktionen"
+
+msgid "Installed Add-ons"
+msgstr "Installierte Add-ons"
+
+msgid "Install from Folder…"
+msgstr "Aus Ordner installieren …"
+
+msgid "Create Starter Add-on…"
+msgstr "Starter-Add-on erstellen …"
+
+msgid "Open Extensions Folder"
+msgstr "Erweiterungsordner öffnen"
+
+msgid "Add-ons"
+msgstr "Add-ons"
+
+msgid "Snooze Email"
+msgstr "E-Mail zurückstellen"
+
+msgid "Snooze"
+msgstr "Zurückstellen"
+
+msgid "Resurface in Inbox"
+msgstr "Erneut im Posteingang anzeigen"
+
+msgid "Email snoozed"
+msgstr "E-Mail zurückgestellt"
+
+msgid "Mute Conversation"
+msgstr "Konversation stummschalten"
+
+msgid "Conversation muted"
+msgstr "Konversation stummgeschaltet"
+
+msgid "Conversation unmuted"
+msgstr "Stummschaltung aufgehoben"
+
+msgid "Convert to Event…"
+msgstr "In Termin umwandeln …"
+
+msgid "Convert to Task…"
+msgstr "In Aufgabe umwandeln …"
+
+msgid "Convert to Memo…"
+msgstr "In Notiz umwandeln …"
+
+msgid "Redirect…"
+msgstr "Umleiten …"
+
+msgid "Redirect Message"
+msgstr "Nachricht umleiten"
+
+msgid "Redirect To"
+msgstr "Umleiten an"
+
+msgid "Redirect"
+msgstr "Umleiten"
+
+msgid "Message redirected"
+msgstr "Nachricht umgeleitet"
+
+msgid "Unsubscribe"
+msgstr "Abmelden"
+
+msgid "Unsubscribe from Mailing List?"
+msgstr "Von Mailingliste abmelden?"
+
+msgid "Unsubscribe request sent"
+msgstr "Abmeldeanfrage gesendet"
+
+msgid "Send Read Receipt"
+msgstr "Lesebestätigung senden"
+
+msgid "The sender requested a read receipt for this message."
+msgstr "Der Absender hat eine Lesebestätigung für diese Nachricht angefordert."
+
+msgid "Suspicious Link Detected"
+msgstr "Verdächtiger Link erkannt"
+
+msgid "Open Link Anyway"
+msgstr "Link trotzdem öffnen"
+
+msgid "Remove Attachment…"
+msgstr "Anhang entfernen …"
+
+msgid "Remove Attachment from Email?"
+msgstr "Anhang aus E-Mail entfernen?"
+
+msgid "Remove Attachment"
+msgstr "Anhang entfernen"
+
+msgid "Attachment removed"
+msgstr "Anhang entfernt"
+
+msgid "Pin to Favorites"
+msgstr "An Favoriten anheften"
+
+msgid "Favorites"
+msgstr "Favoriten"
+
+msgid "Added to Favorites"
+msgstr "Zu Favoriten hinzugefügt"
+
+msgid "Removed from Favorites"
+msgstr "Aus Favoriten entfernt"
+
+msgid "Propose New Time…"
+msgstr "Neue Zeit vorschlagen …"
+
+msgid "Propose New Time"
+msgstr "Neue Zeit vorschlagen"
+
+msgid "Send Proposal"
+msgstr "Vorschlag senden"
+
+msgid "RSS & Atom Feeds"
+msgstr "RSS- & Atom-Feeds"
+
+msgid "Refresh Feeds"
+msgstr "Feeds aktualisieren"
+
+msgid "Recent Articles"
+msgstr "Aktuelle Beiträge"
+
+msgid "Sieve…"
+msgstr "Sieve …"
+
+msgid "Server-Side Sieve Script"
+msgstr "Serverseitiges Sieve-Skript"
+
+msgid "Upload to Server"
+msgstr "Auf Server hochladen"
+
+msgid "New Subtask…"
+msgstr "Neue Unteraufgabe …"
+
+msgid "New Subtask"
+msgstr "Neue Unteraufgabe"
+
+msgid "Subtask"
+msgstr "Unteraufgabe"
+
+msgid "Find Duplicate Contacts…"
+msgstr "Doppelte Kontakte suchen …"
+
+msgid "Duplicate Contacts"
+msgstr "Doppelte Kontakte"
+
+msgid "No duplicate contacts found"
+msgstr "Keine doppelten Kontakte gefunden"
+
+msgid "Import Thunderbird Profile…"
+msgstr "Thunderbird-Profil importieren …"
+
+msgid "Profile Migration"
+msgstr "Profilmigration"
+
+msgid "Accounts, filter rules, and local mail folders"
+msgstr "Konten, Filterregeln und lokale E-Mail-Ordner"
+
+msgid "Send Encrypted"
+msgstr "Verschlüsselt senden"
+
+msgid "Send encrypted email now (Ctrl+Enter)"
+msgstr "Verschlüsselte E-Mail jetzt senden (Strg+Eingabe)"
+
+msgid "Digitally signed (click to disable)"
+msgstr "Digital signiert (klicken zum Deaktivieren)"
+
+msgid "High priority (click to clear)"
+msgstr "Hohe Priorität (klicken zum Zurücksetzen)"
+
+msgid "Mark as high priority"
+msgstr "Als hohe Priorität markieren"
+
+msgid "Read receipt requested (click to disable)"
+msgstr "Lesebestätigung angefordert (klicken zum Deaktivieren)"
+
+msgid "Later Today"
+msgstr "Heute später"
+
+msgid "Tomorrow Morning"
+msgstr "Morgen früh"
+
+msgid "Tomorrow Afternoon"
+msgstr "Morgen nachmittag"
+
+msgid "Monday Morning"
+msgstr "Montagmorgen"
+
+msgid "Custom Date & Time"
+msgstr "Benutzerdefiniertes Datum & Uhrzeit"
+
+msgid "Quick Times"
+msgstr "Schnellauswahl"
+
+msgid "Schedule"
+msgstr "Einplanen"
+
+msgid "Invalid date format"
+msgstr "Ungültiges Datumsformat"
+
+msgid "Digitally signed (OpenPGP or S/MIME)"
+msgstr "Digital signiert (OpenPGP oder S/MIME)"
+
+msgid "Digitally signed"
+msgstr "Digital signiert"
+
+msgid "Templates"
+msgstr "Vorlagen"
+
+msgid "No templates saved yet"
+msgstr "Noch keine Vorlagen gespeichert"
+
+msgid "Untitled draft template"
+msgstr "Unbenannte Entwurfsvorlage"
+
+msgid "Draft template"
+msgstr "Entwurfsvorlage"
+
+msgid "Snippet"
+msgstr "Textbaustein"
+
+msgid "Check Spelling While Typing"
+msgstr "Rechtschreibung während der Eingabe prüfen"
+
+msgid "Spelling Language"
+msgstr "Rechtschreibsprache"
+
+msgid "German"
+msgstr "Deutsch"
+
+msgid "English"
+msgstr "Englisch"
+
+msgid "German & English"
+msgstr "Deutsch & Englisch"
+
+msgid "French"
+msgstr "Französisch"
+
+msgid "Spanish"
+msgstr "Spanisch"
+
+msgid "Italian"
+msgstr "Italienisch"
+
+msgid "Portuguese"
+msgstr "Portugiesisch"
+
+msgid "Dutch"
+msgstr "Niederländisch"
+
+msgid "Polish"
+msgstr "Polnisch"
+
+msgid "Russian"
+msgstr "Russisch"
+
+msgid "Turkish"
+msgstr "Türkisch"
+
+msgid "Swedish"
+msgstr "Schwedisch"
+
+msgid "Danish"
+msgstr "Dänisch"
+
+msgid "Norwegian"
+msgstr "Norwegisch"
+
+msgid "Finnish"
+msgstr "Finnisch"
+
+msgid "Czech"
+msgstr "Tschechisch"
+
+msgid "Ukrainian"
+msgstr "Ukrainisch"
+
+msgid "Save Draft & Close"
+msgstr "Entwurf speichern & schließen"
+
+msgid "Discard Draft & Close"
+msgstr "Entwurf verwerfen & schließen"
+
+msgid "Close (Ctrl+W to save & close, Ctrl+Shift+W to discard)"
+msgstr "Schließen (Strg+W zum Speichern & Schließen, Strg+Umschalt+W zum Verwerfen)"
+
+msgid "Save Draft?"
+msgstr "Entwurf speichern?"
+
+msgid "This message has unsaved changes. Would you like to save it as a draft or discard it?"
+msgstr "Diese Nachricht enthält ungespeicherte Änderungen. Möchten Sie sie als Entwurf speichern oder verwerfen?"
+
+msgid "Read receipt requested"
+msgstr "Lesebestätigung angefordert"
+
+msgid "Untitled template"
+msgstr "Unbenannte Vorlage"
+
+msgid "Save name"
+msgstr "Namen speichern"
+
+msgid "Could not rename"
+msgstr "Umbenennen fehlgeschlagen"
+
+msgid "Rename template"
+msgstr "Vorlage umbenennen"
+
+msgid "Shortcut:"
+msgstr "Kürzel:"
+
+msgid "(Empty body)"
+msgstr "(Leerer Text)"

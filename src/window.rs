@@ -103,6 +103,8 @@ mod imp {
         pub(crate) account_file_monitors: RefCell<Vec<gio::FileMonitor>>,
         pub(crate) account_bus_subscriptions: RefCell<Vec<gio::SignalSubscriptionId>>,
         pub(crate) account_reload_source: RefCell<Option<glib::SourceId>>,
+        pub explicit_quit: Cell<bool>,
+        pub extension_header_box: RefCell<Option<gtk::Box>>,
     }
 
     #[glib::object_subclass]
@@ -156,6 +158,26 @@ mod imp {
     impl WindowImpl for MeridianWindow {
         fn close_request(&self) -> glib::Propagation {
             let window = self.obj();
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_window_width(window.default_width());
+                settings.set_window_height(window.default_height());
+                settings.set_is_maximized(window.is_maximized());
+                if let Some(view_stack) = self.view_stack.borrow().as_ref() {
+                    if let Some(view_name) = view_stack.visible_child_name() {
+                        settings.set_active_view(view_name.as_str());
+                    }
+                }
+                if !self.explicit_quit.get() && settings.run_in_background() {
+                    if let Some(app) = window
+                        .application()
+                        .and_then(|a| a.downcast::<crate::application::MeridianApplication>().ok())
+                    {
+                        app.enter_background_mode();
+                        window.set_visible(false);
+                        return glib::Propagation::Stop;
+                    }
+                }
+            }
             if let Some(source) = self.account_reload_source.borrow_mut().take() {
                 source.remove();
             }
@@ -175,16 +197,6 @@ mod imp {
                 mail_page.shutdown_print();
             }
             window.execute_exit_purge_and_expunge();
-            if let Some(settings) = AppSettings::try_new() {
-                settings.set_window_width(window.default_width());
-                settings.set_window_height(window.default_height());
-                settings.set_is_maximized(window.is_maximized());
-                if let Some(view_stack) = self.view_stack.borrow().as_ref() {
-                    if let Some(view_name) = view_stack.visible_child_name() {
-                        settings.set_active_view(view_name.as_str());
-                    }
-                }
-            }
             self.parent_close_request()
         }
     }
@@ -379,6 +391,370 @@ impl MeridianWindow {
     /// Add an AdwToast notification to the window.
     pub fn add_toast(&self, toast: &adw::Toast) {
         self.imp().toast_overlay.add_toast(toast.clone());
+    }
+
+    pub fn prepare_explicit_quit(&self) {
+        self.imp().explicit_quit.set(true);
+    }
+
+    pub fn refresh_extension_header_actions(&self) {
+        let Some(container) = self.imp().extension_header_box.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            container.remove(&child);
+        }
+        let surface = match self.active_view_name().as_str() {
+            "calendar" => crate::services::extension_service::ExtensionSurface::Calendar,
+            "contacts" => crate::services::extension_service::ExtensionSurface::Contacts,
+            "tasks" | "memos" => crate::services::extension_service::ExtensionSurface::Tasks,
+            _ => crate::services::extension_service::ExtensionSurface::Mail,
+        };
+        let actions =
+            crate::services::extension_service::ExtensionRegistry::default()
+                .enabled_header_actions(surface);
+        if actions.is_empty() {
+            container.set_visible(false);
+            return;
+        }
+        for (_ext, spec) in actions {
+            let btn = gtk::Button::builder()
+                .icon_name(&spec.icon_name)
+                .tooltip_text(&spec.tooltip)
+                .css_classes(["flat"])
+                .valign(gtk::Align::Center)
+                .build();
+            let cmd_id = spec.command.clone();
+            let win_weak = self.downgrade();
+            btn.connect_clicked(move |_| {
+                if let Some(win) = win_weak.upgrade() {
+                    win.execute_extension_command(&cmd_id);
+                }
+            });
+            container.append(&btn);
+        }
+        container.set_visible(true);
+    }
+
+    pub fn execute_extension_command(&self, command_id: &str) {
+        let mut ctx = crate::services::extension_service::ExtensionExecutionContext {
+            command_id: command_id.to_string(),
+            active_surface: self.active_view_name(),
+            ..Default::default()
+        };
+        if let Some(mp) = self.mail_page()
+            && let Some((subj, body, mid, sender, rcpts, _tid)) =
+                mp.selected_message_conversion_snapshot()
+        {
+            ctx.message_subject = Some(subj);
+            ctx.message_body_text = Some(body);
+            ctx.message_id = mid;
+            ctx.message_sender = Some(sender);
+            ctx.message_recipients = Some(rcpts);
+        }
+
+        let cmd_owned = command_id.to_string();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let res = crate::services::extension_service::ExtensionRegistry::default()
+                .execute_command(&cmd_owned, &ctx);
+            let _ = tx.send_blocking(res);
+        });
+        let win_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(result) = rx.recv().await else {
+                return;
+            };
+            let Some(win) = win_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(resp) => {
+                    if let Some(url) = resp.open_url
+                        && (url.starts_with("https://") || url.starts_with("http://"))
+                    {
+                        let _ = gio::AppInfo::launch_default_for_uri(
+                            &url,
+                            gio::AppLaunchContext::NONE,
+                        );
+                    }
+                    if let Some(task_title) = resp.create_task_title
+                        && !task_title.trim().is_empty()
+                    {
+                        win.create_quick_task_from_text(&task_title, "", None);
+                    }
+                    if let Some(body) = resp.output_body {
+                        let title = resp
+                            .output_title
+                            .unwrap_or_else(|| gettext("Extension Output"));
+                        win.present_extension_output_sheet(&title, &body);
+                    }
+                    if let Some(toast_msg) = resp.toast {
+                        win.add_toast(&adw::Toast::new(&toast_msg));
+                    }
+                }
+                Err(err) => {
+                    win.add_toast(&adw::Toast::new(&err));
+                }
+            }
+        });
+    }
+
+    fn present_extension_output_sheet(&self, title: &str, body: &str) {
+        let dialog = adw::Dialog::builder()
+            .title(title)
+            .content_width(640)
+            .content_height(480)
+            .follows_content_size(false)
+            .build();
+        let tv = adw::ToolbarView::new();
+        let hb = adw::HeaderBar::new();
+        tv.add_top_bar(&hb);
+
+        let text_view = gtk::TextView::builder()
+            .editable(false)
+            .monospace(true)
+            .wrap_mode(gtk::WrapMode::WordChar)
+            .left_margin(16)
+            .right_margin(16)
+            .top_margin(12)
+            .bottom_margin(12)
+            .build();
+        text_view.buffer().set_text(body);
+        let scrolled = gtk::ScrolledWindow::builder()
+            .overlay_scrolling(true)
+            .vexpand(true)
+            .hexpand(true)
+            .child(&text_view)
+            .build();
+        tv.set_content(Some(&scrolled));
+        dialog.set_child(Some(&tv));
+        dialog.present(Some(self));
+    }
+
+    pub(crate) fn convert_selected_mail_to_event(&self) {
+        let Some(mp) = self.mail_page() else {
+            return;
+        };
+        let Some((subject, body, mid, sender, _rcpts, _tid)) =
+            mp.selected_message_conversion_snapshot()
+        else {
+            return;
+        };
+        use chrono::Timelike;
+        let now = chrono::Local::now().naive_local();
+        let next_hour_min = ((now.time().hour() + 1) % 24) * 60;
+        let start_date = if now.time().hour() == 23 {
+            now.date() + chrono::Duration::days(1)
+        } else {
+            now.date()
+        };
+        let start_t =
+            chrono::NaiveTime::from_hms_opt(next_hour_min / 60, 0, 0).unwrap_or(now.time());
+        let start = start_date.and_time(start_t);
+        let end = start + chrono::Duration::hours(1);
+
+        let mut notes = format!("From: {sender}\n");
+        if let Some(m) = mid.as_deref().filter(|s| !s.is_empty()) {
+            notes.push_str(&format!("Message-ID: {m}\n"));
+        }
+        if !body.trim().is_empty() {
+            notes.push('\n');
+            notes.push_str(body.trim());
+        }
+
+        let summary = if subject.trim().is_empty() {
+            gettext("Email Follow-Up")
+        } else {
+            subject
+        };
+        let dlg = crate::dialogs::EventDialog::new_for_time_range_with_summary(
+            start,
+            end,
+            Some(&summary),
+            None,
+        );
+        dlg.set_description(&notes);
+        dlg.present_standalone();
+    }
+
+    pub(crate) fn convert_selected_mail_to_task(&self) {
+        let Some(mp) = self.mail_page() else {
+            return;
+        };
+        let Some((subject, body, mid, sender, _rcpts, _tid)) =
+            mp.selected_message_conversion_snapshot()
+        else {
+            return;
+        };
+        let summary = if subject.trim().is_empty() {
+            format!("Follow up: {sender}")
+        } else {
+            subject
+        };
+        let mut desc = format!("From: {sender}");
+        if !body.trim().is_empty() {
+            desc.push_str("\n\n");
+            desc.push_str(body.trim());
+        }
+        self.create_quick_task_from_text(&summary, &desc, mid.as_deref());
+    }
+
+    fn create_quick_task_from_text(&self, summary: &str, description: &str, mid: Option<&str>) {
+        let uid = uuid::Uuid::new_v4().to_string();
+        let vtodo = crate::services::calendar_store_service::build_mail_linked_task_component(
+            &uid,
+            summary,
+            description,
+            mid,
+            None,
+        );
+        let preferred_source = AppSettings::try_new()
+            .map(|s| s.default_task_source_uid())
+            .filter(|s| !s.trim().is_empty());
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let ecal = crate::services::ecal_service::ECalService::new();
+            let sources = ecal
+                .discover_source_capabilities(crate::services::ecal_service::ECalComponentType::Task)
+                .map(|d| d.sources)
+                .unwrap_or_default();
+            let target_eds = preferred_source
+                .as_deref()
+                .and_then(|pref| sources.iter().find(|s| s.source_uid == pref && s.writable))
+                .or_else(|| sources.iter().find(|s| s.writable));
+            let res = if let Some(src) = target_eds {
+                ecal.create_component(
+                    &src.source_uid,
+                    crate::services::ecal_service::ECalComponentType::Task,
+                    &vtodo,
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+            } else {
+                crate::services::CalendarStoreService::with_writable_calendar_dir(
+                    crate::services::app_data_dir().join("ical"),
+                )
+                .create_component(&vtodo)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+            };
+            let _ = tx.send_blocking(res);
+        });
+        let win_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(res) = rx.recv().await else {
+                return;
+            };
+            let Some(win) = win_weak.upgrade() else {
+                return;
+            };
+            match res {
+                Ok(()) => {
+                    if let Some(tp) = win.tasks_page() {
+                        tp.refresh_tasks();
+                    }
+                    let toast = adw::Toast::builder()
+                        .title(gettext("Created task from email"))
+                        .button_label(gettext("Show Tasks"))
+                        .build();
+                    let w2 = win.downgrade();
+                    toast.connect_button_clicked(move |_| {
+                        if let Some(w) = w2.upgrade() {
+                            w.switch_to_view("tasks");
+                        }
+                    });
+                    win.add_toast(&toast);
+                }
+                Err(err) => {
+                    win.add_toast(&adw::Toast::new(&format!(
+                        "{}: {err}",
+                        gettext("Could not create task")
+                    )));
+                }
+            }
+        });
+    }
+
+    pub(crate) fn convert_selected_mail_to_memo(&self) {
+        let Some(mp) = self.mail_page() else {
+            return;
+        };
+        let Some((subject, body, mid, sender, _rcpts, _tid)) =
+            mp.selected_message_conversion_snapshot()
+        else {
+            return;
+        };
+        let summary = if subject.trim().is_empty() {
+            format!("Note from {sender}")
+        } else {
+            subject
+        };
+        let mut desc = format!("From: {sender}");
+        if !body.trim().is_empty() {
+            desc.push_str("\n\n");
+            desc.push_str(body.trim());
+        }
+        let uid = uuid::Uuid::new_v4().to_string();
+        let mid_str = mid.unwrap_or_else(|| uid.clone());
+        let vjournal = crate::services::calendar_store_service::build_mail_linked_memo_component(
+            &uid, &summary, &desc, &mid_str, false,
+        );
+        let preferred_source = AppSettings::try_new()
+            .map(|s| s.default_memo_source_uid())
+            .filter(|s| !s.trim().is_empty());
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let ecal = crate::services::ecal_service::ECalService::new();
+            let sources = ecal
+                .discover_source_capabilities(crate::services::ecal_service::ECalComponentType::Memo)
+                .map(|d| d.sources)
+                .unwrap_or_default();
+            let target_eds = preferred_source
+                .as_deref()
+                .and_then(|pref| sources.iter().find(|s| s.source_uid == pref && s.writable))
+                .or_else(|| sources.iter().find(|s| s.writable));
+            let res = if let Some(src) = target_eds {
+                ecal.create_component(
+                    &src.source_uid,
+                    crate::services::ecal_service::ECalComponentType::Memo,
+                    &vjournal,
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+            } else {
+                crate::services::CalendarStoreService::with_writable_calendar_dir(
+                    crate::services::app_data_dir().join("ical"),
+                )
+                .create_component(&vjournal)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+            };
+            let _ = tx.send_blocking(res);
+        });
+        let win_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(res) = rx.recv().await else {
+                return;
+            };
+            let Some(win) = win_weak.upgrade() else {
+                return;
+            };
+            match res {
+                Ok(()) => {
+                    if let Some(mp) = win.memos_page() {
+                        mp.reload_memo_sources();
+                    }
+                    win.add_toast(&adw::Toast::new(&gettext("Created memo from email")));
+                }
+                Err(err) => {
+                    win.add_toast(&adw::Toast::new(&format!(
+                        "{}: {err}",
+                        gettext("Could not create memo")
+                    )));
+                }
+            }
+        });
     }
 
     pub fn set_active_view(&self, view_name: &str) {
@@ -2248,6 +2624,12 @@ impl MeridianWindow {
 
     fn present_new_mail(&self) {
         let dialog = crate::dialogs::ComposeDialog::new();
+        if let Some(source_uid) = self
+            .mail_page()
+            .and_then(|mail_page| mail_page.active_compose_account_uid())
+        {
+            dialog.set_requested_account(Some(source_uid), None);
+        }
         dialog.set_transient_for(Some(self));
         if self.is_mobile() || self.is_tablet() {
             dialog.present_modal(self);
@@ -4247,6 +4629,43 @@ impl MeridianWindow {
         header_bar.pack_end(&menu_button);
         header_bar.pack_end(&right_sidebar_toggle);
         header_bar.pack_end(&agenda_preview_toggle);
+
+        let extension_header_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        header_bar.pack_end(&extension_header_box);
+        self.imp()
+            .extension_header_box
+            .replace(Some(extension_header_box));
+        self.refresh_extension_header_actions();
+        {
+            let win_weak = self.downgrade();
+            view_stack.connect_visible_child_name_notify(move |_| {
+                if let Some(win) = win_weak.upgrade() {
+                    win.refresh_extension_header_actions();
+                }
+            });
+        }
+        {
+            let win_weak = self.downgrade();
+            let rx = crate::services::extension_service::subscribe_extension_updates();
+            glib::spawn_future_local(async move {
+                while rx.recv().await.is_ok() {
+                    if let Some(win) = win_weak.upgrade() {
+                        win.refresh_extension_header_actions();
+                        if let Some(mp) = win.mail_page() {
+                            mp.refresh_extension_sidebar_items();
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            });
+        }
+
         header_bar.pack_start(&offline_header_badge);
         if let Some(view_btn) = mail_page.view_options_split_button() {
             let is_initially_mail = view_stack.visible_child_name().as_deref() == Some("mail");
@@ -5061,6 +5480,84 @@ impl MeridianWindow {
             }
         });
         self.add_action(&action_toggle_debug);
+
+        let action_command_palette = gio::SimpleAction::new("command-palette", None);
+        let win_weak_palette = self.downgrade();
+        action_command_palette.connect_activate(move |_, _| {
+            if let Some(win) = win_weak_palette.upgrade() {
+                crate::dialogs::command_palette_dialog::present_command_palette(&win);
+            }
+        });
+        self.add_action(&action_command_palette);
+
+        let action_extensions = gio::SimpleAction::new("extensions", None);
+        let win_weak_exts = self.downgrade();
+        action_extensions.connect_activate(move |_, _| {
+            if let Some(win) = win_weak_exts.upgrade() {
+                crate::dialogs::extensions_dialog::present_extensions_dialog(Some(&win));
+            }
+        });
+        self.add_action(&action_extensions);
+
+        let action_mail_to_event = gio::SimpleAction::new("mail-create-event", None);
+        let win_weak_m2e = self.downgrade();
+        action_mail_to_event.connect_activate(move |_, _| {
+            if let Some(win) = win_weak_m2e.upgrade() {
+                win.convert_selected_mail_to_event();
+            }
+        });
+        self.add_action(&action_mail_to_event);
+
+        let action_mail_to_task = gio::SimpleAction::new("mail-create-task", None);
+        let win_weak_m2t = self.downgrade();
+        action_mail_to_task.connect_activate(move |_, _| {
+            if let Some(win) = win_weak_m2t.upgrade() {
+                win.convert_selected_mail_to_task();
+            }
+        });
+        self.add_action(&action_mail_to_task);
+
+        let action_mail_to_memo = gio::SimpleAction::new("mail-create-memo", None);
+        let win_weak_m2m = self.downgrade();
+        action_mail_to_memo.connect_activate(move |_, _| {
+            if let Some(win) = win_weak_m2m.upgrade() {
+                win.convert_selected_mail_to_memo();
+            }
+        });
+        self.add_action(&action_mail_to_memo);
+
+        let action_snooze = gio::SimpleAction::new("snooze-message", None);
+        let win_weak_snooze = self.downgrade();
+        action_snooze.connect_activate(move |_, _| {
+            if let Some(win) = win_weak_snooze.upgrade()
+                && let Some(mp) = win.mail_page()
+            {
+                mp.present_snooze_for_selected_message();
+            }
+        });
+        self.add_action(&action_snooze);
+
+        let action_redirect = gio::SimpleAction::new("redirect-message", None);
+        let win_weak_redirect = self.downgrade();
+        action_redirect.connect_activate(move |_, _| {
+            if let Some(win) = win_weak_redirect.upgrade()
+                && let Some(mp) = win.mail_page()
+            {
+                mp.present_redirect_for_selected_message();
+            }
+        });
+        self.add_action(&action_redirect);
+
+        let action_ignore_thread = gio::SimpleAction::new("ignore-thread", None);
+        let win_weak_ignore = self.downgrade();
+        action_ignore_thread.connect_activate(move |_, _| {
+            if let Some(win) = win_weak_ignore.upgrade()
+                && let Some(mp) = win.mail_page()
+            {
+                mp.toggle_mute_selected_thread();
+            }
+        });
+        self.add_action(&action_ignore_thread);
 
         let initial_sb_vis = self.is_sidebar_visible_for_active_view();
         let action_sidebar = gio::SimpleAction::new_stateful(
@@ -6356,6 +6853,18 @@ impl MeridianWindow {
             }
         ));
         self.add_action(&action_pin_folder);
+
+        let action_favorite_folder = gio::SimpleAction::new("toggle-favorite-folder", None);
+        action_favorite_folder.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| {
+                if let Some(mail_page) = win.mail_page() {
+                    mail_page.toggle_favorite_for_selected_folder();
+                }
+            }
+        ));
+        self.add_action(&action_favorite_folder);
 
         let action_mark_all_read = gio::SimpleAction::new("mark-all-read", None);
         action_mark_all_read.connect_activate(glib::clone!(

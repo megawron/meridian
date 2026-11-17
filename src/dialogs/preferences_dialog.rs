@@ -3265,8 +3265,20 @@ impl PreferencesDialog {
             );
         }
 
+        let row_contacts_auto_collect = adw::SwitchRow::builder()
+            .title(gettext("Save outgoing recipients automatically"))
+            .build();
+        if let Some(settings_ref) = settings.clone() {
+            row_contacts_auto_collect.set_active(settings_ref.contacts_auto_collect());
+            let s_ac = settings_ref.clone();
+            row_contacts_auto_collect.connect_active_notify(move |row| {
+                s_ac.set_contacts_auto_collect(row.is_active());
+            });
+        }
+
         group_contacts_autocomplete.add(&row_completion_show_address);
         group_contacts_autocomplete.add(&row_completion_min_query_length);
+        group_contacts_autocomplete.add(&row_contacts_auto_collect);
         group_contacts_autocomplete.add(&row_completion_book_sources);
         page_contacts.add(&group_contacts_autocomplete);
 
@@ -4501,7 +4513,39 @@ impl PreferencesDialog {
         group_composer_headers.add(&row_show_cc);
         group_composer_headers.add(&row_show_bcc);
 
+        let undo_send_labels = [
+            gettext("Off"),
+            gettext("5 seconds"),
+            gettext("10 seconds"),
+            gettext("30 seconds"),
+        ];
+        let undo_send_refs: Vec<&str> = undo_send_labels.iter().map(|s| s.as_str()).collect();
+        let row_undo_send = adw::ComboRow::builder()
+            .title(gettext("Undo Send delay"))
+            .model(&gtk::StringList::new(&undo_send_refs))
+            .build();
+        if let Some(settings) = settings.clone() {
+            let cur_secs = settings.composer_undo_send_seconds();
+            let idx = match cur_secs {
+                0 => 0,
+                1..=7 => 1,
+                8..=20 => 2,
+                _ => 3,
+            };
+            row_undo_send.set_selected(idx);
+            row_undo_send.connect_selected_notify(move |combo| {
+                let secs = match combo.selected() {
+                    0 => 0,
+                    1 => 5,
+                    2 => 10,
+                    _ => 30,
+                };
+                settings.set_composer_undo_send_seconds(secs);
+            });
+        }
+
         group_composer_prompts.set_visible(true);
+        group_composer_prompts.add(&row_undo_send);
         group_composer_prompts.add(&row_prompt_empty_subject);
         group_composer_prompts.add(&row_prompt_only_bcc);
         group_composer_prompts.add(&row_track_recent_recipients);
@@ -5659,11 +5703,51 @@ impl PreferencesDialog {
             "x-scheme-handler/mailto",
             crate::application::DEFAULT_MAIL_MIME_TYPES,
         );
+        let row_run_in_background = adw::SwitchRow::builder()
+            .title(gettext("Keep running in background"))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_run_in_background.set_active(settings.run_in_background());
+            row_run_in_background.connect_active_notify(move |row| {
+                settings.set_run_in_background(row.is_active());
+            });
+        }
+
+        let row_single_key_shortcuts = adw::SwitchRow::builder()
+            .title(gettext("Single-key mail shortcuts"))
+            .build();
+        if let Some(settings) = settings.clone() {
+            row_single_key_shortcuts.set_active(settings.mail_single_key_shortcuts());
+            row_single_key_shortcuts.connect_active_notify(move |row| {
+                settings.set_mail_single_key_shortcuts(row.is_active());
+            });
+        }
+
+        let row_open_extensions = adw::ActionRow::builder()
+            .title(gettext("Extensions & Add-ons…"))
+            .use_markup(false)
+            .activatable(true)
+            .build();
+        let ext_chevron = gtk::Image::from_icon_name("go-next-symbolic");
+        ext_chevron.add_css_class("dim-label");
+        row_open_extensions.add_suffix(&ext_chevron);
+        let dlg_for_ext = self.downgrade();
+        row_open_extensions.connect_activated(move |_| {
+            if let Some(dlg) = dlg_for_ext.upgrade() {
+                let ext_dlg =
+                    crate::dialogs::extensions_dialog::ExtensionsDialog::new(Some(&dlg));
+                ext_dlg.present();
+            }
+        });
+
         group_behavior.add(&row_default_mail_app);
+        group_behavior.add(&row_run_in_background);
         group_behavior.add(&row_mail_default_folder);
         group_behavior.add(&row_mail_unified_inbox);
+        group_behavior.add(&row_single_key_shortcuts);
         group_behavior.add(&row_confirm_destructive);
         group_behavior.add(&row_delete_moves_trash);
+        group_behavior.add(&row_open_extensions);
 
         let group_appearance_layout = adw::PreferencesGroup::builder()
             .title(gettext("Layout"))

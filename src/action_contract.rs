@@ -115,6 +115,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
         "win.preferences", "win.toggle-top-switcher",
         "win.toggle-toolbar", "win.toggle-statusbar", "win.toggle-debug-console",
         "win.work-offline", "win.work-online",
+        "win.command-palette", "win.extensions",
     ],
     ActiveMail => [
         "win.apply-filters", "win.mail-density-compact",
@@ -147,6 +148,8 @@ pub(crate) const ACTIONS: &[ActionSpec] = action_specs! {
         "win.reply-all", "win.reply-alternative", "win.reply-list",
         "win.toggle-flag", "win.toggle-important", "win.toggle-mail-light-mode", "win.undelete",
         "win.view-message-source",
+        "win.mail-create-event", "win.mail-create-task", "win.mail-create-memo",
+        "win.snooze-message", "win.redirect-message", "win.ignore-thread",
     ],
     FolderSelection => [
         "win.delete-folder", "win.empty-junk", "win.empty-trash", "win.expunge",
@@ -174,6 +177,8 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
     ],
     PrimaryApp => [
         ("Preferences", "app.preferences"),
+        ("Extensions…", "win.extensions"),
+        ("Command Palette…", "win.command-palette"),
         ("Keyboard Shortcuts", "win.show-help-overlay"),
         ("About Meridian", "app.about"),
     ],
@@ -283,6 +288,12 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
         ("Toggle Flag", "win.toggle-flag"),
         ("Toggle Important", "win.toggle-important"),
         ("Mark for Follow Up…", "win.mail-follow-up"),
+        ("Snooze…", "win.snooze-message"),
+        ("Convert to Event…", "win.mail-create-event"),
+        ("Convert to Task…", "win.mail-create-task"),
+        ("Convert to Memo…", "win.mail-create-memo"),
+        ("Redirect…", "win.redirect-message"),
+        ("Mute Conversation", "win.ignore-thread"),
         ("Edit Labels...", "win.edit-labels"),
         ("Move to Folder...", "win.move-message"),
         ("Copy to Folder...", "win.copy-message"), ("Archive", "win.archive"),
@@ -614,6 +625,12 @@ pub(crate) const SHORTCUTS: &[ShortcutSpec] = &[
     },
 
     // ── General: Application ──
+    ShortcutSpec {
+        section: ShortcutSection::General,
+        group: ShortcutGroup::GeneralApp,
+        title: "Command Palette",
+        action: "win.command-palette",
+    },
     ShortcutSpec {
         section: ShortcutSection::General,
         group: ShortcutGroup::GeneralApp,

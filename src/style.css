@@ -1320,7 +1320,7 @@ flowbox > flowboxchild.attachment-flow-child:selected {
 .attachment-section-box {
   background-color: transparent;
   border-radius: 12px;
-  margin: 2px 6px;
+  margin: 0 6px 4px 6px;
   transition: background-color 150ms ease, box-shadow 150ms ease;
 }
 
@@ -1924,6 +1924,58 @@ dialog.composer-dialog {
 .composer-header-card entry.composer-subject-entry {
   font-size: 0.95rem;
   font-weight: 500;
+}
+
+/* Inline calm toggles inside composer header card (Priority / Sign / Read Receipt) */
+.composer-header-card togglebutton.composer-inline-toggle {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px 6px;
+  border-radius: 7px;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+  color: @window_fg_color;
+  opacity: 0.38;
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.composer-header-card togglebutton.composer-inline-toggle:hover {
+  opacity: 0.82;
+  background-color: alpha(currentColor, 0.07);
+}
+
+.composer-header-card togglebutton.composer-inline-toggle:checked {
+  opacity: 1.0;
+  color: @accent_color;
+  background-color: alpha(@accent_color, 0.14);
+}
+
+.composer-header-card togglebutton.composer-priority-inline:checked {
+  opacity: 1.0;
+  color: @warning_color;
+  background-color: alpha(@warning_color, 0.15);
+}
+
+.composer-header-card image.composer-inline-status {
+  color: @accent_color;
+  opacity: 0.9;
+  padding: 2px;
+}
+
+button.composer-template-rename-btn {
+  opacity: 0.45;
+  transition: opacity 120ms ease;
+}
+
+button.composer-template-rename-btn:hover {
+  opacity: 1.0;
+}
+
+.composer-template-preview {
+  padding: 12px 0 12px 14px;
+  border-radius: 10px;
+  background-color: alpha(currentColor, 0.04);
 }
 
 /* Dropdowns in From / Signature row */
@@ -2600,8 +2652,17 @@ picture.attachment-card-thumbnail {
 }
 
 .contact-list-view > row:selected {
-  background-color: @accent_bg_color;
-  color: @accent_fg_color;
+  background-color: alpha(@accent_bg_color, 0.16);
+  color: @view_fg_color;
+}
+
+.contact-list-view > row:selected:hover {
+  background-color: alpha(@accent_bg_color, 0.21);
+  color: @view_fg_color;
+}
+
+.contact-list-view > row.contact-duplicate-row {
+  box-shadow: inset 3px 0 0 0 alpha(@warning_bg_color, 0.65);
 }
 
 /* ── General Polish ────────────────────────────────────────────────────── */
@@ -5786,17 +5847,34 @@ button.mail-header-load-images-btn:active,
   background-color: alpha(@warning_bg_color, 0.34);
 }
 
+.dark button.mail-header-load-images-btn,
+.dark .mail-header-load-images-btn {
+  background-color: alpha(@warning_bg_color, 0.20);
+  color: @warning_color;
+}
+
+.dark button.mail-header-load-images-btn:hover,
+.dark .mail-header-load-images-btn:hover {
+  background-color: alpha(@warning_bg_color, 0.30);
+  color: #fef3c7;
+}
+
+.dark button.mail-header-load-images-btn:active,
+.dark .mail-header-load-images-btn:active {
+  background-color: alpha(@warning_bg_color, 0.38);
+}
+
 @media (prefers-color-scheme: dark) {
   button.mail-header-load-images-btn,
   .mail-header-load-images-btn {
     background-color: alpha(@warning_bg_color, 0.20);
-    color: lighter(@warning_color);
+    color: @warning_color;
   }
 
   button.mail-header-load-images-btn:hover,
   .mail-header-load-images-btn:hover {
     background-color: alpha(@warning_bg_color, 0.30);
-    color: lighter(@warning_color);
+    color: #fef3c7;
   }
 
   button.mail-header-load-images-btn:active,
@@ -6750,60 +6828,40 @@ list.navigation-sidebar.settings-side > row {
   font-weight: 700;
 }
 
-/* ── Mail-Linked Memos (RFC 5545 VJOURNAL + RFC 2392 mid: — Libadwaita Warning-Yellow Pill Parity) ── */
+/* ── Mail-Linked Memos & Sidebar Memopad (GNOME PDF-Preview Sticky-Note Style) ── */
 .mail-memo-banner-row,
 .mail-memo-editor-bar {
-  background-color: alpha(@warning_bg_color, 0.16);
+  background-color: #f8d43a;
+  color: #1c1604;
   border: none;
-  border-radius: 8px;
+  outline: none;
+  border-radius: 9px;
   box-shadow: none;
   padding: 0 6px 0 0;
-  min-height: 28px;
-  overflow: hidden;
-}
-
-.mail-memo-banner-list.is-multi-memo-card {
-  background-color: alpha(@warning_bg_color, 0.16);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.mail-memo-banner-list.is-multi-memo-card .mail-memo-banner-row {
-  background-color: transparent;
-  border-radius: 0;
-}
-
-.mail-memo-banner-list.is-multi-memo-card .mail-memo-scope-badge {
-  border-radius: 0;
-  min-width: 68px;
-}
-
-separator.mail-memo-combined-divider {
-  background-color: alpha(@warning_bg_color, 0.22);
-  min-height: 1px;
-  margin: 0;
+  min-height: 30px;
 }
 
 .mail-memo-banner-icon {
-  color: shade(@warning_bg_color, 0.68);
+  color: #1c1604;
 }
 
 .mail-memo-banner-text {
-  font-size: 0.80rem;
+  font-size: 0.83rem;
   font-weight: 600;
-  color: shade(@warning_bg_color, 0.58);
+  color: #1c1604;
 }
 
 .mail-memo-entry,
 entry.mail-memo-entry,
 .mail-memo-entry:focus-within,
 entry.mail-memo-entry:focus-within {
-  min-height: 28px;
+  min-height: 30px;
   padding: 0;
   margin: 0;
-  font-size: 0.80rem;
+  font-size: 0.83rem;
   font-weight: 600;
-  color: shade(@warning_bg_color, 0.58);
+  color: #1c1604;
+  caret-color: #1c1604;
   background: transparent;
   background-color: transparent;
   border: none;
@@ -6816,72 +6874,112 @@ entry.mail-memo-entry:focus-within {
 entry.mail-memo-entry > text {
   background: transparent;
   background-color: transparent;
-  color: shade(@warning_bg_color, 0.58);
+  color: #1c1604;
+  caret-color: #1c1604;
+}
+
+.mail-memo-entry > text > placeholder,
+entry.mail-memo-entry > text > placeholder {
+  color: rgba(28, 22, 4, 0.54);
+  font-weight: 500;
 }
 
 .mail-memo-scope-badge {
-  border-radius: 8px;
-  padding: 0 9px;
+  background-color: rgba(0, 0, 0, 0.09);
+  border: none;
+  border-radius: 9px;
+  padding: 0 10px;
   font-size: 0.72rem;
   font-weight: 700;
-  min-height: 28px;
+  min-height: 30px;
+  color: rgba(28, 22, 4, 0.90);
 }
 
-.mail-memo-scope-badge.is-private {
-  background-color: alpha(@warning_bg_color, 0.22);
-  color: shade(@warning_bg_color, 0.58);
+.mail-memo-scope-badge label,
+.mail-memo-scope-badge image {
+  color: rgba(28, 22, 4, 0.90);
 }
 
-.mail-memo-scope-badge.is-team {
-  background-color: alpha(@accent_bg_color, 0.18);
-  color: @accent_color;
+popover.memo-note-popover .mail-memo-scope-badge {
+  border-radius: 7px;
+  padding: 0 8px;
+  min-height: 24px;
 }
 
 .mail-memo-scope-toggle {
-  background-color: alpha(@warning_bg_color, 0.18);
-  border-radius: 8px;
+  background-color: rgba(0, 0, 0, 0.06);
+  border-radius: 9px;
+  padding: 0;
   border: none;
   box-shadow: none;
-  min-height: 28px;
-  overflow: hidden;
+  min-height: 30px;
 }
 
 .mail-memo-scope-toggle button.mail-memo-scope-btn {
-  min-height: 28px;
-  padding: 0 8px;
+  min-height: 30px;
+  padding: 0 10px;
   font-size: 0.72rem;
   font-weight: 700;
   border: none;
-  border-radius: 8px;
+  outline: none;
+  border-radius: 9px;
   box-shadow: none;
   background: transparent;
-  color: shade(@warning_bg_color, 0.62);
+  color: rgba(28, 22, 4, 0.60);
+}
+
+.mail-memo-scope-toggle button.mail-memo-scope-btn label,
+.mail-memo-scope-toggle button.mail-memo-scope-btn image {
+  color: inherit;
+}
+
+.mail-memo-scope-toggle button.mail-memo-scope-btn:hover {
+  background-color: rgba(0, 0, 0, 0.06);
+  color: #1c1604;
 }
 
 .mail-memo-scope-toggle button.mail-memo-scope-btn:checked {
-  background-color: alpha(@warning_bg_color, 0.34);
-  color: shade(@warning_bg_color, 0.50);
+  background-color: rgba(0, 0, 0, 0.13);
+  color: #141002;
 }
 
 .mail-memo-action-btn,
 button.mail-memo-action-btn {
-  min-width: 22px;
-  min-height: 22px;
-  padding: 1px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 2px;
   margin: 0;
-  color: shade(@warning_bg_color, 0.62);
+  border: none;
+  outline: none;
+  border-radius: 999px;
+  box-shadow: none;
+  background-color: rgba(0, 0, 0, 0.08);
+  color: rgba(28, 22, 4, 0.86);
+}
+
+.mail-memo-action-btn image,
+button.mail-memo-action-btn image {
+  color: inherit;
+}
+
+.mail-memo-action-btn:hover,
+button.mail-memo-action-btn:hover {
+  background-color: rgba(0, 0, 0, 0.16);
+  color: #000000;
 }
 
 button.mail-memo-delete-btn:hover,
 .mail-memo-delete-btn:hover {
-  background-color: alpha(@error_bg_color, 0.16);
-  color: @error_color;
+  background-color: rgba(192, 28, 40, 0.18);
+  color: #9a1220;
 }
 
 .mail-header-memo-btn.has-linked-memo image {
-  color: shade(@warning_bg_color, 0.72);
+  color: #b5830a;
 }
 
+/* Native Libadwaita sidebar integration: transparent section background so
+ * Memos sits seamlessly alongside Agenda & Tasks without a tinted block. */
 .memopad-canvas,
 .memos-sidebar-section,
 .memos-sidebar-section .memos-section-header,
@@ -6892,31 +6990,35 @@ button.mail-memo-delete-btn:hover,
 .meridian-sidebar-drawer scrolledwindow.memos-panel-scroll > viewport,
 .calendar-sidebar .memos-sidebar-section,
 .calendar-sidebar scrolledwindow.memos-panel-scroll,
-.calendar-sidebar scrolledwindow.memos-panel-scroll > viewport,
-.memos-detached-window,
-.memos-detached-host {
-  background: #fcf9ec;
-  background-color: #fcf9ec;
+.calendar-sidebar scrolledwindow.memos-panel-scroll > viewport {
+  background: transparent;
+  background-color: transparent;
   border-radius: 0;
   border-bottom: none;
 }
 
+.memos-detached-window,
 .memos-detached-host {
-  padding: 8px 4px 6px 4px;
+  background: @window_bg_color;
+  background-color: @window_bg_color;
+}
+
+.memos-detached-host {
+  padding: 8px 6px 6px 6px;
 }
 
 headerbar.memos-detached-headerbar,
 .memos-detached-window headerbar {
-  background: color-mix(in srgb, @warning_bg_color 18%, @window_bg_color);
-  background-color: color-mix(in srgb, @warning_bg_color 18%, @window_bg_color);
-  color: color-mix(in srgb, @warning_bg_color 55%, @window_fg_color);
-  border-bottom: 1px solid alpha(@warning_bg_color, 0.22);
+  background: @headerbar_bg_color;
+  background-color: @headerbar_bg_color;
+  color: @headerbar_fg_color;
+  border-bottom: 1px solid alpha(@borders, 0.55);
   box-shadow: none;
 }
 
 headerbar.memos-detached-headerbar .title,
 headerbar.memos-detached-headerbar button {
-  color: color-mix(in srgb, @warning_bg_color 55%, @window_fg_color);
+  color: @headerbar_fg_color;
 }
 
 .sidebar-layout-mode-toggler button {
@@ -6925,258 +7027,364 @@ headerbar.memos-detached-headerbar button {
   font-size: 0.82rem;
 }
 
-.dark .memopad-canvas,
-.dark .memos-sidebar-section,
-.dark .memos-panel-scroll,
-.dark .memos-panel-scroll > viewport,
-.dark .meridian-sidebar-drawer .memos-sidebar-section,
-.dark .meridian-sidebar-drawer scrolledwindow.memos-panel-scroll,
-.dark .meridian-sidebar-drawer scrolledwindow.memos-panel-scroll > viewport,
-.dark .calendar-sidebar .memos-sidebar-section,
-.dark .calendar-sidebar scrolledwindow.memos-panel-scroll,
-.dark .calendar-sidebar scrolledwindow.memos-panel-scroll > viewport,
-.dark.memos-detached-window,
-.dark .memos-detached-window,
-.dark .memos-detached-host {
-  background: #1c1912;
-  background-color: #1c1912;
-  border-radius: 0;
-}
-
-.dark .memos-sidebar-section .memos-section-header {
-  background: #1c1912;
-  background-color: #1c1912;
-  border-bottom: none;
-}
-
-.dark headerbar.memos-detached-headerbar,
-.dark.memos-detached-window headerbar,
-.dark .memos-detached-window headerbar {
-  background: #231e14;
-  background-color: #231e14;
-  color: #e5c07b;
-  border-bottom: 1px solid alpha(@warning_bg_color, 0.20);
-  box-shadow: none;
-}
-
-.dark headerbar.memos-detached-headerbar .title,
-.dark headerbar.memos-detached-headerbar button {
-  color: #e5c07b;
-}
-
+/* ── Memo Hover & Details Popover (GNOME PDF-Preview Sticky-Note Style) ─── */
 popover.memo-note-popover > contents,
 popover.calendar-details-popover.memo-note-popover > contents,
 .popover.memo-note-popover > contents {
-  background-color: #fffdf4;
+  background-color: #f8d43a;
+  color: #1c1604;
   border: none;
+  outline: none;
   border-radius: 12px;
-  box-shadow: 0 4px 14px rgba(0, 0, 6, 0.12),
-              0 1px 4px rgba(0, 0, 6, 0.06);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18),
+              0 2px 5px rgba(0, 0, 0, 0.10);
   padding: 10px 12px;
 }
 
 popover.memo-note-popover > arrow,
 popover.calendar-details-popover.memo-note-popover > arrow,
 .popover.memo-note-popover > arrow {
-  background-color: #fffdf4;
-  border-color: alpha(@warning_bg_color, 0.45);
+  background-color: #f8d43a;
+  border: none;
+  outline: none;
 }
 
 .memo-note-popover-date {
   font-size: 0.72rem;
   font-weight: 500;
-  color: shade(@warning_bg_color, 0.56);
-  opacity: 0.85;
+  color: rgba(28, 22, 4, 0.62);
 }
 
 .memo-note-popover-body {
-  font-size: 0.94rem;
+  font-size: 0.92rem;
   font-weight: 600;
-  color: shade(@warning_bg_color, 0.36);
-  line-height: 1.40;
+  color: #1c1604;
+  line-height: 1.42;
 }
 
 .memo-note-linked-mail-pill {
-  background-color: alpha(@warning_bg_color, 0.14);
-  border-radius: 7px;
-  padding: 4px 8px;
-  color: shade(@warning_bg_color, 0.52);
+  background-color: rgba(0, 0, 0, 0.08);
+  border: none;
+  outline: none;
+  border-radius: 8px;
+  padding: 5px 9px;
+  color: rgba(28, 22, 4, 0.86);
   font-size: 0.76rem;
   font-weight: 500;
 }
 
+.memo-note-linked-mail-pill image {
+  color: rgba(28, 22, 4, 0.74);
+}
+
 .memo-note-linked-mail-pill label {
+  color: inherit;
   font-size: 0.76rem;
   font-weight: 500;
 }
 
 .memo-note-linked-mail-btn,
 button.memo-note-linked-mail-btn {
-  background-color: alpha(@warning_bg_color, 0.16);
+  background-color: rgba(0, 0, 0, 0.08);
   border: none;
+  outline: none;
+  box-shadow: none;
   border-radius: 8px;
-  padding: 4px 9px;
-  color: shade(@warning_bg_color, 0.56);
-  min-height: 24px;
+  padding: 5px 9px;
+  color: rgba(28, 22, 4, 0.86);
+  min-height: 26px;
   font-size: 0.78rem;
   font-weight: 500;
 }
 
-.memo-note-linked-mail-btn label {
+.memo-note-linked-mail-btn image,
+button.memo-note-linked-mail-btn image {
+  color: rgba(28, 22, 4, 0.74);
+}
+
+.memo-note-linked-mail-btn label,
+button.memo-note-linked-mail-btn label {
+  color: inherit;
   font-size: 0.78rem;
   font-weight: 500;
 }
 
 .memo-note-linked-mail-btn:hover,
 button.memo-note-linked-mail-btn:hover {
-  background-color: alpha(@warning_bg_color, 0.25);
+  background-color: rgba(0, 0, 0, 0.14);
+  color: #000000;
+}
+
+/* ── Explicit Dark-Mode Tuning (.dark window class + OS prefers-color-scheme) ── */
+.dark .mail-memo-banner-row,
+.dark .mail-memo-editor-bar {
+  background-color: #f5c211;
+  color: #1c1604;
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+
+.dark .mail-memo-banner-text {
+  color: #1c1604;
+}
+
+.dark .mail-memo-entry,
+.dark entry.mail-memo-entry,
+.dark .mail-memo-entry:focus-within,
+.dark entry.mail-memo-entry:focus-within,
+.dark .mail-memo-entry > text,
+.dark entry.mail-memo-entry > text {
+  color: #1c1604;
+  caret-color: #1c1604;
+  background: transparent;
+  background-color: transparent;
+  border: none;
+  outline: none;
+}
+
+.dark .mail-memo-entry > text > placeholder,
+.dark entry.mail-memo-entry > text > placeholder {
+  color: rgba(28, 22, 4, 0.56);
+}
+
+.dark .mail-memo-scope-badge {
+  background-color: rgba(0, 0, 0, 0.10);
+  border: none;
+  color: rgba(28, 22, 4, 0.90);
+}
+
+.dark .mail-memo-scope-badge label,
+.dark .mail-memo-scope-badge image {
+  color: rgba(28, 22, 4, 0.90);
+}
+
+.dark .mail-memo-scope-toggle {
+  background-color: rgba(0, 0, 0, 0.06);
+}
+
+.dark .mail-memo-scope-toggle button.mail-memo-scope-btn {
+  color: rgba(28, 22, 4, 0.62);
+}
+
+.dark .mail-memo-scope-toggle button.mail-memo-scope-btn:hover {
+  background-color: rgba(0, 0, 0, 0.07);
+  color: #1c1604;
+}
+
+.dark .mail-memo-scope-toggle button.mail-memo-scope-btn:checked {
+  background-color: rgba(0, 0, 0, 0.14);
+  color: #141002;
+}
+
+.dark .mail-memo-action-btn,
+.dark button.mail-memo-action-btn {
+  background-color: rgba(0, 0, 0, 0.09);
+  color: rgba(28, 22, 4, 0.88);
+  border: none;
+  outline: none;
+}
+
+.dark .mail-memo-action-btn:hover,
+.dark button.mail-memo-action-btn:hover {
+  background-color: rgba(0, 0, 0, 0.16);
+  color: #000000;
+}
+
+.dark button.mail-memo-delete-btn:hover,
+.dark .mail-memo-delete-btn:hover {
+  background-color: rgba(192, 28, 40, 0.20);
+  color: #9a1220;
+}
+
+.dark .mail-header-memo-btn.has-linked-memo image {
+  color: #f5c211;
+}
+
+.dark popover.memo-note-popover > contents,
+.dark popover.calendar-details-popover.memo-note-popover > contents,
+.dark .popover.memo-note-popover > contents,
+popover.memo-note-popover.dark > contents {
+  background-color: #f5c211;
+  color: #1c1604;
+  border: none;
+  outline: none;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42),
+              0 2px 6px rgba(0, 0, 0, 0.26);
+}
+
+.dark popover.memo-note-popover > arrow,
+.dark popover.calendar-details-popover.memo-note-popover > arrow,
+.dark .popover.memo-note-popover > arrow,
+popover.memo-note-popover.dark > arrow {
+  background-color: #f5c211;
+  border: none;
+  outline: none;
+}
+
+.dark .memo-note-popover-date {
+  color: rgba(28, 22, 4, 0.64);
+  opacity: 1.0;
+}
+
+.dark .memo-note-popover-body {
+  color: #1c1604;
+}
+
+.dark .memo-note-linked-mail-pill,
+.dark .memo-note-linked-mail-btn,
+.dark button.memo-note-linked-mail-btn {
+  background-color: rgba(0, 0, 0, 0.09);
+  border: none;
+  outline: none;
+  color: rgba(28, 22, 4, 0.88);
+}
+
+.dark .memo-note-linked-mail-pill image,
+.dark .memo-note-linked-mail-btn image,
+.dark button.memo-note-linked-mail-btn image {
+  color: rgba(28, 22, 4, 0.76);
+}
+
+.dark .memo-note-linked-mail-btn:hover,
+.dark button.memo-note-linked-mail-btn:hover {
+  background-color: rgba(0, 0, 0, 0.15);
+  color: #000000;
 }
 
 @media (prefers-color-scheme: dark) {
   .mail-memo-banner-row,
-  .mail-memo-editor-bar,
-  .mail-memo-banner-list.is-multi-memo-card {
-    background-color: alpha(@warning_bg_color, 0.20);
+  .mail-memo-editor-bar {
+    background-color: #f5c211;
+    color: #1c1604;
+    border: none;
+    outline: none;
     box-shadow: none;
   }
 
-  .mail-memo-banner-list.is-multi-memo-card .mail-memo-banner-row {
-    background-color: transparent;
-  }
-
-  separator.mail-memo-combined-divider {
-    background-color: alpha(@warning_bg_color, 0.28);
-  }
-
-  .mail-memo-banner-icon {
-    color: lighter(@warning_color);
-  }
-
   .mail-memo-banner-text {
-    color: lighter(@warning_color);
+    color: #1c1604;
   }
 
   .mail-memo-entry,
   entry.mail-memo-entry,
   .mail-memo-entry:focus-within,
-  entry.mail-memo-entry:focus-within {
-    color: lighter(@warning_color);
+  entry.mail-memo-entry:focus-within,
+  .mail-memo-entry > text,
+  entry.mail-memo-entry > text {
+    color: #1c1604;
+    caret-color: #1c1604;
     background: transparent;
     background-color: transparent;
+    border: none;
     outline: none;
   }
 
-  .mail-memo-entry > text,
-  entry.mail-memo-entry > text {
-    color: lighter(@warning_color);
-    background: transparent;
-    background-color: transparent;
+  .mail-memo-entry > text > placeholder,
+  entry.mail-memo-entry > text > placeholder {
+    color: rgba(28, 22, 4, 0.56);
   }
 
-  .mail-memo-scope-badge.is-private {
-    background-color: alpha(@warning_bg_color, 0.24);
-    color: lighter(@warning_color);
+  .mail-memo-scope-badge {
+    background-color: rgba(0, 0, 0, 0.10);
+    border: none;
+    color: rgba(28, 22, 4, 0.90);
+  }
+
+  .mail-memo-scope-badge label,
+  .mail-memo-scope-badge image {
+    color: rgba(28, 22, 4, 0.90);
   }
 
   .mail-memo-scope-toggle {
-    background-color: alpha(@warning_bg_color, 0.18);
+    background-color: rgba(0, 0, 0, 0.06);
   }
 
   .mail-memo-scope-toggle button.mail-memo-scope-btn {
-    color: lighter(@warning_color);
+    color: rgba(28, 22, 4, 0.62);
+  }
+
+  .mail-memo-scope-toggle button.mail-memo-scope-btn:hover {
+    background-color: rgba(0, 0, 0, 0.07);
+    color: #1c1604;
   }
 
   .mail-memo-scope-toggle button.mail-memo-scope-btn:checked {
-    background-color: alpha(@warning_bg_color, 0.34);
-    color: #fef9c3;
+    background-color: rgba(0, 0, 0, 0.14);
+    color: #141002;
   }
 
   .mail-memo-action-btn,
   button.mail-memo-action-btn {
-    color: lighter(@warning_color);
+    background-color: rgba(0, 0, 0, 0.09);
+    color: rgba(28, 22, 4, 0.88);
+    border: none;
+    outline: none;
+  }
+
+  .mail-memo-action-btn:hover,
+  button.mail-memo-action-btn:hover {
+    background-color: rgba(0, 0, 0, 0.16);
+    color: #000000;
+  }
+
+  button.mail-memo-delete-btn:hover,
+  .mail-memo-delete-btn:hover {
+    background-color: rgba(192, 28, 40, 0.20);
+    color: #9a1220;
   }
 
   .mail-header-memo-btn.has-linked-memo image {
-    color: lighter(@warning_color);
-  }
-
-  .memopad-canvas,
-  .memos-sidebar-section,
-  .memos-panel-scroll,
-  .memos-panel-scroll > viewport,
-  .meridian-sidebar-drawer .memos-sidebar-section,
-  .meridian-sidebar-drawer scrolledwindow.memos-panel-scroll,
-  .meridian-sidebar-drawer scrolledwindow.memos-panel-scroll > viewport,
-  .calendar-sidebar .memos-sidebar-section,
-  .calendar-sidebar scrolledwindow.memos-panel-scroll,
-  .calendar-sidebar scrolledwindow.memos-panel-scroll > viewport,
-  .memos-detached-window,
-  .memos-detached-host {
-    background: #1c1912;
-    background-color: #1c1912;
-    border-radius: 0;
-  }
-
-  headerbar.memos-detached-headerbar,
-  .memos-detached-window headerbar {
-    background: #231e14;
-    background-color: #231e14;
-    color: #e5c07b;
-    border-bottom: 1px solid alpha(@warning_bg_color, 0.20);
-    box-shadow: none;
-  }
-
-  .memos-sidebar-section .memos-section-header {
-    background: #1c1912;
-    background-color: #1c1912;
-    border-bottom: none;
-  }
-
-  headerbar.memos-detached-headerbar .title,
-  headerbar.memos-detached-headerbar button,
-  .memos-sidebar-section .memos-section-header .heading,
-  .memos-sidebar-section .memos-section-header .sidebar-drawer-total,
-  .memos-sidebar-section .memos-section-header button {
-    color: #e5c07b;
+    color: #f5c211;
   }
 
   popover.memo-note-popover > contents,
   popover.calendar-details-popover.memo-note-popover > contents,
   .popover.memo-note-popover > contents {
-    background-color: #2c2412;
+    background-color: #f5c211;
+    color: #1c1604;
     border: none;
-  }
-
-  .memo-note-linked-mail-pill {
-    background-color: alpha(@warning_bg_color, 0.18);
-    color: lighter(@warning_color);
+    outline: none;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42),
+                0 2px 6px rgba(0, 0, 0, 0.26);
   }
 
   popover.memo-note-popover > arrow,
   popover.calendar-details-popover.memo-note-popover > arrow,
   .popover.memo-note-popover > arrow {
-    background-color: #2c2412;
-    border-color: alpha(@warning_bg_color, 0.38);
+    background-color: #f5c211;
+    border: none;
+    outline: none;
   }
 
   .memo-note-popover-date {
-    color: lighter(@warning_color);
-    opacity: 0.75;
+    color: rgba(28, 22, 4, 0.64);
+    opacity: 1.0;
   }
 
   .memo-note-popover-body {
-    color: #fef9c3;
+    color: #1c1604;
   }
 
+  .memo-note-linked-mail-pill,
   .memo-note-linked-mail-btn,
   button.memo-note-linked-mail-btn {
-    background-color: alpha(@warning_bg_color, 0.18);
-    color: lighter(@warning_color);
+    background-color: rgba(0, 0, 0, 0.09);
+    border: none;
+    outline: none;
+    color: rgba(28, 22, 4, 0.88);
+  }
+
+  .memo-note-linked-mail-pill image,
+  .memo-note-linked-mail-btn image,
+  button.memo-note-linked-mail-btn image {
+    color: rgba(28, 22, 4, 0.76);
   }
 
   .memo-note-linked-mail-btn:hover,
   button.memo-note-linked-mail-btn:hover {
-    background-color: alpha(@warning_bg_color, 0.28);
+    background-color: rgba(0, 0, 0, 0.15);
+    color: #000000;
   }
 }
 
@@ -7460,7 +7668,7 @@ textview.task-description-view > text {
 }
 
 .contact-detail-pane {
-  background-color: @view_bg_color;
+  background-color: var(--window-bg-color, @window_bg_color);
   border-left: none;
 }
 
