@@ -397,6 +397,38 @@ impl MeridianApplication {
                 "meridian-horizontal-rule-symbolic.svg",
                 include_str!("../data/icons/hicolor/scalable/actions/meridian-horizontal-rule-symbolic.svg"),
             ),
+            (
+                "meridian-format-bold-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/meridian-format-bold-symbolic.svg"),
+            ),
+            (
+                "meridian-format-italic-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/meridian-format-italic-symbolic.svg"),
+            ),
+            (
+                "meridian-format-underline-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/meridian-format-underline-symbolic.svg"),
+            ),
+            (
+                "meridian-format-strikethrough-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/meridian-format-strikethrough-symbolic.svg"),
+            ),
+            (
+                "meridian-insert-link-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/meridian-insert-link-symbolic.svg"),
+            ),
+            (
+                "meridian-insert-image-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/meridian-insert-image-symbolic.svg"),
+            ),
+            (
+                "meridian-insert-table-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/meridian-insert-table-symbolic.svg"),
+            ),
+            (
+                "go-jump-today-symbolic.svg",
+                include_str!("../data/icons/hicolor/scalable/actions/go-jump-today-symbolic.svg"),
+            ),
         ];
 
         for (filename, content) in icons {
@@ -468,6 +500,23 @@ impl MeridianApplication {
                 if needs_write {
                     let _ = std::fs::create_dir_all(&user_dir);
                     let _ = std::fs::write(&user_file, bytes);
+                    user_icons_updated = true;
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        if std::env::var("FLATPAK_ID").is_err() {
+            let user_scalable_actions = user_hicolor_dir.join("scalable/actions");
+            let _ = std::fs::create_dir_all(&user_scalable_actions);
+            for (filename, content) in icons {
+                let user_file = user_scalable_actions.join(filename);
+                let needs_write = match std::fs::read_to_string(&user_file) {
+                    Ok(existing) => existing != *content,
+                    Err(_) => true,
+                };
+                if needs_write {
+                    let _ = std::fs::write(&user_file, content);
                     user_icons_updated = true;
                 }
             }
@@ -1169,6 +1218,10 @@ impl MeridianApplication {
                     if !subj.trim().is_empty() {
                         notif.set_body(Some(subj));
                     }
+                    notif.set_icon(&gio::ThemedIcon::from_names(&[
+                        "mail-send-symbolic",
+                        APP_ID,
+                    ]));
                     app.send_notification(Some(&format!("sched-{}", uuid::Uuid::new_v4())), &notif);
                 }
                 for snoozed in &resurfaced_snoozes {
@@ -1179,6 +1232,11 @@ impl MeridianApplication {
                         format!("{} — {}", snoozed.sender, snoozed.subject)
                     };
                     notif.set_body(Some(&body));
+                    notif.set_icon(&gio::ThemedIcon::from_names(&[
+                        "alarm-symbolic",
+                        "mail-unread-symbolic",
+                        APP_ID,
+                    ]));
                     app.send_notification(
                         Some(&format!("snooze-{}", snoozed.message_key)),
                         &notif,
@@ -1215,9 +1273,9 @@ impl MeridianApplication {
                     let body = delivery.candidate.format_description();
                     notification.set_body(Some(&body));
                     let icon = gio::ThemedIcon::from_names(&[
-                        "appointment-soon",
-                        "appointment-soon-symbolic",
                         "alarm-symbolic",
+                        "appointment-soon-symbolic",
+                        APP_ID,
                     ]);
                     notification.set_icon(&icon);
                     notification.set_default_action("app.show-reminders");
