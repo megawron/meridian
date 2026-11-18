@@ -5345,8 +5345,20 @@ impl PreferencesDialog {
             .build();
         if let Some(settings) = settings.clone() {
             row_mail_statusbar.set_active(settings.mail_show_statusbar());
+            let s_sb = settings.clone();
             row_mail_statusbar.connect_active_notify(move |row| {
-                settings.set_mail_show_statusbar(row.is_active());
+                if s_sb.mail_show_statusbar() != row.is_active() {
+                    s_sb.set_mail_show_statusbar(row.is_active());
+                }
+            });
+            let row_sb_weak = row_mail_statusbar.downgrade();
+            settings.connect_changed(Some("mail-show-statusbar"), move |s, _| {
+                if let Some(row) = row_sb_weak.upgrade() {
+                    let active = s.boolean("mail-show-statusbar");
+                    if row.is_active() != active {
+                        row.set_active(active);
+                    }
+                }
             });
         }
 
@@ -5760,7 +5772,6 @@ impl PreferencesDialog {
         group_appearance_layout.add(&toggle_mail_density);
         // Folder and To-Do sidebars are toggled directly in the main window.
         let _ = (&row_mail_sidebar, &row_show_todo_bar);
-        row_mail_statusbar.set_visible(false);
         group_appearance_layout.add(&row_mail_statusbar);
 
         page_appearance.add(&group_theme);

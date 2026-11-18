@@ -171,6 +171,7 @@ pub(crate) const PRIMARY_MENU_ACTIONS: &[MenuActionSpec] = menu_specs! {
         ("Normal Size", "win.zoom-reset"),
         ("Zoom Out", "win.zoom-out"),
         ("Show Action Toolbar", "win.toggle-toolbar"),
+        ("Show Status Bar", "win.toggle-statusbar"),
     ],
     PrimaryActions => [
         ("Send & Receive", "win.mail-send-receive"),
