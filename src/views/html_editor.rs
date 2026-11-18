@@ -740,7 +740,7 @@ mod imp {
         pub drag_leave_callbacks: RefCell<DragLeaveCallbackList>,
         pub drag_internal_callbacks: RefCell<DragInternalCallbackList>,
         pub image_convert_callbacks: RefCell<ImageConvertCallbackList>,
-        pub active_image_popover: RefCell<Option<gtk::Popover>>,
+        pub(super) pending_image_menu: RefCell<Option<super::ImageMenuPayload>>,
         pub content_changed_callbacks: RefCell<ContentChangedCallbackList>,
     }
 
@@ -762,9 +762,6 @@ mod imp {
         }
 
         fn dispose(&self) {
-            if let Some(popover) = self.active_image_popover.borrow_mut().take() {
-                popover.unparent();
-            }
             if let Some(settings) = AppSettings::try_new() {
                 for id in self.spelling_handler_ids.borrow_mut().drain(..) {
                     settings.disconnect(id);
@@ -779,6 +776,11 @@ mod imp {
     impl WidgetImpl for HtmlEditor {
         fn realize(&self) {
             self.parent_realize();
+        }
+
+        fn unmap(&self) {
+            self.obj().popdown_toolbar_popovers();
+            self.parent_unmap();
         }
     }
 }
@@ -1140,412 +1142,128 @@ impl HtmlEditor {
         else {
             return;
         };
-        self.present_image_context_popover(&payload);
+        self.imp().pending_image_menu.replace(Some(payload));
     }
 
-    fn present_image_context_popover(&self, payload: &ImageMenuPayload) {
-        if let Some(old_pop) = self.imp().active_image_popover.borrow_mut().take() {
-            old_pop.unparent();
-        }
-
-        let Some(web_view) = self.imp().web_view.borrow().as_ref().cloned() else {
-            return;
+    /// Fills WebKit's native context menu for a right-clicked inline image.
+    ///
+    /// The image options used to be shown in a custom `GtkPopover` opened asynchronously from a
+    /// script message. That popover took an input grab while WebKit was still processing the
+    /// right-click, which could leave the whole window unresponsive. WebKit's own context menu is
+    /// owned and dismissed by WebKit itself, so it can never block the window.
+    pub(crate) fn populate_image_context_menu(&self, context_menu: &webkit6::ContextMenu) -> bool {
+        let Some(payload) = self.imp().pending_image_menu.borrow_mut().take() else {
+            return false;
         };
+        context_menu.remove_all();
 
-        let popover = gtk::Popover::builder()
-            .has_arrow(true)
-            .pointing_to(&gdk::Rectangle::new(payload.x, payload.y, 1, 1))
-            .css_classes(["image-options-popover"])
-            .build();
-        popover.set_parent(&web_view);
-
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        content.set_margin_start(8);
-        content.set_margin_end(8);
-        content.set_margin_top(8);
-        content.set_margin_bottom(8);
-
-        // Header
-        let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let header_icon = gtk::Image::from_icon_name("insert-image-symbolic");
-        header_icon.set_pixel_size(16);
-        let header_label = gtk::Label::builder()
-            .label(gettext("Inline Image"))
-            .css_classes(["heading"])
-            .xalign(0.0)
-            .build();
-        header_box.append(&header_icon);
-        header_box.append(&header_label);
-        content.append(&header_box);
-
-        // 1. Alignment section
-        let align_label = gtk::Label::builder()
-            .label(gettext("Alignment"))
-            .css_classes(["dim-label", "caption"])
-            .xalign(0.0)
-            .build();
-        content.append(&align_label);
-
-        let align_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        align_box.add_css_class("linked");
-
-        let btn_align_left = gtk::Button::builder()
-            .icon_name("format-justify-left-symbolic")
-            .tooltip_text(gettext("Align Left"))
-            .build();
-        let btn_align_center = gtk::Button::builder()
-            .icon_name("format-justify-center-symbolic")
-            .tooltip_text(gettext("Center"))
-            .build();
-        let btn_align_right = gtk::Button::builder()
-            .icon_name("format-justify-right-symbolic")
-            .tooltip_text(gettext("Align Right"))
-            .build();
-        let btn_align_wrap = gtk::Button::builder()
-            .icon_name("format-text-direction-ltr-symbolic")
-            .tooltip_text(gettext("Wrap Left"))
-            .build();
-
-        match payload.align.as_str() {
-            "left" => btn_align_left.add_css_class("suggested-action"),
-            "center" => btn_align_center.add_css_class("suggested-action"),
-            "right" => btn_align_right.add_css_class("suggested-action"),
-            _ => btn_align_wrap.add_css_class("suggested-action"),
-        }
-
-        let id = payload.id.clone();
-        let wv = web_view.clone();
-        let (b_l, b_c, b_r, b_w) = (
-            btn_align_left.clone(),
-            btn_align_center.clone(),
-            btn_align_right.clone(),
-            btn_align_wrap.clone(),
-        );
-        btn_align_left.connect_clicked(move |_| {
-            b_l.add_css_class("suggested-action");
-            b_c.remove_css_class("suggested-action");
-            b_r.remove_css_class("suggested-action");
-            b_w.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = '0'; el.style.marginRight = 'auto'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
-            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
-        });
-
-        let id = payload.id.clone();
-        let wv = web_view.clone();
-        let (b_l, b_c, b_r, b_w) = (
-            btn_align_left.clone(),
-            btn_align_center.clone(),
-            btn_align_right.clone(),
-            btn_align_wrap.clone(),
-        );
-        btn_align_center.connect_clicked(move |_| {
-            b_l.remove_css_class("suggested-action");
-            b_c.add_css_class("suggested-action");
-            b_r.remove_css_class("suggested-action");
-            b_w.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = 'auto'; el.style.marginRight = 'auto'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
-            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
-        });
-
-        let id = payload.id.clone();
-        let wv = web_view.clone();
-        let (b_l, b_c, b_r, b_w) = (
-            btn_align_left.clone(),
-            btn_align_center.clone(),
-            btn_align_right.clone(),
-            btn_align_wrap.clone(),
-        );
-        btn_align_right.connect_clicked(move |_| {
-            b_l.remove_css_class("suggested-action");
-            b_c.remove_css_class("suggested-action");
-            b_r.remove_css_class("suggested-action");
-            b_w.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.display = 'block'; el.style.marginLeft = 'auto'; el.style.marginRight = '0'; el.style.float = 'none'; el.removeAttribute('align'); }} }})()");
-            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
-        });
-
-        let id = payload.id.clone();
-        let wv = web_view.clone();
-        let (b_l, b_c, b_r, b_w) = (
-            btn_align_left.clone(),
-            btn_align_center.clone(),
-            btn_align_right.clone(),
-            btn_align_wrap.clone(),
-        );
-        btn_align_wrap.connect_clicked(move |_| {
-            b_l.remove_css_class("suggested-action");
-            b_c.remove_css_class("suggested-action");
-            b_r.remove_css_class("suggested-action");
-            b_w.add_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.display = 'inline'; el.style.float = 'left'; el.style.margin = '4px 14px 6px 0'; el.removeAttribute('align'); }} }})()");
-            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
-        });
-
-        align_box.append(&btn_align_left);
-        align_box.append(&btn_align_center);
-        align_box.append(&btn_align_right);
-        align_box.append(&btn_align_wrap);
-        content.append(&align_box);
-
-        // 2. Size section
-        let size_label = gtk::Label::builder()
-            .label(gettext("Size"))
-            .css_classes(["dim-label", "caption"])
-            .xalign(0.0)
-            .build();
-        content.append(&size_label);
-
-        let size_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        size_box.add_css_class("linked");
-
-        let btn_size_25 = gtk::Button::builder()
-            .label("25%")
-            .tooltip_text(gettext("Small (25%)"))
-            .build();
-        let btn_size_50 = gtk::Button::builder()
-            .label("50%")
-            .tooltip_text(gettext("Medium (50%)"))
-            .build();
-        let btn_size_100 = gtk::Button::builder()
-            .label("100%")
-            .tooltip_text(gettext("Original (100%)"))
-            .build();
-        let btn_size_orig = gtk::Button::builder()
-            .label(gettext("Original"))
-            .tooltip_text(gettext("Original Size"))
-            .build();
-
-        match payload.size.as_str() {
-            "small" => btn_size_25.add_css_class("suggested-action"),
-            "medium" => btn_size_50.add_css_class("suggested-action"),
-            "large" => btn_size_100.add_css_class("suggested-action"),
-            _ => btn_size_orig.add_css_class("suggested-action"),
-        }
-
-        let id = payload.id.clone();
-        let wv = web_view.clone();
-        let (s25, s50, s100, sorig) = (
-            btn_size_25.clone(),
-            btn_size_50.clone(),
-            btn_size_100.clone(),
-            btn_size_orig.clone(),
-        );
-        btn_size_25.connect_clicked(move |_| {
-            s25.add_css_class("suggested-action");
-            s50.remove_css_class("suggested-action");
-            s100.remove_css_class("suggested-action");
-            sorig.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.width = '25%'; el.style.maxWidth = '25%'; el.style.height = 'auto'; }} }})()");
-            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
-        });
-
-        let id = payload.id.clone();
-        let wv = web_view.clone();
-        let (s25, s50, s100, sorig) = (
-            btn_size_25.clone(),
-            btn_size_50.clone(),
-            btn_size_100.clone(),
-            btn_size_orig.clone(),
-        );
-        btn_size_50.connect_clicked(move |_| {
-            s25.remove_css_class("suggested-action");
-            s50.add_css_class("suggested-action");
-            s100.remove_css_class("suggested-action");
-            sorig.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.width = '50%'; el.style.maxWidth = '50%'; el.style.height = 'auto'; }} }})()");
-            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
-        });
-
-        let id = payload.id.clone();
-        let wv = web_view.clone();
-        let (s25, s50, s100, sorig) = (
-            btn_size_25.clone(),
-            btn_size_50.clone(),
-            btn_size_100.clone(),
-            btn_size_orig.clone(),
-        );
-        btn_size_100.connect_clicked(move |_| {
-            s25.remove_css_class("suggested-action");
-            s50.remove_css_class("suggested-action");
-            s100.add_css_class("suggested-action");
-            sorig.remove_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.width = '100%'; el.style.maxWidth = '100%'; el.style.height = 'auto'; }} }})()");
-            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
-        });
-
-        let id = payload.id.clone();
-        let wv = web_view.clone();
-        let (s25, s50, s100, sorig) = (
-            btn_size_25.clone(),
-            btn_size_50.clone(),
-            btn_size_100.clone(),
-            btn_size_orig.clone(),
-        );
-        btn_size_orig.connect_clicked(move |_| {
-            s25.remove_css_class("suggested-action");
-            s50.remove_css_class("suggested-action");
-            s100.remove_css_class("suggested-action");
-            sorig.add_css_class("suggested-action");
-            let js = format!("(function(){{ const el = document.getElementById('{id}') || document.querySelector('img[data-meridian-id=\"{id}\"]'); if (el) {{ el.style.width = 'auto'; el.style.maxWidth = '100%'; el.style.height = 'auto'; }} }})()");
-            wv.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
-        });
-
-        size_box.append(&btn_size_25);
-        size_box.append(&btn_size_50);
-        size_box.append(&btn_size_100);
-        size_box.append(&btn_size_orig);
-        content.append(&size_box);
-
-        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-        let make_action_btn = |icon: &str, label: &str, tooltip: &str, is_destr: bool| {
-            let btn = gtk::Button::builder()
-                .css_classes(if is_destr {
-                    vec!["flat", "destructive-action"]
-                } else {
-                    vec!["flat"]
-                })
-                .halign(gtk::Align::Fill)
-                .tooltip_text(tooltip)
-                .build();
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let img = gtk::Image::from_icon_name(icon);
-            img.set_pixel_size(16);
-            let lbl = gtk::Label::builder()
-                .label(label)
-                .xalign(0.0)
-                .hexpand(true)
-                .build();
-            row.append(&img);
-            row.append(&lbl);
-            btn.set_child(Some(&row));
-            btn
-        };
-
-        // Convert to attachment
-        let btn_convert = make_action_btn(
-            "mail-attachment-symbolic",
-            &gettext("Convert to Attachment"),
-            &gettext("Removes the image from the message body and attaches it as a file"),
-            false,
-        );
-        let editor_weak = self.downgrade();
         let img_id = payload.id.clone();
-        let pop_weak = popover.downgrade();
-        btn_convert.connect_clicked(move |_| {
-            if let Some(pop) = pop_weak.upgrade() {
-                pop.popdown();
-            }
-            if let Some(editor) = editor_weak.upgrade() {
-                editor.convert_image_to_attachment(&img_id, false);
-            }
-        });
-        content.append(&btn_convert);
-
-        // Also attach
-        let btn_attach_also = make_action_btn(
-            "list-add-symbolic",
-            &gettext("Also Attach as File"),
-            &gettext("Keeps the image in the message body and additionally attaches it as a file"),
-            false,
-        );
-        let editor_weak = self.downgrade();
-        let img_id = payload.id.clone();
-        let pop_weak = popover.downgrade();
-        btn_attach_also.connect_clicked(move |_| {
-            if let Some(pop) = pop_weak.upgrade() {
-                pop.popdown();
-            }
-            if let Some(editor) = editor_weak.upgrade() {
-                editor.convert_image_to_attachment(&img_id, true);
-            }
-        });
-        content.append(&btn_attach_also);
-
-        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-        // Copy image
-        let btn_copy = make_action_btn(
-            "edit-copy-symbolic",
-            &gettext("Copy Image"),
-            &gettext("Copies the image to the clipboard"),
-            false,
-        );
-        let editor_weak = self.downgrade();
-        let img_id = payload.id.clone();
-        let pop_weak = popover.downgrade();
-        btn_copy.connect_clicked(move |_| {
-            if let Some(pop) = pop_weak.upgrade() {
-                pop.popdown();
-            }
-            if let Some(editor) = editor_weak.upgrade() {
-                editor.copy_image_to_clipboard(&img_id);
-            }
-        });
-        content.append(&btn_copy);
-
-        // Save image as
-        let btn_save = make_action_btn(
-            "document-save-as-symbolic",
-            &gettext("Save Image As…"),
-            &gettext("Saves the image to disk"),
-            false,
-        );
-        let editor_weak = self.downgrade();
-        let img_id = payload.id.clone();
-        let pop_weak = popover.downgrade();
-        btn_save.connect_clicked(move |_| {
-            if let Some(pop) = pop_weak.upgrade() {
-                pop.popdown();
-            }
-            if let Some(editor) = editor_weak.upgrade() {
-                editor.save_image_as(&img_id);
-            }
-        });
-        content.append(&btn_save);
-
-        content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-        // Remove image
-        let btn_remove = make_action_btn(
-            "user-trash-symbolic",
-            &gettext("Remove Image"),
-            &gettext("Deletes the image from the email"),
-            true,
-        );
-        let editor_weak = self.downgrade();
-        let img_id = payload.id.clone();
-        let pop_weak = popover.downgrade();
-        btn_remove.connect_clicked(move |_| {
-            if let Some(pop) = pop_weak.upgrade() {
-                pop.popdown();
-            }
-            if let Some(editor) = editor_weak.upgrade() {
-                editor.remove_image(&img_id);
-            }
-        });
-        content.append(&btn_remove);
-
-        let editor_weak = self.downgrade();
-        popover.connect_closed(move |p| {
-            let p_clone = p.clone();
-            let ed_weak = editor_weak.clone();
-            glib::idle_add_local_once(move || {
-                if let Some(editor) = ed_weak.upgrade() {
-                    let mut cur = editor.imp().active_image_popover.borrow_mut();
-                    if let Some(active) = cur.as_ref() {
-                        if active == &p_clone {
-                            p_clone.unparent();
-                            *cur = None;
-                        }
-                    }
+        let add_action = |menu: &webkit6::ContextMenu,
+                          name: &str,
+                          label: &str,
+                          checked: Option<bool>,
+                          handler: Box<dyn Fn(&HtmlEditor)>| {
+            let action = match checked {
+                Some(state) => gio::SimpleAction::new_stateful(name, None, &state.to_variant()),
+                None => gio::SimpleAction::new(name, None),
+            };
+            let editor_weak = self.downgrade();
+            action.connect_activate(move |_, _| {
+                if let Some(editor) = editor_weak.upgrade() {
+                    handler(&editor);
                 }
             });
-        });
+            menu.append(&webkit6::ContextMenuItem::from_gaction(&action, label, None));
+        };
 
-        popover.set_child(Some(&content));
-        self.imp().active_image_popover.replace(Some(popover.clone()));
-        popover.popup();
+        let align_menu = webkit6::ContextMenu::new();
+        for (key, label) in [
+            ("left", gettext("Align Left")),
+            ("center", gettext("Center")),
+            ("right", gettext("Align Right")),
+            ("wrap_left", gettext("Wrap Text")),
+        ] {
+            let id = img_id.clone();
+            add_action(
+                &align_menu,
+                &format!("meridian-image-align-{key}"),
+                &label,
+                Some(payload.align == key),
+                Box::new(move |editor| editor.evaluate_or_queue(image_align_js(&id, key))),
+            );
+        }
+        context_menu.append(&webkit6::ContextMenuItem::with_submenu(
+            &gettext("Alignment"),
+            &align_menu,
+        ));
+
+        let size_menu = webkit6::ContextMenu::new();
+        for (key, label) in [
+            ("small", gettext("Small (25%)")),
+            ("medium", gettext("Medium (50%)")),
+            ("large", gettext("Full Width (100%)")),
+            ("original", gettext("Original Size")),
+        ] {
+            let id = img_id.clone();
+            add_action(
+                &size_menu,
+                &format!("meridian-image-size-{key}"),
+                &label,
+                Some(payload.size == key),
+                Box::new(move |editor| editor.evaluate_or_queue(image_size_js(&id, key))),
+            );
+        }
+        context_menu.append(&webkit6::ContextMenuItem::with_submenu(
+            &gettext("Size"),
+            &size_menu,
+        ));
+
+        context_menu.append(&webkit6::ContextMenuItem::new_separator());
+        let id = img_id.clone();
+        add_action(
+            context_menu,
+            "meridian-image-convert",
+            &gettext("Convert to Attachment"),
+            None,
+            Box::new(move |editor| editor.convert_image_to_attachment(&id, false)),
+        );
+        let id = img_id.clone();
+        add_action(
+            context_menu,
+            "meridian-image-attach-also",
+            &gettext("Also Attach as File"),
+            None,
+            Box::new(move |editor| editor.convert_image_to_attachment(&id, true)),
+        );
+
+        context_menu.append(&webkit6::ContextMenuItem::new_separator());
+        let id = img_id.clone();
+        add_action(
+            context_menu,
+            "meridian-image-copy",
+            &gettext("Copy Image"),
+            None,
+            Box::new(move |editor| editor.copy_image_to_clipboard(&id)),
+        );
+        let id = img_id.clone();
+        add_action(
+            context_menu,
+            "meridian-image-save",
+            &gettext("Save Image As…"),
+            None,
+            Box::new(move |editor| editor.save_image_as(&id)),
+        );
+
+        context_menu.append(&webkit6::ContextMenuItem::new_separator());
+        let id = img_id;
+        add_action(
+            context_menu,
+            "meridian-image-remove",
+            &gettext("Remove Image"),
+            None,
+            Box::new(move |editor| editor.remove_image(&id)),
+        );
+        true
     }
 
     pub fn convert_image_to_attachment(&self, img_id: &str, keep_inline: bool) {
@@ -4208,13 +3926,12 @@ impl HtmlEditor {
             "script-message-received::meridianImageMenu",
             false,
             move |values| {
-                if let Some(editor) = editor_weak_for_img_menu.upgrade() {
-                    if let Some(js_val) = values
-                        .get(1)
-                        .and_then(|v| v.get::<javascriptcore6::Value>().ok())
-                    {
-                        let msg = js_val.to_str();
-                        editor.handle_image_menu_script_message(&msg);
+                if let Some(js_val) = values
+                    .get(1)
+                    .and_then(|v| v.get::<javascriptcore6::Value>().ok())
+                {
+                    if let Some(editor) = editor_weak_for_img_menu.upgrade() {
+                        editor.handle_image_menu_script_message(&js_val.to_str());
                     }
                 }
                 None
@@ -4232,12 +3949,17 @@ impl HtmlEditor {
 
         let editor_weak_ctx = self.downgrade();
         web_view.connect_context_menu(move |_, context_menu, hit_test_result| {
-            if hit_test_result.context_is_image() {
-                return true;
+            let Some(editor) = editor_weak_ctx.upgrade() else {
+                return false;
+            };
+            if hit_test_result.context_is_image() && !editor.plain_text_mode() {
+                if editor.populate_image_context_menu(context_menu) {
+                    return false;
+                }
+            } else {
+                editor.imp().pending_image_menu.replace(None);
             }
-            if let Some(editor) = editor_weak_ctx.upgrade() {
-                editor.populate_spellcheck_context_menu(context_menu);
-            }
+            editor.populate_spellcheck_context_menu(context_menu);
             false
         });
 
@@ -4463,20 +4185,18 @@ impl HtmlEditor {
                 "            }} else if (target.closest) {{",
                 "                img = target.closest('img');",
                 "            }}",
-                "            if (!img && target.querySelector) {{",
-                "                img = target.querySelector('img');",
-                "            }}",
                 "        }}",
                 "        if (img && !window.__plainTextMode) {{",
-                "            e.preventDefault();",
-                "            e.stopPropagation();",
+                "            const rect = img.getBoundingClientRect();",
+                "            if (!rect || rect.width <= 0 || rect.height <= 0 || e.clientX < rect.left - 2 || e.clientX > rect.right + 2 || e.clientY < rect.top - 2 || e.clientY > rect.bottom + 2) {{",
+                "                return;",
+                "            }}",
                 "            if (!img.id) {{",
                 "                img.id = '__meridian_img_' + Date.now() + '_' + Math.floor(Math.random() * 10000);",
                 "            }}",
                 "            if (!img.getAttribute('data-meridian-id')) {{",
                 "                img.setAttribute('data-meridian-id', img.id);",
                 "            }}",
-                "        const rect = img.getBoundingClientRect();",
                 "        let align = 'inline';",
                 "        if (img.style.display === 'block') {{",
                 "            if (img.style.marginLeft === 'auto' && img.style.marginRight === 'auto') {{",
@@ -7418,9 +7138,11 @@ fn encode_base64(bytes: &[u8]) -> String {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct ImageMenuPayload {
+pub(crate) struct ImageMenuPayload {
     id: String,
+    #[allow(dead_code)]
     x: i32,
+    #[allow(dead_code)]
     y: i32,
     #[allow(dead_code)]
     img_x: i32,
@@ -7432,6 +7154,44 @@ struct ImageMenuPayload {
     img_h: i32,
     align: String,
     size: String,
+}
+
+fn image_element_lookup_js(img_id: &str) -> String {
+    let encoded = serde_json::to_string(img_id).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        "(document.getElementById({encoded}) || document.querySelector('img[data-meridian-id=' + JSON.stringify({encoded}) + ']'))"
+    )
+}
+
+fn image_edit_js(img_id: &str, body: &str) -> String {
+    let lookup = image_element_lookup_js(img_id);
+    format!(
+        "(function(){{ const el = {lookup}; if (!el) return; \
+         if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); \
+         {body} \
+         if (typeof window.meridianRecordUndoSnapshot === 'function') window.meridianRecordUndoSnapshot(true); \
+         if (typeof window.notifyMeridianContentChanged === 'function') window.notifyMeridianContentChanged(); }})()"
+    )
+}
+
+fn image_align_js(img_id: &str, align: &str) -> String {
+    let body = match align {
+        "left" => "el.style.display = 'block'; el.style.float = 'none'; el.style.margin = ''; el.style.marginLeft = '0'; el.style.marginRight = 'auto'; el.removeAttribute('align');",
+        "center" => "el.style.display = 'block'; el.style.float = 'none'; el.style.margin = ''; el.style.marginLeft = 'auto'; el.style.marginRight = 'auto'; el.removeAttribute('align');",
+        "right" => "el.style.display = 'block'; el.style.float = 'none'; el.style.margin = ''; el.style.marginLeft = 'auto'; el.style.marginRight = '0'; el.removeAttribute('align');",
+        _ => "el.style.display = 'inline'; el.style.float = 'left'; el.style.margin = '4px 14px 6px 0'; el.removeAttribute('align');",
+    };
+    image_edit_js(img_id, body)
+}
+
+fn image_size_js(img_id: &str, size: &str) -> String {
+    let body = match size {
+        "small" => "el.style.width = '25%'; el.style.maxWidth = '25%'; el.style.height = 'auto';",
+        "medium" => "el.style.width = '50%'; el.style.maxWidth = '50%'; el.style.height = 'auto';",
+        "large" => "el.style.width = '100%'; el.style.maxWidth = '100%'; el.style.height = 'auto';",
+        _ => "el.style.width = 'auto'; el.style.maxWidth = '100%'; el.style.height = 'auto';",
+    };
+    image_edit_js(img_id, body)
 }
 
 #[derive(Debug, serde::Deserialize)]
