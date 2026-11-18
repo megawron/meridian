@@ -16767,3 +16767,201 @@ msgstr "Kürzel:"
 
 msgid "(Empty body)"
 msgstr "(Leerer Text)"
+
+msgid "Show Status Bar"
+msgstr "Statusleiste anzeigen"
+
+msgid "Spelling Languages…"
+msgstr "Rechtschreibsprachen…"
+
+msgid "Spelling Languages"
+msgstr "Rechtschreibsprachen"
+
+msgid "Automatic (System Default)"
+msgstr "Automatisch (Systemstandard)"
+
+msgid "Follow system language"
+msgstr "Systemsprache verwenden"
+
+msgid "Languages"
+msgstr "Sprachen"
+
+msgid "Select one or more languages to check simultaneously"
+msgstr "Eine oder mehrere Sprachen zur gleichzeitigen Prüfung auswählen"
+
+msgid "Dictionary not installed"
+msgstr "Wörterbuch nicht installiert"
+
+msgid "Install"
+msgstr "Installieren"
+
+msgid "Dictionary package not installed on system"
+msgstr "Wörterbuchpaket nicht auf dem System installiert"
+
+msgid "Installing system dictionary…"
+msgstr "Systemwörterbuch wird installiert…"
+
+msgid "Could not install dictionary"
+msgstr "Wörterbuch konnte nicht installiert werden"
+
+msgid "Install Additional Dictionaries"
+msgstr "Weitere Wörterbücher installieren"
+
+msgid "Install system-wide spell check dictionaries"
+msgstr "Systemweite Rechtschreibwörterbücher installieren"
+
+msgid "System Region & Language Settings"
+msgstr "Region- & Spracheinstellungen des Systems"
+
+msgid "Arabic"
+msgstr "Arabisch"
+
+msgid "Bulgarian"
+msgstr "Bulgarisch"
+
+msgid "Catalan"
+msgstr "Katalanisch"
+
+msgid "Croatian"
+msgstr "Kroatisch"
+
+msgid "Estonian"
+msgstr "Estnisch"
+
+msgid "Greek"
+msgstr "Griechisch"
+
+msgid "Hebrew"
+msgstr "Hebräisch"
+
+msgid "Hungarian"
+msgstr "Ungarisch"
+
+msgid "Indonesian"
+msgstr "Indonesisch"
+
+msgid "Korean"
+msgstr "Koreanisch"
+
+msgid "Latvian"
+msgstr "Lettisch"
+
+msgid "Lithuanian"
+msgstr "Litauisch"
+
+msgid "Romanian"
+msgstr "Rumänisch"
+
+msgid "Serbian"
+msgstr "Serbisch"
+
+msgid "Slovak"
+msgstr "Slowakisch"
+
+msgid "Slovenian"
+msgstr "Slowenisch"
+
+msgid "Vietnamese"
+msgstr "Vietnamesisch"
+
+msgid "Afrikaans"
+msgstr "Afrikaans"
+
+msgid "Albanian"
+msgstr "Albanisch"
+
+msgid "Armenian"
+msgstr "Armenisch"
+
+msgid "Basque"
+msgstr "Baskisch"
+
+msgid "Belarusian"
+msgstr "Belarussisch"
+
+msgid "Bengali"
+msgstr "Bengalisch"
+
+msgid "Esperanto"
+msgstr "Esperanto"
+
+msgid "Galician"
+msgstr "Galicisch"
+
+msgid "Georgian"
+msgstr "Georgisch"
+
+msgid "Gujarati"
+msgstr "Gujarati"
+
+msgid "Hindi"
+msgstr "Hindi"
+
+msgid "Icelandic"
+msgstr "Isländisch"
+
+msgid "Irish"
+msgstr "Irisch"
+
+msgid "Kannada"
+msgstr "Kannada"
+
+msgid "Macedonian"
+msgstr "Mazedonisch"
+
+msgid "Malay"
+msgstr "Malaiisch"
+
+msgid "Malayalam"
+msgstr "Malayalam"
+
+msgid "Marathi"
+msgstr "Marathi"
+
+msgid "Persian"
+msgstr "Persisch"
+
+msgid "Punjabi"
+msgstr "Panjabi"
+
+msgid "Swahili"
+msgstr "Suaheli"
+
+msgid "Tamil"
+msgstr "Tamil"
+
+msgid "Telugu"
+msgstr "Telugu"
+
+msgid "Thai"
+msgstr "Thailändisch"
+
+msgid "Urdu"
+msgstr "Urdu"
+
+msgid "Welsh"
+msgstr "Walisisch"
+
+msgid "System Language Settings"
+msgstr "Spracheinstellungen des Systems"
+
+msgid "Add Language…"
+msgstr "Sprache hinzufügen…"
+
+msgid "Add Language"
+msgstr "Sprache hinzufügen"
+
+msgid "Search languages"
+msgstr "Sprachen durchsuchen"
+
+msgid "No languages found"
+msgstr "Keine Sprachen gefunden"
+
+msgid "Installing…"
+msgstr "Wird installiert…"
+
+msgid "Wrap Text"
+msgstr "Vom Text umfließen lassen"
+
+msgid "Full Width (100%)"
+msgstr "Volle Breite (100 %)"
