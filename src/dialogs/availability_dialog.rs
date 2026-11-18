@@ -34,7 +34,11 @@ mod imp {
         fn properties() -> &'static [glib::ParamSpec] {
             use std::sync::OnceLock;
             static PROPERTIES: OnceLock<Vec<glib::ParamSpec>> = OnceLock::new();
-            PROPERTIES.get_or_init(|| vec![glib::ParamSpecString::builder("date").build()])
+            PROPERTIES.get_or_init(|| {
+                vec![glib::ParamSpecString::builder("date")
+                    .construct()
+                    .build()]
+            })
         }
 
         fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {

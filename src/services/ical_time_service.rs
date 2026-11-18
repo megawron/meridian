@@ -129,7 +129,7 @@ pub(crate) fn property_local_timestamp(
     let source_timezone = if value.len() > 15 && value[15..].starts_with('Z') {
         TimeZone::utc()
     } else if let Some(identifier) = property_parameter(property, "TZID") {
-        TimeZone::from_identifier(Some(identifier.trim_matches('"')))?
+        cached_timezone_from_identifier(identifier.trim_matches('"'))?
     } else {
         display_timezone()
     };
@@ -162,15 +162,76 @@ pub(crate) fn default_calendar_timezone_id() -> String {
     }
 }
 
+/// Normalize a raw iCalendar `TZID` parameter (including `libical` `/freeassociation.sourceforge.net/...`
+/// prefixes and Microsoft Exchange / Windows timezone names) to a canonical IANA identifier when possible.
+pub(crate) fn normalize_ical_tzid(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_matches('"').trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.eq_ignore_ascii_case("UTC")
+        || trimmed.eq_ignore_ascii_case("Etc/UTC")
+        || trimmed.eq_ignore_ascii_case("Etc/GMT")
+        || trimmed.eq_ignore_ascii_case("GMT")
+        || trimmed.eq_ignore_ascii_case("Coordinated Universal Time")
+    {
+        return Some("UTC".to_string());
+    }
+
+    let windows_mapped = match trimmed {
+        "W. Europe Standard Time"
+        | "Central Europe Standard Time"
+        | "Central European Standard Time" => Some("Europe/Berlin"),
+        "Romance Standard Time" => Some("Europe/Paris"),
+        "GMT Standard Time" => Some("Europe/London"),
+        "GTB Standard Time" | "E. Europe Standard Time" => Some("Europe/Athens"),
+        "FLE Standard Time" => Some("Europe/Helsinki"),
+        "Russian Standard Time" => Some("Europe/Moscow"),
+        "Turkey Standard Time" => Some("Europe/Istanbul"),
+        "Eastern Standard Time" | "US Eastern Standard Time" => Some("America/New_York"),
+        "Central Standard Time" => Some("America/Chicago"),
+        "Mountain Standard Time" | "US Mountain Standard Time" => Some("America/Denver"),
+        "Pacific Standard Time" => Some("America/Los_Angeles"),
+        "Atlantic Standard Time" => Some("America/Halifax"),
+        "E. South America Standard Time" => Some("America/Sao_Paulo"),
+        "India Standard Time" => Some("Asia/Kolkata"),
+        "China Standard Time" => Some("Asia/Shanghai"),
+        "Singapore Standard Time" => Some("Asia/Singapore"),
+        "Tokyo Standard Time" => Some("Asia/Tokyo"),
+        "Korea Standard Time" => Some("Asia/Seoul"),
+        "Arabian Standard Time" => Some("Asia/Dubai"),
+        "Israel Standard Time" => Some("Asia/Jerusalem"),
+        "AUS Eastern Standard Time" => Some("Australia/Sydney"),
+        "New Zealand Standard Time" => Some("Pacific/Auckland"),
+        _ => None,
+    };
+    if let Some(mapped) = windows_mapped {
+        return Some(mapped.to_string());
+    }
+
+    if let Some(mut rest) = trimmed.strip_prefix('/') {
+        while !rest.is_empty() {
+            if TimeZone::from_identifier(Some(rest)).is_some() {
+                return Some(rest.to_string());
+            }
+            if let Some((_, next)) = rest.split_once('/') {
+                rest = next;
+            } else {
+                break;
+            }
+        }
+    }
+
+    Some(trimmed.to_string())
+}
+
 /// Return the explicit `TZID` parameter on an iCalendar property if present.
 pub(crate) fn property_explicit_tzid(component: &str, target: &str) -> Option<String> {
     let (property, _) = property_line(component, target)?;
     if property_has_parameter(&property, "VALUE", "DATE") {
         return None;
     }
-    property_parameter(&property, "TZID")
-        .map(|s| s.trim_matches('"').trim().to_string())
-        .filter(|s| !s.is_empty())
+    property_parameter(&property, "TZID").and_then(|s| normalize_ical_tzid(&s))
 }
 
 /// Return the wall-clock `YYYY-MM-DD HH:MM` (or `YYYY-MM-DD`) stored in the property
@@ -228,45 +289,28 @@ pub(crate) fn local_display_from_property(
 #[inline]
 pub(crate) fn parse_ical_date_fast(value: &str) -> Option<NaiveDate> {
     let b = value.as_bytes();
-    if b.len() < 8 {
+    if b.len() < 8 || !b[..8].iter().all(u8::is_ascii_digit) {
         return None;
     }
-    let y0 = b[0].wrapping_sub(b'0');
-    let y1 = b[1].wrapping_sub(b'0');
-    let y2 = b[2].wrapping_sub(b'0');
-    let y3 = b[3].wrapping_sub(b'0');
-    let m0 = b[4].wrapping_sub(b'0');
-    let m1 = b[5].wrapping_sub(b'0');
-    let d0 = b[6].wrapping_sub(b'0');
-    let d1 = b[7].wrapping_sub(b'0');
-    if (y0 | y1 | y2 | y3 | m0 | m1 | d0 | d1) > 9 {
-        return None;
-    }
-    let year = (y0 as i32) * 1000 + (y1 as i32) * 100 + (y2 as i32) * 10 + (y3 as i32);
-    let month = (m0 as u32) * 10 + (m1 as u32);
-    let day = (d0 as u32) * 10 + (d1 as u32);
+    let year = (b[0] - b'0') as i32 * 1000
+        + (b[1] - b'0') as i32 * 100
+        + (b[2] - b'0') as i32 * 10
+        + (b[3] - b'0') as i32;
+    let month = (b[4] - b'0') as u32 * 10 + (b[5] - b'0') as u32;
+    let day = (b[6] - b'0') as u32 * 10 + (b[7] - b'0') as u32;
     NaiveDate::from_ymd_opt(year, month, day)
 }
 
 #[inline]
 pub(crate) fn parse_ical_datetime_fast(value: &str) -> Option<NaiveDateTime> {
     let b = value.as_bytes();
-    if b.len() < 15 || b[8] != b'T' {
+    if b.len() < 15 || b[8] != b'T' || !b[9..15].iter().all(u8::is_ascii_digit) {
         return None;
     }
     let date = parse_ical_date_fast(&value[..8])?;
-    let h0 = b[9].wrapping_sub(b'0');
-    let h1 = b[10].wrapping_sub(b'0');
-    let min0 = b[11].wrapping_sub(b'0');
-    let min1 = b[12].wrapping_sub(b'0');
-    let s0 = b[13].wrapping_sub(b'0');
-    let s1 = b[14].wrapping_sub(b'0');
-    if (h0 | h1 | min0 | min1 | s0 | s1) > 9 {
-        return None;
-    }
-    let hour = (h0 as u32) * 10 + (h1 as u32);
-    let minute = (min0 as u32) * 10 + (min1 as u32);
-    let second = (s0 as u32) * 10 + (s1 as u32);
+    let hour = (b[9] - b'0') as u32 * 10 + (b[10] - b'0') as u32;
+    let minute = (b[11] - b'0') as u32 * 10 + (b[12] - b'0') as u32;
+    let second = (b[13] - b'0') as u32 * 10 + (b[14] - b'0') as u32;
     date.and_hms_opt(hour, minute, second)
 }
 
@@ -346,9 +390,18 @@ pub(crate) fn property_local_dates(component: &str, target: &str) -> Vec<NaiveDa
         .collect()
 }
 
+fn is_ignored_subcomponent(kind: &str) -> bool {
+    let k = kind.trim();
+    k.eq_ignore_ascii_case("VALARM")
+        || k.eq_ignore_ascii_case("VTIMEZONE")
+        || k.eq_ignore_ascii_case("STANDARD")
+        || k.eq_ignore_ascii_case("DAYLIGHT")
+}
+
 fn property_line(component: &str, target: &str) -> Option<(String, String)> {
     let target = target.trim();
     let mut current_match: Option<String> = None;
+    let mut ignored_depth: usize = 0;
     for raw_line in iter_physical_lines(component) {
         if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
             if let Some(prev) = current_match.as_mut() {
@@ -363,6 +416,20 @@ fn property_line(component: &str, target: &str) -> Option<(String, String)> {
                     return Some((property.to_string(), value.to_string()));
                 }
             }
+        }
+        if let Some((prop, val)) = raw_line.split_once(':') {
+            let prop_trimmed = prop.trim();
+            if prop_trimmed.eq_ignore_ascii_case("BEGIN") && is_ignored_subcomponent(val) {
+                ignored_depth = ignored_depth.saturating_add(1);
+                continue;
+            }
+            if prop_trimmed.eq_ignore_ascii_case("END") && is_ignored_subcomponent(val) {
+                ignored_depth = ignored_depth.saturating_sub(1);
+                continue;
+            }
+        }
+        if ignored_depth > 0 {
+            continue;
         }
         let first_token = raw_line.split([':', ';']).next().unwrap_or(raw_line).trim();
         let can_match = first_token.eq_ignore_ascii_case(target)
@@ -388,6 +455,7 @@ fn property_line(component: &str, target: &str) -> Option<(String, String)> {
 fn matching_unfolded_lines(component: &str, target: &str) -> Vec<(String, String)> {
     let mut results = Vec::new();
     let mut current_match: Option<String> = None;
+    let mut ignored_depth: usize = 0;
     for raw_line in iter_physical_lines(component) {
         if raw_line.starts_with(' ') || raw_line.starts_with('\t') {
             if let Some(prev) = current_match.as_mut() {
@@ -402,6 +470,20 @@ fn matching_unfolded_lines(component: &str, target: &str) -> Vec<(String, String
                     results.push((property.to_string(), value.to_string()));
                 }
             }
+        }
+        if let Some((prop, val)) = raw_line.split_once(':') {
+            let prop_trimmed = prop.trim();
+            if prop_trimmed.eq_ignore_ascii_case("BEGIN") && is_ignored_subcomponent(val) {
+                ignored_depth = ignored_depth.saturating_add(1);
+                continue;
+            }
+            if prop_trimmed.eq_ignore_ascii_case("END") && is_ignored_subcomponent(val) {
+                ignored_depth = ignored_depth.saturating_sub(1);
+                continue;
+            }
+        }
+        if ignored_depth > 0 {
+            continue;
         }
         let first_token = raw_line.split([':', ';']).next().unwrap_or(raw_line).trim();
         let can_match = first_token.eq_ignore_ascii_case(target)
@@ -525,7 +607,14 @@ fn cached_timezone_from_identifier(identifier: &str) -> Option<TimeZone> {
         if let Some(cached) = cache.borrow().get(identifier) {
             return cached.clone();
         }
-        let tz = TimeZone::from_identifier(Some(identifier));
+        let tz = TimeZone::from_identifier(Some(identifier)).or_else(|| {
+            let normalized = normalize_ical_tzid(identifier)?;
+            if normalized.eq_ignore_ascii_case("UTC") {
+                Some(cached_utc_timezone())
+            } else {
+                TimeZone::from_identifier(Some(&normalized))
+            }
+        });
         cache.borrow_mut().insert(identifier.to_string(), tz.clone());
         tz
     })
@@ -606,5 +695,54 @@ mod tests {
         assert_eq!(parse_ical_duration("P1DT2H").unwrap(), chrono::Duration::hours(26));
         let comp = "BEGIN:VEVENT\r\nDURATION:PT2H\r\nEND:VEVENT\r\n";
         assert_eq!(property_local_duration(comp).unwrap(), chrono::Duration::hours(2));
+    }
+
+    #[test]
+    fn parse_ical_date_and_datetime_accept_all_digits_including_8_and_9() {
+        assert_eq!(
+            parse_ical_date_fast("20261118"),
+            NaiveDate::from_ymd_opt(2026, 11, 18)
+        );
+        assert_eq!(
+            parse_ical_date_fast("20260929"),
+            NaiveDate::from_ymd_opt(2026, 9, 29)
+        );
+        assert_eq!(
+            parse_ical_datetime_fast("20261118T093000"),
+            NaiveDate::from_ymd_opt(2026, 11, 18).and_then(|d| d.and_hms_opt(9, 30, 0))
+        );
+        assert_eq!(
+            parse_ical_datetime_fast("20260915T184859"),
+            NaiveDate::from_ymd_opt(2026, 9, 15).and_then(|d| d.and_hms_opt(18, 48, 59))
+        );
+    }
+
+    #[test]
+    fn normalize_tzid_and_ignore_nested_valarm_properties() {
+        assert_eq!(
+            normalize_ical_tzid("/freeassociation.sourceforge.net/Europe/Berlin").as_deref(),
+            Some("Europe/Berlin")
+        );
+        assert_eq!(
+            normalize_ical_tzid("\"W. Europe Standard Time\"").as_deref(),
+            Some("Europe/Berlin")
+        );
+        assert_eq!(normalize_ical_tzid("Etc/UTC").as_deref(), Some("UTC"));
+
+        let comp_with_valarm = concat!(
+            "BEGIN:VEVENT\r\n",
+            "DTSTART;TZID=/freeassociation.sourceforge.net/Europe/Berlin:20261118T093000\r\n",
+            "BEGIN:VALARM\r\n",
+            "ACTION:DISPLAY\r\n",
+            "TRIGGER:-PT15M\r\n",
+            "DURATION:PT15M\r\n",
+            "END:VALARM\r\n",
+            "END:VEVENT\r\n"
+        );
+        assert_eq!(
+            property_explicit_tzid(comp_with_valarm, "DTSTART").as_deref(),
+            Some("Europe/Berlin")
+        );
+        assert_eq!(property_local_duration(comp_with_valarm), None);
     }
 }

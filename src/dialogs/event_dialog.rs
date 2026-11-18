@@ -79,14 +79,30 @@ mod imp {
             static PROPERTIES: OnceLock<Vec<glib::ParamSpec>> = OnceLock::new();
             PROPERTIES.get_or_init(|| {
                 vec![
-                    glib::ParamSpecString::builder("edit-component").build(),
-                    glib::ParamSpecString::builder("edit-uid").build(),
-                    glib::ParamSpecString::builder("edit-source-uid").build(),
-                    glib::ParamSpecString::builder("initial-date").build(),
-                    glib::ParamSpecString::builder("initial-start").build(),
-                    glib::ParamSpecString::builder("initial-end").build(),
-                    glib::ParamSpecBoolean::builder("initial-allday").build(),
-                    glib::ParamSpecString::builder("initial-summary").build(),
+                    glib::ParamSpecString::builder("edit-component")
+                        .construct()
+                        .build(),
+                    glib::ParamSpecString::builder("edit-uid")
+                        .construct()
+                        .build(),
+                    glib::ParamSpecString::builder("edit-source-uid")
+                        .construct()
+                        .build(),
+                    glib::ParamSpecString::builder("initial-date")
+                        .construct()
+                        .build(),
+                    glib::ParamSpecString::builder("initial-start")
+                        .construct()
+                        .build(),
+                    glib::ParamSpecString::builder("initial-end")
+                        .construct()
+                        .build(),
+                    glib::ParamSpecBoolean::builder("initial-allday")
+                        .construct()
+                        .build(),
+                    glib::ParamSpecString::builder("initial-summary")
+                        .construct()
+                        .build(),
                 ]
             })
         }
@@ -154,6 +170,9 @@ const TIMELINE_EVENTS_X: f64 = 44.0;
 const TIMELINE_EVENTS_WIDTH: f64 = 178.0;
 
 fn format_clock_minutes(minutes: u32) -> String {
+    if minutes >= 24 * 60 {
+        return "24:00".to_string();
+    }
     let h = (minutes / 60) % 24;
     let m = minutes % 60;
     format!("{h:02}:{m:02}")
@@ -254,6 +273,62 @@ pub(crate) fn format_date_for_locale_entry(date: NaiveDate) -> String {
 
 pub(crate) fn date_to_iso(text: &str) -> Option<String> {
     parse_date_lenient(text).map(|d| d.format("%Y-%m-%d").to_string())
+}
+
+fn format_timeline_day_subtitle(date: NaiveDate) -> String {
+    let resolved = AppSettings::try_new()
+        .map(|s| s.resolved_date_format())
+        .unwrap_or_else(|| AppSettings::system_locale_date_format().to_string());
+    let weekday = crate::dialogs::quick_add_popover::weekday_long_name(date);
+    let month = crate::dialogs::quick_add_popover::month_name(date.month());
+    match resolved.as_str() {
+        "german" => format!("{weekday}, {}. {month} {}", date.day(), date.year()),
+        _ => format!("{weekday}, {month} {}, {}", date.day(), date.year()),
+    }
+}
+
+/// Convert an inclusive UI end date (`YYYY-MM-DD`) to an RFC 5545 exclusive
+/// `DTEND;VALUE=DATE` date (`end + 1 day`), validating that `end >= start`.
+pub(crate) fn inclusive_end_date_to_ical_dtend(
+    start_iso: &str,
+    inclusive_end_iso: &str,
+) -> Result<String, String> {
+    let start_date = parse_date_lenient(start_iso)
+        .ok_or_else(|| format!("Starts: {}", gettext("expected YYYY-MM-DD")))?;
+    let end_date = parse_date_lenient(inclusive_end_iso)
+        .ok_or_else(|| format!("Ends: {}", gettext("expected YYYY-MM-DD")))?;
+    if end_date < start_date {
+        return Err(gettext("End time must be after start time"));
+    }
+    let exclusive_end = end_date
+        .succ_opt()
+        .unwrap_or_else(|| end_date + Duration::days(1));
+    Ok(exclusive_end.format("%Y-%m-%d").to_string())
+}
+
+/// Convert an RFC 5545 exclusive `DTEND;VALUE=DATE` (or `DURATION`) into the
+/// inclusive UI end date shown in the event editor.
+pub(crate) fn ical_dtend_to_inclusive_end_date(
+    start_date: NaiveDate,
+    dtend_date: Option<NaiveDate>,
+    duration: Option<Duration>,
+) -> NaiveDate {
+    if let Some(end_d) = dtend_date {
+        if end_d > start_date {
+            end_d.pred_opt().unwrap_or(start_date)
+        } else {
+            start_date
+        }
+    } else if let Some(dur) = duration {
+        let excl = start_date + dur;
+        if excl > start_date {
+            excl.pred_opt().unwrap_or(start_date)
+        } else {
+            start_date
+        }
+    } else {
+        start_date
+    }
 }
 
 pub(crate) fn split_datetime_for_entries(datetime_str: &str) -> (String, String) {
@@ -919,6 +994,7 @@ fn update_day_schedule_timeline(
     interactive_state: &Rc<RefCell<TimelineInteractiveState>>,
     events_cache: &[CalendarEventRecord],
     date_str: &str,
+    end_date_str: &str,
     start_time_str: &str,
     end_time_str: &str,
     all_day: bool,
@@ -948,14 +1024,18 @@ fn update_day_schedule_timeline(
         return;
     };
 
-    timeline_window_title.set_subtitle(&current_date.format("%A, %b %d, %Y").to_string());
+    timeline_window_title.set_subtitle(&format_timeline_day_subtitle(current_date));
 
+    let spans_beyond_start_day = parse_date_lenient(end_date_str)
+        .is_some_and(|ed| ed > current_date && !(ed == current_date + Duration::days(1) && parse_time_to_minutes(end_time_str) == Some(0)));
     let current_start_min = parse_time_to_minutes(start_time_str).unwrap_or(9 * 60);
-    let current_end_min = parse_time_to_minutes(end_time_str).unwrap_or(current_start_min + 60);
-    let current_end_min = if current_end_min <= current_start_min {
-        current_start_min + 30
+    let parsed_end_min = parse_time_to_minutes(end_time_str).unwrap_or(current_start_min + 60);
+    let current_end_min = if spans_beyond_start_day {
+        24 * 60
+    } else if parsed_end_min <= current_start_min {
+        (current_start_min + 30).min(24 * 60)
     } else {
-        current_end_min
+        parsed_end_min
     };
 
     let default_title = gettext("New Event");
@@ -1330,26 +1410,6 @@ fn update_day_schedule_timeline(
             timeline_fixed.put(&widget, x, y);
 
             if item.is_preview {
-                // Subtle top & bottom resize grip bars on the preview event
-                if h >= 24.0 && col_width >= 44.0 {
-                    let grip_w = 22.0;
-                    let grip_x = x + ((col_width - grip_w) * 0.5).max(4.0);
-                    let top_grip = gtk::Box::builder()
-                        .width_request(grip_w as i32)
-                        .height_request(2)
-                        .can_target(false)
-                        .css_classes(["appointment-timeline-resize-grip"])
-                        .build();
-                    let bottom_grip = gtk::Box::builder()
-                        .width_request(grip_w as i32)
-                        .height_request(2)
-                        .can_target(false)
-                        .css_classes(["appointment-timeline-resize-grip"])
-                        .build();
-                    timeline_fixed.put(&top_grip, grip_x, y + 2.0);
-                    timeline_fixed.put(&bottom_grip, grip_x, (y + h - 4.0).max(y + 4.0));
-                }
-
                 preview_slot.replace(Some(TimelinePreviewSlot {
                     label: widget.clone(),
                     is_all_day: false,
@@ -1765,7 +1825,7 @@ impl EventDialog {
 
         // ── Group 2: Date & Time, Recurrence & Reminders ──
         let group_time = adw::PreferencesGroup::builder()
-            .title(gettext("Date & Time"))
+            .title(glib::markup_escape_text(&gettext("Date & Time")))
             .build();
 
         let row_allday = adw::SwitchRow::builder()
@@ -2212,7 +2272,7 @@ impl EventDialog {
         // Right: Day Schedule Timeline inside sidebar panel
         let timeline_window_title = adw::WindowTitle::builder()
             .title(gettext("Day Schedule"))
-            .subtitle(&default_start.format("%A, %b %d, %Y").to_string())
+            .subtitle(&format_timeline_day_subtitle(default_start.date()))
             .build();
 
         let timeline_header_bar = adw::HeaderBar::new();
@@ -2354,6 +2414,7 @@ impl EventDialog {
             let suppress_timeline_update = Rc::clone(&suppress_timeline_update);
             let events_cache = Rc::clone(&events_cache);
             let entry_start_date = entry_start_date.clone();
+            let entry_end_date = entry_end_date.clone();
             let entry_start_time = entry_start_time.clone();
             let entry_end_time = entry_end_time.clone();
             let row_allday = row_allday.clone();
@@ -2397,6 +2458,7 @@ impl EventDialog {
                     &interactive_state,
                     &events_cache.borrow(),
                     &entry_start_date.text(),
+                    &entry_end_date.text(),
                     &entry_start_time.text(),
                     &entry_end_time.text(),
                     row_allday.is_active(),
@@ -2442,8 +2504,11 @@ impl EventDialog {
                 }
                 if let Some(rect) = st.preview_rect {
                     if x >= rect.x - 4.0 && x <= rect.x + rect.width + 4.0 {
-                        let edge = (rect.height * 0.25).clamp(5.0, 8.0);
-                        if (y - rect.y).abs() <= edge || (y - (rect.y + rect.height)).abs() <= edge {
+                        let top_edge = if rect.height >= 28.0 { 5.0 } else { 3.5 };
+                        let bottom_edge = 6.0;
+                        if (y >= rect.y - 4.0 && y <= rect.y + top_edge)
+                            || (y >= rect.y + rect.height - bottom_edge && y <= rect.y + rect.height + 5.0)
+                        {
                             overlay.set_cursor_from_name(Some("ns-resize"));
                             return;
                         } else if y >= rect.y && y <= rect.y + rect.height {
@@ -2520,20 +2585,24 @@ impl EventDialog {
                 };
                 if let Some(rect) = preview_rect {
                     if start_x >= rect.x - 6.0 && start_x <= rect.x + rect.width + 6.0 {
-                        let edge = (rect.height * 0.25).clamp(5.0, 8.0);
-                        if (start_y - rect.y).abs() <= edge {
+                        let top_edge = if rect.height >= 28.0 { 5.0 } else { 3.5 };
+                        let bottom_edge = 6.0;
+                        let clamped_end_min = rect.end_min.min(23 * 60 + 59);
+                        if start_y >= rect.y - 4.0 && start_y <= rect.y + top_edge {
                             mode_begin.set(TimelineDragMode::ResizeTop {
                                 orig_start_min: rect.start_min,
-                                orig_end_min: rect.end_min,
+                                orig_end_min: clamped_end_min,
                             });
                             if let Some(overlay) = overlay_weak_begin.upgrade() {
                                 overlay.set_cursor_from_name(Some("ns-resize"));
                             }
                             return;
-                        } else if (start_y - (rect.y + rect.height)).abs() <= edge {
+                        } else if start_y >= rect.y + rect.height - bottom_edge
+                            && start_y <= rect.y + rect.height + 5.0
+                        {
                             mode_begin.set(TimelineDragMode::ResizeBottom {
                                 orig_start_min: rect.start_min,
-                                orig_end_min: rect.end_min,
+                                orig_end_min: clamped_end_min,
                             });
                             if let Some(overlay) = overlay_weak_begin.upgrade() {
                                 overlay.set_cursor_from_name(Some("ns-resize"));
@@ -2542,7 +2611,7 @@ impl EventDialog {
                         } else if start_y >= rect.y && start_y <= rect.y + rect.height {
                             mode_begin.set(TimelineDragMode::Move {
                                 orig_start_min: rect.start_min,
-                                orig_end_min: rect.end_min,
+                                orig_end_min: clamped_end_min,
                             });
                             if let Some(overlay) = overlay_weak_begin.upgrade() {
                                 overlay.set_cursor_from_name(Some("grabbing"));
@@ -2599,7 +2668,12 @@ impl EventDialog {
                         let delta_steps = ((offset_y / HOUR_HEIGHT) * 4.0).round() as i32;
                         let delta_min = delta_steps * 15;
                         let min_end = (orig_start_min + 15) as i32;
-                        let new_end = (orig_end_min as i32 + delta_min).clamp(min_end, 23 * 60 + 45) as u32;
+                        let raw_end = orig_end_min as i32 + delta_min;
+                        let new_end = if raw_end >= 24 * 60 {
+                            23 * 60 + 59
+                        } else {
+                            raw_end.clamp(min_end, 23 * 60 + 59) as u32
+                        };
                         apply_update(orig_start_min, new_end);
                     }
                     TimelineDragMode::ResizeTop {
@@ -2741,27 +2815,8 @@ impl EventDialog {
             }
         });
 
-        // Auto-scroll timeline to start hour
-        let scroll_adj = scrolled_timeline.vadjustment();
-        let target_y = ((default_start.hour() as f64 - 1.0).max(0.0)) * HOUR_HEIGHT;
-        let scrolled_flag = Rc::new(Cell::new(false));
-        let scrolled_notify = scrolled_flag.clone();
-        scroll_adj.connect_upper_notify(move |adj| {
-            if !scrolled_notify.get() && adj.upper() > 100.0 {
-                scrolled_notify.set(true);
-                adj.set_value(target_y);
-            }
-        });
-        let scroll_adj_idle = scroll_adj.clone();
-        let scrolled_idle = scrolled_flag.clone();
-        glib::idle_add_local_once(move || {
-            if !scrolled_idle.get() && scroll_adj_idle.upper() > 0.0 {
-                scrolled_idle.set(true);
-                scroll_adj_idle.set_value(target_y);
-            }
-        });
-
         if let Some(component) = edit_component.as_deref() {
+            suppress_timeline_update.set(true);
             let summary = ical_property(component, "SUMMARY").unwrap_or_default();
             let trimmed = summary.trim();
             if trimmed.is_empty() {
@@ -2801,59 +2856,140 @@ impl EventDialog {
             dropdown_transparency.set_selected(transp_idx);
             let all_day = component_property_has_date_value(component, "DTSTART");
             row_allday.set_active(all_day);
-            let start_explicit_tz = crate::services::ical_time_service::property_explicit_tzid(component, "DTSTART");
-            let end_explicit_tz = crate::services::ical_time_service::property_explicit_tzid(component, "DTEND");
-            if let Some(ref stz) = start_explicit_tz {
-                entry_tz.set_text(stz);
-                entry_end_tz.set_text(stz);
-            }
-            if let Some(ref etz) = end_explicit_tz {
-                entry_end_tz.set_text(etz);
-                if start_explicit_tz.as_deref() != Some(etz.as_str()) {
-                    btn_diff_end_tz.set_active(true);
+
+            let mut has_foreign_tz = false;
+            if all_day {
+                let start_date = crate::services::ical_time_service::property_local_date(
+                    component, "DTSTART", true,
+                )
+                .or_else(|| {
+                    ical_property(component, "DTSTART").and_then(|s| {
+                        parse_date_lenient(&format_event_datetime_for_editor(&s, true))
+                    })
+                })
+                .unwrap_or_else(|| default_start.date());
+                let dtend_date = crate::services::ical_time_service::property_local_date(
+                    component, "DTEND", true,
+                )
+                .or_else(|| {
+                    ical_property(component, "DTEND").and_then(|s| {
+                        parse_date_lenient(&format_event_datetime_for_editor(&s, true))
+                    })
+                });
+                let duration = crate::services::ical_time_service::property_local_duration(component);
+                let inclusive_end =
+                    ical_dtend_to_inclusive_end_date(start_date, dtend_date, duration);
+                prev_start_date_cell.set(start_date);
+                entry_start_date.set_text(&format_date_for_locale_entry(start_date));
+                entry_start_time.set_text("09:00");
+                entry_end_date.set_text(&format_date_for_locale_entry(inclusive_end));
+                entry_end_time.set_text("10:00");
+            } else {
+                let raw_start_tz =
+                    crate::services::ical_time_service::property_explicit_tzid(component, "DTSTART");
+                let raw_end_tz =
+                    crate::services::ical_time_service::property_explicit_tzid(component, "DTEND");
+                let convert_utc_tzid_to_local = !default_tz.eq_ignore_ascii_case("UTC")
+                    && raw_start_tz
+                        .as_deref()
+                        .is_some_and(|tz| tz.eq_ignore_ascii_case("UTC"))
+                    && raw_end_tz
+                        .as_deref()
+                        .is_none_or(|tz| tz.eq_ignore_ascii_case("UTC"));
+                let start_explicit_tz = if convert_utc_tzid_to_local {
+                    None
+                } else {
+                    raw_start_tz
+                };
+                let end_explicit_tz = if convert_utc_tzid_to_local {
+                    None
+                } else {
+                    raw_end_tz
+                };
+                if let Some(ref stz) = start_explicit_tz {
+                    entry_tz.set_text(stz);
+                    entry_end_tz.set_text(stz);
+                    if !stz.eq_ignore_ascii_case(&default_tz) {
+                        has_foreign_tz = true;
+                    }
                 }
-            }
-            let start_display_opt = if start_explicit_tz.is_some() {
-                crate::services::ical_time_service::property_wallclock_display(component, "DTSTART", all_day)
-                    .or_else(|| crate::services::ical_time_service::property_local_display(component, "DTSTART", all_day))
-            } else {
-                crate::services::ical_time_service::property_local_display(component, "DTSTART", all_day)
-            };
-            if let Some(start_disp) = start_display_opt {
-                let (d, t) = split_datetime_for_entries(&start_disp);
-                let d_fmt = parse_date_lenient(&d).map(|dt| {
-                    prev_start_date_cell.set(dt);
-                    format_date_for_locale_entry(dt)
-                }).unwrap_or(d);
-                entry_start_date.set_text(&d_fmt);
-                entry_start_time.set_text(&t);
-            } else if let Some(start) = ical_property(component, "DTSTART") {
-                let formatted = format_event_datetime_for_editor(&start, all_day);
-                let (d, t) = split_datetime_for_entries(&formatted);
-                let d_fmt = parse_date_lenient(&d).map(|dt| {
-                    prev_start_date_cell.set(dt);
-                    format_date_for_locale_entry(dt)
-                }).unwrap_or(d);
-                entry_start_date.set_text(&d_fmt);
-                entry_start_time.set_text(&t);
-            }
-            let end_display_opt = if end_explicit_tz.is_some() {
-                crate::services::ical_time_service::property_wallclock_display(component, "DTEND", all_day)
-                    .or_else(|| crate::services::ical_time_service::property_local_display(component, "DTEND", all_day))
-            } else {
-                crate::services::ical_time_service::property_local_display(component, "DTEND", all_day)
-            };
-            if let Some(end_disp) = end_display_opt {
-                let (d, t) = split_datetime_for_entries(&end_disp);
-                let d_fmt = parse_date_lenient(&d).map(format_date_for_locale_entry).unwrap_or(d);
-                entry_end_date.set_text(&d_fmt);
-                entry_end_time.set_text(&t);
-            } else if let Some(end) = ical_property(component, "DTEND") {
-                let formatted = format_event_datetime_for_editor(&end, all_day);
-                let (d, t) = split_datetime_for_entries(&formatted);
-                let d_fmt = parse_date_lenient(&d).map(format_date_for_locale_entry).unwrap_or(d);
-                entry_end_date.set_text(&d_fmt);
-                entry_end_time.set_text(&t);
+                if let Some(ref etz) = end_explicit_tz {
+                    entry_end_tz.set_text(etz);
+                    if start_explicit_tz.as_deref() != Some(etz.as_str()) {
+                        btn_diff_end_tz.set_active(true);
+                    }
+                }
+
+                let resolved_start_disp = if start_explicit_tz.is_some() {
+                    crate::services::ical_time_service::property_wallclock_display(
+                        component, "DTSTART", false,
+                    )
+                    .or_else(|| {
+                        crate::services::ical_time_service::property_local_display(
+                            component, "DTSTART", false,
+                        )
+                    })
+                } else {
+                    crate::services::ical_time_service::property_local_display(
+                        component, "DTSTART", false,
+                    )
+                }
+                .or_else(|| {
+                    ical_property(component, "DTSTART")
+                        .map(|s| format_event_datetime_for_editor(&s, false))
+                });
+
+                let mut parsed_start_dt: Option<NaiveDateTime> = None;
+                if let Some(ref start_disp) = resolved_start_disp {
+                    let (d, t) = split_datetime_for_entries(start_disp);
+                    if let Some(dt) = parse_date_lenient(&d) {
+                        prev_start_date_cell.set(dt);
+                        entry_start_date.set_text(&format_date_for_locale_entry(dt));
+                        if let Some(mins) = parse_time_to_minutes(&t) {
+                            parsed_start_dt = dt.and_hms_opt(mins / 60, mins % 60, 0);
+                        }
+                    } else {
+                        entry_start_date.set_text(&d);
+                    }
+                    entry_start_time.set_text(&t);
+                }
+
+                let resolved_end_disp = if ical_property(component, "DTEND").is_some() {
+                    if end_explicit_tz.is_some() {
+                        crate::services::ical_time_service::property_wallclock_display(
+                            component, "DTEND", false,
+                        )
+                        .or_else(|| {
+                            crate::services::ical_time_service::property_local_display(
+                                component, "DTEND", false,
+                            )
+                        })
+                    } else {
+                        crate::services::ical_time_service::property_local_display(
+                            component, "DTEND", false,
+                        )
+                    }
+                    .or_else(|| {
+                        ical_property(component, "DTEND")
+                            .map(|s| format_event_datetime_for_editor(&s, false))
+                    })
+                } else if let Some(start_dt) = parsed_start_dt {
+                    let dur = crate::services::ical_time_service::property_local_duration(component)
+                        .filter(|d| *d > Duration::zero())
+                        .unwrap_or_else(|| Duration::hours(1));
+                    Some((start_dt + dur).format("%Y-%m-%d %H:%M").to_string())
+                } else {
+                    None
+                };
+
+                if let Some(end_disp) = resolved_end_disp {
+                    let (d, t) = split_datetime_for_entries(&end_disp);
+                    let d_fmt = parse_date_lenient(&d)
+                        .map(format_date_for_locale_entry)
+                        .unwrap_or(d);
+                    entry_end_date.set_text(&d_fmt);
+                    entry_end_time.set_text(&t);
+                }
             }
             let rdates_str = ical_properties(component, "RDATE").join(",");
             let exdates_str = ical_properties(component, "EXDATE").join(",");
@@ -2879,6 +3015,7 @@ impl EventDialog {
             if status_idx != 1
                 || transp_idx != 0
                 || btn_diff_end_tz.is_active()
+                || has_foreign_tz
                 || !rooms_str.is_empty()
                 || !categories_str.is_empty()
                 || is_private
@@ -2888,6 +3025,7 @@ impl EventDialog {
             if let Some(description) = ical_property(component, "DESCRIPTION") {
                 text_desc.buffer().set_text(&description);
             }
+            suppress_timeline_update.set(false);
         } else if let Some(summary) = self.imp().initial_summary.borrow().as_deref() {
             let trimmed = summary.trim();
             if !trimmed.is_empty() {
@@ -2896,6 +3034,29 @@ impl EventDialog {
                 window_title.set_subtitle(trimmed);
             }
         }
+
+        // Auto-scroll timeline to the resolved event start hour
+        let scroll_adj = scrolled_timeline.vadjustment();
+        let resolved_start_hour = parse_time_to_minutes(&entry_start_time.text())
+            .map(|m| m / 60)
+            .unwrap_or_else(|| default_start.hour());
+        let target_y = ((resolved_start_hour as f64 - 1.0).max(0.0)) * HOUR_HEIGHT;
+        let scrolled_flag = Rc::new(Cell::new(false));
+        let scrolled_notify = scrolled_flag.clone();
+        scroll_adj.connect_upper_notify(move |adj| {
+            if !scrolled_notify.get() && adj.upper() > 100.0 {
+                scrolled_notify.set(true);
+                adj.set_value(target_y);
+            }
+        });
+        let scroll_adj_idle = scroll_adj.clone();
+        let scrolled_idle = scrolled_flag.clone();
+        glib::idle_add_local_once(move || {
+            if !scrolled_idle.get() && scroll_adj_idle.upper() > 0.0 {
+                scrolled_idle.set(true);
+                scroll_adj_idle.set_value(target_y);
+            }
+        });
 
         let populate_calendar_picker = {
             let selected_source_uid = Rc::clone(&selected_source_uid);
@@ -3261,7 +3422,15 @@ impl EventDialog {
                 let end_date_iso = date_to_iso(&entry_end_date.text())
                     .unwrap_or_else(|| entry_end_date.text().to_string());
                 let (start_val, end_val) = if all_day {
-                    (start_date_iso, end_date_iso)
+                    let exclusive_end =
+                        match inclusive_end_date_to_ical_dtend(&start_date_iso, &end_date_iso) {
+                            Ok(v) => v,
+                            Err(error) => {
+                                dialog.show_toast(&error);
+                                return;
+                            }
+                        };
+                    (start_date_iso, exclusive_end)
                 } else {
                     let s_time = entry_start_time.text();
                     let e_time = entry_end_time.text();
@@ -3490,7 +3659,10 @@ impl EventDialog {
             let end_date_iso = date_to_iso(&split_entry_end_date.text())
                 .unwrap_or_else(|| split_entry_end_date.text().to_string());
             let (start_val, end_val) = if all_day {
-                (start_date_iso.clone(), end_date_iso.clone())
+                let exclusive_end =
+                    inclusive_end_date_to_ical_dtend(&start_date_iso, &end_date_iso)
+                        .unwrap_or_else(|_| end_date_iso.clone());
+                (start_date_iso.clone(), exclusive_end)
             } else {
                 let s_time = split_entry_start_time.text();
                 let e_time = split_entry_end_time.text();
@@ -4420,33 +4592,75 @@ fn show_alarm_error(parent: &impl IsA<gtk::Widget>, message: &str) {
     dialog.present(Some(parent));
 }
 
+fn is_ignored_ical_subcomponent(kind: &str) -> bool {
+    let k = kind.trim();
+    k.eq_ignore_ascii_case("VALARM")
+        || k.eq_ignore_ascii_case("VTIMEZONE")
+        || k.eq_ignore_ascii_case("STANDARD")
+        || k.eq_ignore_ascii_case("DAYLIGHT")
+}
+
 fn ical_property(raw: &str, name: &str) -> Option<String> {
     let target = name.to_ascii_uppercase();
-    unfold_ical_lines(raw).into_iter().find_map(|line| {
-        let (property, value) = line.split_once(':')?;
+    let mut ignored_depth = 0usize;
+    for line in unfold_ical_lines(raw) {
+        let Some((property, value)) = line.split_once(':') else {
+            continue;
+        };
         let property_name = property
             .split(';')
             .next()
             .unwrap_or(property)
+            .trim()
             .to_ascii_uppercase();
-        (property_name == target).then(|| unescape_ical_text(value))
-    })
+        if property_name == "BEGIN" && is_ignored_ical_subcomponent(value) {
+            ignored_depth = ignored_depth.saturating_add(1);
+            continue;
+        }
+        if property_name == "END" && is_ignored_ical_subcomponent(value) {
+            ignored_depth = ignored_depth.saturating_sub(1);
+            continue;
+        }
+        if ignored_depth > 0 {
+            continue;
+        }
+        if property_name == target {
+            return Some(unescape_ical_text(value));
+        }
+    }
+    None
 }
 
 pub(crate) fn ical_properties(raw: &str, name: &str) -> Vec<String> {
     let target = name.to_ascii_uppercase();
-    unfold_ical_lines(raw)
-        .into_iter()
-        .filter_map(|line| {
-            let (property, value) = line.split_once(':')?;
-            let property_name = property
-                .split(';')
-                .next()
-                .unwrap_or(property)
-                .to_ascii_uppercase();
-            (property_name == target).then(|| unescape_ical_text(value))
-        })
-        .collect()
+    let mut ignored_depth = 0usize;
+    let mut results = Vec::new();
+    for line in unfold_ical_lines(raw) {
+        let Some((property, value)) = line.split_once(':') else {
+            continue;
+        };
+        let property_name = property
+            .split(';')
+            .next()
+            .unwrap_or(property)
+            .trim()
+            .to_ascii_uppercase();
+        if property_name == "BEGIN" && is_ignored_ical_subcomponent(value) {
+            ignored_depth = ignored_depth.saturating_add(1);
+            continue;
+        }
+        if property_name == "END" && is_ignored_ical_subcomponent(value) {
+            ignored_depth = ignored_depth.saturating_sub(1);
+            continue;
+        }
+        if ignored_depth > 0 {
+            continue;
+        }
+        if property_name == target {
+            results.push(unescape_ical_text(value));
+        }
+    }
+    results
 }
 
 fn split_ical_category_names(value: &str) -> Vec<String> {
@@ -5137,13 +5351,15 @@ fn normalize_timezone_input(raw: &str) -> Result<Option<String>, String> {
     {
         return Ok(None);
     }
-    if trimmed.eq_ignore_ascii_case("utc") {
+    let normalized = crate::services::ical_time_service::normalize_ical_tzid(trimmed)
+        .unwrap_or_else(|| trimmed.to_string());
+    if normalized.eq_ignore_ascii_case("utc") {
         return Ok(Some("UTC".to_string()));
     }
-    if glib::TimeZone::from_identifier(Some(trimmed)).is_none() {
+    if glib::TimeZone::from_identifier(Some(&normalized)).is_none() {
         return Err(format!("{}: {trimmed}", gettext("Invalid timezone")));
     }
-    Ok(Some(trimmed.to_string()))
+    Ok(Some(normalized))
 }
 
 fn prepare_end_val_for_timezones(
@@ -6204,5 +6420,181 @@ mod tests {
         assert!(allday_component.contains("SUMMARY:Quick All Day Vacation"));
         assert!(allday_component.contains("DTSTART;VALUE=DATE:20260925"));
         assert!(allday_component.contains("DTEND;VALUE=DATE:20260925"));
+    }
+
+    #[test]
+    fn test_all_day_inclusive_exclusive_dtend_roundtrip() {
+        // Single-day all-day event (Nov 20..Nov 20 inclusive -> DTEND 2026-11-21 exclusive)
+        let excl_single = inclusive_end_date_to_ical_dtend("2026-11-20", "2026-11-20")
+            .expect("single-day all-day should succeed");
+        assert_eq!(excl_single, "2026-11-21");
+        assert_eq!(
+            ical_dtend_to_inclusive_end_date(
+                NaiveDate::from_ymd_opt(2026, 11, 20).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 11, 21),
+                None,
+            ),
+            NaiveDate::from_ymd_opt(2026, 11, 20).unwrap()
+        );
+
+        // Multi-day 3-day all-day event (Nov 20..Nov 22 inclusive -> DTEND 2026-11-23 exclusive)
+        let excl_multi = inclusive_end_date_to_ical_dtend("2026-11-20", "2026-11-22")
+            .expect("multi-day all-day should succeed");
+        assert_eq!(excl_multi, "2026-11-23");
+        assert_eq!(
+            ical_dtend_to_inclusive_end_date(
+                NaiveDate::from_ymd_opt(2026, 11, 20).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 11, 23),
+                None,
+            ),
+            NaiveDate::from_ymd_opt(2026, 11, 22).unwrap()
+        );
+
+        // Reversed dates must fail
+        assert!(inclusive_end_date_to_ical_dtend("2026-11-22", "2026-11-20").is_err());
+
+        // Legacy same-day DTEND fallback
+        assert_eq!(
+            ical_dtend_to_inclusive_end_date(
+                NaiveDate::from_ymd_opt(2026, 11, 20).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 11, 20),
+                None,
+            ),
+            NaiveDate::from_ymd_opt(2026, 11, 20).unwrap()
+        );
+    }
+
+    fn collect_widgets_recursive(root: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
+        out.push(root.clone());
+        let mut child = root.first_child();
+        while let Some(c) = child {
+            collect_widgets_recursive(&c, out);
+            child = c.next_sibling();
+        }
+    }
+
+    #[test]
+    fn test_event_dialog_new_for_edit_populates_dates_times_timeline_without_handles() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let component = concat!(
+            "BEGIN:VEVENT\r\n",
+            "UID:edit-test-1\r\n",
+            "SUMMARY:Design Review\r\n",
+            "DTSTART;TZID=/freeassociation.sourceforge.net/Europe/Berlin:20261120T143000\r\n",
+            "DTEND;TZID=/freeassociation.sourceforge.net/Europe/Berlin:20261120T160000\r\n",
+            "BEGIN:VALARM\r\n",
+            "ACTION:DISPLAY\r\n",
+            "TRIGGER:-PT15M\r\n",
+            "DESCRIPTION:Internal alarm description\r\n",
+            "END:VALARM\r\n",
+            "END:VEVENT\r\n"
+        );
+        let record = CalendarEventRecord {
+            uid: "edit-test-1".to_string(),
+            source_uid: "local-calendar".to_string(),
+            source_display_name: "Personal".to_string(),
+            component: component.to_string(),
+            summary: "Design Review".to_string(),
+            start: "2026-11-20 14:30".to_string(),
+            end: "2026-11-20 16:00".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: false,
+        };
+
+        let dialog = EventDialog::new_for_edit(&record);
+        let mut widgets = Vec::new();
+        let root_child = dialog.child().expect("EventDialog should have child widget");
+        collect_widgets_recursive(&root_child, &mut widgets);
+
+        // No resize grip handle widgets anywhere in the timeline preview
+        assert!(
+            !widgets
+                .iter()
+                .any(|w| w.has_css_class("appointment-timeline-resize-grip")),
+            "Day schedule preview must not render resize grip handles"
+        );
+
+        let expected_date =
+            format_date_for_locale_entry(NaiveDate::from_ymd_opt(2026, 11, 20).unwrap());
+        let entries: Vec<String> = widgets
+            .iter()
+            .filter_map(|w| w.downcast_ref::<gtk::Entry>().map(|e| e.text().to_string()))
+            .collect();
+        assert!(
+            entries.contains(&expected_date),
+            "Expected event date {expected_date} in entries, got {entries:?}"
+        );
+        assert!(
+            entries.contains(&"14:30".to_string()),
+            "Expected start time 14:30 in entries, got {entries:?}"
+        );
+        assert!(
+            entries.contains(&"16:00".to_string()),
+            "Expected end time 16:00 in entries, got {entries:?}"
+        );
+
+        let expected_day_subtitle =
+            format_timeline_day_subtitle(NaiveDate::from_ymd_opt(2026, 11, 20).unwrap());
+        let subtitles: Vec<String> = widgets
+            .iter()
+            .filter_map(|w| {
+                w.downcast_ref::<adw::WindowTitle>()
+                    .map(|wt| wt.subtitle().to_string())
+            })
+            .collect();
+        assert!(
+            subtitles.contains(&expected_day_subtitle),
+            "Expected day schedule subtitle {expected_day_subtitle:?}, got {subtitles:?}"
+        );
+
+        // VALARM description must not leak into event notes
+        let desc_view = dialog.imp().text_desc.borrow().clone().unwrap();
+        let (b_s, b_e) = desc_view.buffer().bounds();
+        assert_eq!(desc_view.buffer().text(&b_s, &b_e, false).as_str(), "");
+
+        // Multi-day all-day event edit: exclusive DTEND 20261123 must display inclusive 2026-11-22
+        let allday_comp = concat!(
+            "BEGIN:VEVENT\r\n",
+            "UID:edit-allday-1\r\n",
+            "SUMMARY:Offsite\r\n",
+            "DTSTART;VALUE=DATE:20261120\r\n",
+            "DTEND;VALUE=DATE:20261123\r\n",
+            "END:VEVENT\r\n"
+        );
+        let allday_record = CalendarEventRecord {
+            uid: "edit-allday-1".to_string(),
+            source_uid: "local-calendar".to_string(),
+            source_display_name: "Personal".to_string(),
+            component: allday_comp.to_string(),
+            summary: "Offsite".to_string(),
+            start: "2026-11-20".to_string(),
+            end: "2026-11-23".to_string(),
+            location: String::new(),
+            description: String::new(),
+            all_day: true,
+        };
+        let allday_dialog = EventDialog::new_for_edit(&allday_record);
+        let mut allday_widgets = Vec::new();
+        let allday_root = allday_dialog
+            .child()
+            .expect("EventDialog should have child widget");
+        collect_widgets_recursive(&allday_root, &mut allday_widgets);
+        let allday_entries: Vec<String> = allday_widgets
+            .iter()
+            .filter_map(|w| w.downcast_ref::<gtk::Entry>().map(|e| e.text().to_string()))
+            .collect();
+        let expected_end =
+            format_date_for_locale_entry(NaiveDate::from_ymd_opt(2026, 11, 22).unwrap());
+        assert!(
+            allday_entries.contains(&expected_date) && allday_entries.contains(&expected_end),
+            "Expected inclusive range {expected_date}..{expected_end}, got {allday_entries:?}"
+        );
     }
 }

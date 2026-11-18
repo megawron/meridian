@@ -5937,10 +5937,21 @@ impl CalendarPage {
         };
 
         let (start_str, end_str) = if draft.all_day {
-            (
-                start.date().format("%Y-%m-%d").to_string(),
-                end.date().format("%Y-%m-%d").to_string(),
+            let start_iso = start.date().format("%Y-%m-%d").to_string();
+            let inclusive_end_iso = end.date().format("%Y-%m-%d").to_string();
+            let exclusive_end_iso = crate::dialogs::event_dialog::inclusive_end_date_to_ical_dtend(
+                &start_iso,
+                &inclusive_end_iso,
             )
+            .unwrap_or_else(|_| {
+                start
+                    .date()
+                    .succ_opt()
+                    .unwrap_or_else(|| start.date())
+                    .format("%Y-%m-%d")
+                    .to_string()
+            });
+            (start_iso, exclusive_end_iso)
         } else {
             let end_time = if end <= start {
                 start + chrono::Duration::hours(1)
@@ -28669,20 +28680,52 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
             format!("{} 09:00", d.format("%Y-%m-%d"))
         });
     let (raw_start_date, init_start_time) = crate::dialogs::event_dialog::split_datetime_for_entries(&start_disp);
-    let init_start_date = crate::dialogs::event_dialog::parse_date_lenient(&raw_start_date)
+    let parsed_start_date = crate::dialogs::event_dialog::parse_date_lenient(&raw_start_date);
+    let init_start_date = parsed_start_date
         .map(crate::dialogs::event_dialog::format_date_for_locale_entry)
         .unwrap_or(raw_start_date);
 
-    let end_disp = crate::services::ical_time_service::property_local_display(&event.component, "DTEND", all_day)
-        .or_else(|| ical_property(&event.component, "DTEND").map(|s| crate::dialogs::event_dialog::format_event_datetime_for_editor(&s, all_day)))
+    let (init_end_date, init_end_time) = if all_day {
+        let start_d = parsed_start_date
+            .or(target_day)
+            .unwrap_or_else(|| chrono::Local::now().date_naive());
+        let dtend_d = property_local_date(&event.component, "DTEND", true).or_else(|| {
+            ical_property(&event.component, "DTEND").and_then(|s| {
+                crate::dialogs::event_dialog::parse_date_lenient(
+                    &crate::dialogs::event_dialog::format_event_datetime_for_editor(&s, true),
+                )
+            })
+        });
+        let dur = property_local_duration(&event.component);
+        let inclusive_end =
+            crate::dialogs::event_dialog::ical_dtend_to_inclusive_end_date(start_d, dtend_d, dur);
+        (
+            crate::dialogs::event_dialog::format_date_for_locale_entry(inclusive_end),
+            "10:00".to_string(),
+        )
+    } else {
+        let end_disp = crate::services::ical_time_service::property_local_display(
+            &event.component,
+            "DTEND",
+            false,
+        )
+        .or_else(|| {
+            ical_property(&event.component, "DTEND")
+                .map(|s| crate::dialogs::event_dialog::format_event_datetime_for_editor(&s, false))
+        })
         .unwrap_or_else(|| {
-            let d = target_day.unwrap_or_else(|| chrono::Local::now().date_naive());
+            let d = parsed_start_date
+                .or(target_day)
+                .unwrap_or_else(|| chrono::Local::now().date_naive());
             format!("{} 10:00", d.format("%Y-%m-%d"))
         });
-    let (raw_end_date, init_end_time) = crate::dialogs::event_dialog::split_datetime_for_entries(&end_disp);
-    let init_end_date = crate::dialogs::event_dialog::parse_date_lenient(&raw_end_date)
-        .map(crate::dialogs::event_dialog::format_date_for_locale_entry)
-        .unwrap_or(raw_end_date);
+        let (raw_end_date, end_t) =
+            crate::dialogs::event_dialog::split_datetime_for_entries(&end_disp);
+        let end_d_str = crate::dialogs::event_dialog::parse_date_lenient(&raw_end_date)
+            .map(crate::dialogs::event_dialog::format_date_for_locale_entry)
+            .unwrap_or(raw_end_date);
+        (end_d_str, end_t)
+    };
 
     let allday_switch = gtk::Switch::builder()
         .active(all_day)
@@ -28997,15 +29040,22 @@ fn build_calendar_event_inspector_sidebar<W: IsA<gtk::Widget> + Clone + 'static>
             .unwrap_or_else(|| sd.trim().to_string());
         let ed_iso = crate::dialogs::event_dialog::date_to_iso(ed.trim())
             .unwrap_or_else(|| ed.trim().to_string());
-        let start_val = if is_all_day {
-            sd_iso
+        let (start_val, end_val) = if is_all_day {
+            let exclusive_end = match crate::dialogs::event_dialog::inclusive_end_date_to_ical_dtend(
+                &sd_iso, &ed_iso,
+            ) {
+                Ok(v) => v,
+                Err(err) => {
+                    show_toast_for_widget(&page, &err);
+                    return;
+                }
+            };
+            (sd_iso, exclusive_end)
         } else {
-            format!("{} {}", sd_iso, st.trim())
-        };
-        let end_val = if is_all_day {
-            ed_iso
-        } else {
-            format!("{} {}", ed_iso, et.trim())
+            (
+                format!("{} {}", sd_iso, st.trim()),
+                format!("{} {}", ed_iso, et.trim()),
+            )
         };
 
         save_calendar_event_inline(
