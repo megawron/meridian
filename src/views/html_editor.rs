@@ -2476,7 +2476,9 @@ impl HtmlEditor {
             .spell_checking_languages
             .replace(languages.iter().map(|s| s.to_string()).collect());
         if let Some(web_context) = self.imp().web_context.borrow().as_ref() {
-            web_context.set_spell_checking_languages(languages);
+            let effective = effective_webkit_spellcheck_languages(languages);
+            let effective_refs: Vec<&str> = effective.iter().map(String::as_str).collect();
+            web_context.set_spell_checking_languages(&effective_refs);
         }
     }
 
@@ -2517,53 +2519,24 @@ impl HtmlEditor {
             None,
         ));
 
-        let current_langs = self
-            .spell_checking_languages()
-            .into_iter()
-            .map(|l| l.trim().replace('_', "-"))
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-            .join(",");
-        let mut options = discover_spellcheck_language_options();
-        if !current_langs.is_empty() && !options.iter().any(|(code, _)| code == &current_langs) {
-            options.push((current_langs.clone(), current_langs.clone()));
-        }
-
-        let lang_action = gio::SimpleAction::new_stateful(
-            "meridian-spellcheck-language",
-            Some(glib::VariantTy::STRING),
-            &current_langs.to_variant(),
-        );
-        let editor_weak_lang = self.downgrade();
-        lang_action.connect_activate(move |action, param| {
-            let Some(code) = param.and_then(|v| v.str()) else {
-                return;
-            };
-            action.set_state(&code.to_variant());
-            if let Some(editor) = editor_weak_lang.upgrade() {
-                let langs: Vec<&str> = code
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                editor.set_spell_checking_languages(&langs);
-                if let Some(settings) = AppSettings::try_new() {
-                    settings.set_spellcheck_languages(code);
+        let open_langs_action =
+            gio::SimpleAction::new("meridian-open-spellcheck-languages", None);
+        let editor_weak_langs = self.downgrade();
+        open_langs_action.connect_activate(move |_, _| {
+            let editor_weak = editor_weak_langs.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(editor) = editor_weak.upgrade() {
+                    present_spellcheck_languages_dialog(
+                        Some(editor.upcast_ref::<gtk::Widget>()),
+                        Some(&editor),
+                    );
                 }
-            }
+            });
         });
-
-        let submenu = webkit6::ContextMenu::new();
-        for (code, label) in options {
-            submenu.append(&webkit6::ContextMenuItem::from_gaction(
-                &lang_action,
-                &label,
-                Some(&code.to_variant()),
-            ));
-        }
-        context_menu.append(&webkit6::ContextMenuItem::with_submenu(
-            &gettext("Spelling Language"),
-            &submenu,
+        context_menu.append(&webkit6::ContextMenuItem::from_gaction(
+            &open_langs_action,
+            &gettext("Spelling Languages…"),
+            None,
         ));
     }
 
@@ -3851,7 +3824,10 @@ impl HtmlEditor {
             })
             .unwrap_or_default();
         let initial_lang_refs: Vec<&str> = initial_languages.iter().map(String::as_str).collect();
-        web_context.set_spell_checking_languages(&initial_lang_refs);
+        let effective_initial = effective_webkit_spellcheck_languages(&initial_lang_refs);
+        let effective_initial_refs: Vec<&str> =
+            effective_initial.iter().map(String::as_str).collect();
+        web_context.set_spell_checking_languages(&effective_initial_refs);
         self.imp().spell_checking_languages.replace(initial_languages);
 
         self.imp().web_context.replace(Some(web_context.clone()));
@@ -7261,53 +7237,911 @@ pub fn parse_image_data_uri_or_path(src: &str, alt: &str) -> Option<(Vec<u8>, St
     }
 }
 
-pub(crate) fn discover_spellcheck_language_options() -> Vec<(String, String)> {
-    let mut options: Vec<(String, String)> = vec![
-        (String::new(), gettext("System Default")),
-        ("de-DE".to_string(), gettext("German")),
-        ("en-US".to_string(), gettext("English")),
-        ("de-DE,en-US".to_string(), gettext("German & English")),
-    ];
-    let mut extra_codes = std::collections::BTreeSet::new();
-    for dir in ["/usr/share/hunspell", "/usr/share/myspell"] {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpellcheckLanguageOption {
+    pub code: String,
+    pub base_lang: String,
+    pub label: String,
+    pub installed: bool,
+}
+
+fn canonical_spellcheck_base_lang(raw_prefix: &str) -> String {
+    match raw_prefix.trim().to_ascii_lowercase().as_str() {
+        "nb" | "nn" | "no" => "no".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Spell check languages Meridian knows about: (base language, English name).
+/// Chinese and Japanese are intentionally absent: they have no Hunspell/Enchant dictionaries
+/// because their scripts do not use word-based spell checking.
+const SPELLCHECK_LANGUAGE_CATALOG: &[(&str, &str)] = &[
+    ("af", "Afrikaans"),
+    ("sq", "Albanian"),
+    ("ar", "Arabic"),
+    ("hy", "Armenian"),
+    ("eu", "Basque"),
+    ("be", "Belarusian"),
+    ("bn", "Bengali"),
+    ("bg", "Bulgarian"),
+    ("ca", "Catalan"),
+    ("hr", "Croatian"),
+    ("cs", "Czech"),
+    ("da", "Danish"),
+    ("nl", "Dutch"),
+    ("en", "English"),
+    ("eo", "Esperanto"),
+    ("et", "Estonian"),
+    ("fi", "Finnish"),
+    ("fr", "French"),
+    ("gl", "Galician"),
+    ("ka", "Georgian"),
+    ("de", "German"),
+    ("el", "Greek"),
+    ("gu", "Gujarati"),
+    ("he", "Hebrew"),
+    ("hi", "Hindi"),
+    ("hu", "Hungarian"),
+    ("is", "Icelandic"),
+    ("id", "Indonesian"),
+    ("ga", "Irish"),
+    ("it", "Italian"),
+    ("kn", "Kannada"),
+    ("ko", "Korean"),
+    ("lv", "Latvian"),
+    ("lt", "Lithuanian"),
+    ("mk", "Macedonian"),
+    ("ms", "Malay"),
+    ("ml", "Malayalam"),
+    ("mr", "Marathi"),
+    ("no", "Norwegian"),
+    ("fa", "Persian"),
+    ("pl", "Polish"),
+    ("pt", "Portuguese"),
+    ("pa", "Punjabi"),
+    ("ro", "Romanian"),
+    ("ru", "Russian"),
+    ("sr", "Serbian"),
+    ("sk", "Slovak"),
+    ("sl", "Slovenian"),
+    ("es", "Spanish"),
+    ("sw", "Swahili"),
+    ("sv", "Swedish"),
+    ("ta", "Tamil"),
+    ("te", "Telugu"),
+    ("th", "Thai"),
+    ("tr", "Turkish"),
+    ("uk", "Ukrainian"),
+    ("ur", "Urdu"),
+    ("vi", "Vietnamese"),
+    ("cy", "Welsh"),
+];
+
+fn spellcheck_base_language_label(base_lang: &str) -> Option<String> {
+    SPELLCHECK_LANGUAGE_CATALOG
+        .iter()
+        .find(|(base, _)| *base == base_lang)
+        .map(|(_, name)| gettext(*name))
+}
+
+fn preferred_codes_for_base_lang(base_lang: &str) -> &'static [&'static str] {
+    match base_lang {
+        "de" => &["de-DE", "de-AT", "de-CH"],
+        "en" => &["en-US", "en-GB", "en-CA", "en-AU"],
+        "fr" => &["fr-FR", "fr-CA", "fr-BE", "fr-CH"],
+        "es" => &["es-ES", "es-MX", "es-AR"],
+        "it" => &["it-IT", "it-CH"],
+        "pt" => &["pt-PT", "pt-BR"],
+        "nl" => &["nl-NL", "nl-BE"],
+        "pl" => &["pl-PL"],
+        "ru" => &["ru-RU"],
+        "tr" => &["tr-TR"],
+        "sv" => &["sv-SE", "sv-FI"],
+        "da" => &["da-DK"],
+        "no" => &["nb-NO", "nn-NO", "no-NO"],
+        "fi" => &["fi-FI"],
+        "cs" => &["cs-CZ"],
+        "uk" => &["uk-UA"],
+        _ => &[],
+    }
+}
+
+pub(crate) fn collapse_hunspell_stems_to_options(
+    real_stems: &std::collections::BTreeSet<String>,
+    symlink_stems: &std::collections::BTreeSet<String>,
+) -> Vec<SpellcheckLanguageOption> {
+    let mut real_by_base: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    let mut sym_by_base: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+
+    for stem in real_stems {
+        let norm = stem.replace('_', "-");
+        let Some(prefix) = norm.split('-').next().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        real_by_base
+            .entry(canonical_spellcheck_base_lang(prefix))
+            .or_default()
+            .insert(norm);
+    }
+    for stem in symlink_stems {
+        let norm = stem.replace('_', "-");
+        let Some(prefix) = norm.split('-').next().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        sym_by_base
+            .entry(canonical_spellcheck_base_lang(prefix))
+            .or_default()
+            .insert(norm);
+    }
+
+    let mut all_bases: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    all_bases.extend(real_by_base.keys().cloned());
+    all_bases.extend(sym_by_base.keys().cloned());
+
+    let resolve_base = |base: &str, fallback_code: Option<&str>| -> Option<SpellcheckLanguageOption> {
+        let available = real_by_base
+            .get(base)
+            .filter(|s| !s.is_empty())
+            .or_else(|| sym_by_base.get(base).filter(|s| !s.is_empty()));
+        let installed = available.is_some();
+        let code = if let Some(stems) = available {
+            preferred_codes_for_base_lang(base)
+                .iter()
+                .find_map(|pref| {
+                    stems
+                        .iter()
+                        .find(|s| s.eq_ignore_ascii_case(pref))
+                        .cloned()
+                })
+                .or_else(|| stems.iter().find(|s| s.contains('-')).cloned())
+                .or_else(|| stems.iter().next().cloned())?
+        } else {
+            fallback_code?.to_string()
+        };
+        let label = if fallback_code.is_some() {
+            spellcheck_base_language_label(base).unwrap_or_else(|| base.to_ascii_uppercase())
+        } else {
+            spellcheck_base_language_label(base)?
+        };
+        Some(SpellcheckLanguageOption {
+            code,
+            base_lang: base.to_string(),
+            label,
+            installed,
+        })
+    };
+
+    let mut options = Vec::new();
+    if let Some(de) = resolve_base("de", Some("de-DE")) {
+        options.push(de);
+    }
+    if let Some(en) = resolve_base("en", Some("en-US")) {
+        options.push(en);
+    }
+
+    let mut extras = Vec::new();
+    for base in all_bases {
+        if matches!(base.as_str(), "de" | "en" | "hyph") {
+            continue;
+        }
+        if let Some(opt) = resolve_base(&base, None) {
+            extras.push(opt);
+        }
+    }
+    extras.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+    options.extend(extras);
+    options
+}
+
+pub(crate) fn hunspell_system_install_command(base_lang: &str) -> Option<Vec<String>> {
+    if std::path::Path::new("/.flatpak-info").exists() {
+        return None;
+    }
+    let pkexec = glib::find_program_in_path("pkexec")?
+        .to_string_lossy()
+        .to_string();
+
+    if let Some(dnf_bin) = glib::find_program_in_path("dnf5")
+        .or_else(|| glib::find_program_in_path("dnf"))
+    {
+        let pkg = match base_lang {
+            "no" => "hunspell-nb".to_string(),
+            "fi" => return None,
+            other => format!("hunspell-{other}"),
+        };
+        return Some(vec![
+            pkexec,
+            dnf_bin.to_string_lossy().to_string(),
+            "install".to_string(),
+            "-y".to_string(),
+            pkg,
+        ]);
+    }
+
+    if let Some(apt_bin) = glib::find_program_in_path("apt-get") {
+        let pkg = match base_lang {
+            "de" => "hunspell-de-de".to_string(),
+            "en" => "hunspell-en-us".to_string(),
+            "pt" => "hunspell-pt-pt".to_string(),
+            "no" => "hunspell-no".to_string(),
+            "fi" => return None,
+            other => format!("hunspell-{other}"),
+        };
+        return Some(vec![
+            pkexec,
+            "env".to_string(),
+            "DEBIAN_FRONTEND=noninteractive".to_string(),
+            apt_bin.to_string_lossy().to_string(),
+            "install".to_string(),
+            "-y".to_string(),
+            pkg,
+        ]);
+    }
+
+    if let Some(pacman_bin) = glib::find_program_in_path("pacman") {
+        let pkg = match base_lang {
+            "en" => "hunspell-en_us".to_string(),
+            "es" => "hunspell-es_any".to_string(),
+            "de" | "fr" | "it" | "nl" | "pl" | "ru" | "el" | "ro" | "he" | "hu" => {
+                format!("hunspell-{base_lang}")
+            }
+            _ => return None,
+        };
+        return Some(vec![
+            pkexec,
+            pacman_bin.to_string_lossy().to_string(),
+            "-S".to_string(),
+            "--noconfirm".to_string(),
+            "--needed".to_string(),
+            pkg,
+        ]);
+    }
+
+    if let Some(zypper_bin) = glib::find_program_in_path("zypper") {
+        let pkg = match base_lang {
+            "de" => "myspell-de_DE",
+            "en" => "myspell-en_US",
+            "fr" => "myspell-fr_FR",
+            "es" => "myspell-es_ES",
+            "it" => "myspell-it_IT",
+            "pt" => "myspell-pt_PT",
+            "nl" => "myspell-nl_NL",
+            "pl" => "myspell-pl_PL",
+            "ru" => "myspell-ru_RU",
+            "sv" => "myspell-sv_SE",
+            "da" => "myspell-da_DK",
+            "no" => "myspell-nb_NO",
+            "cs" => "myspell-cs_CZ",
+            "uk" => "myspell-uk_UA",
+            _ => return None,
+        };
+        return Some(vec![
+            pkexec,
+            zypper_bin.to_string_lossy().to_string(),
+            "--non-interactive".to_string(),
+            "install".to_string(),
+            pkg.to_string(),
+        ]);
+    }
+
+    None
+}
+
+fn discover_installable_missing_spellcheck_options(
+    existing: &[SpellcheckLanguageOption],
+) -> Vec<SpellcheckLanguageOption> {
+    let mut missing: Vec<SpellcheckLanguageOption> = SPELLCHECK_LANGUAGE_CATALOG
+        .iter()
+        .filter(|(base, _)| {
+            !existing
+                .iter()
+                .any(|opt| opt.installed && opt.base_lang == *base)
+        })
+        .filter(|(base, _)| hunspell_system_install_command(base).is_some())
+        .map(|(base, name)| SpellcheckLanguageOption {
+            code: preferred_codes_for_base_lang(base)
+                .first()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| base.to_string()),
+            base_lang: base.to_string(),
+            label: gettext(*name),
+            installed: false,
+        })
+        .collect();
+    missing.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+    missing
+}
+
+pub(crate) fn discover_spellcheck_language_options() -> Vec<SpellcheckLanguageOption> {
+    let mut real_stems = std::collections::BTreeSet::new();
+    let mut symlink_stems = std::collections::BTreeSet::new();
+    for dir in [
+        "/usr/share/hunspell",
+        "/usr/share/myspell",
+        "/usr/share/myspell/dicts",
+        "/app/share/hunspell",
+    ] {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("dic") {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        let normalized = stem.replace('_', "-");
-                        if !matches!(normalized.as_str(), "de-DE" | "en-US" | "de" | "en") {
-                            extra_codes.insert(normalized);
-                        }
+                if path.extension().and_then(|e| e.to_str()) != Some("dic") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if stem.starts_with("hyph_") || stem.starts_with("hyph-") {
+                    continue;
+                }
+                let is_symlink = std::fs::symlink_metadata(&path)
+                    .is_ok_and(|meta| meta.file_type().is_symlink());
+                if is_symlink {
+                    if path.exists() {
+                        symlink_stems.insert(stem.to_string());
                     }
+                } else {
+                    real_stems.insert(stem.to_string());
                 }
             }
         }
     }
-    for code in extra_codes {
-        let lang_prefix = code.split('-').next().unwrap_or(&code);
-        let label = match lang_prefix {
-            "de" => format!("{} ({code})", gettext("German")),
-            "en" => format!("{} ({code})", gettext("English")),
-            "fr" => format!("{} ({code})", gettext("French")),
-            "es" => format!("{} ({code})", gettext("Spanish")),
-            "it" => format!("{} ({code})", gettext("Italian")),
-            "pt" => format!("{} ({code})", gettext("Portuguese")),
-            "nl" => format!("{} ({code})", gettext("Dutch")),
-            "pl" => format!("{} ({code})", gettext("Polish")),
-            "ru" => format!("{} ({code})", gettext("Russian")),
-            "tr" => format!("{} ({code})", gettext("Turkish")),
-            "sv" => format!("{} ({code})", gettext("Swedish")),
-            "da" => format!("{} ({code})", gettext("Danish")),
-            "nb" | "nn" | "no" => format!("{} ({code})", gettext("Norwegian")),
-            "fi" => format!("{} ({code})", gettext("Finnish")),
-            "cs" => format!("{} ({code})", gettext("Czech")),
-            "uk" => format!("{} ({code})", gettext("Ukrainian")),
-            _ => code.clone(),
-        };
-        options.push((code, label));
+    collapse_hunspell_stems_to_options(&real_stems, &symlink_stems)
+}
+
+pub(crate) fn parse_selected_spellcheck_bases(raw: &str) -> Vec<String> {
+    let mut bases = Vec::new();
+    for token in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let norm = token.replace('_', "-");
+        if let Some(prefix) = norm.split('-').next().filter(|s| !s.is_empty()) {
+            let base = canonical_spellcheck_base_lang(prefix);
+            if !bases.contains(&base) {
+                bases.push(base);
+            }
+        }
     }
-    options
+    bases
+}
+
+pub(crate) fn format_spellcheck_languages_summary(raw: &str) -> String {
+    let bases = parse_selected_spellcheck_bases(raw);
+    if bases.is_empty() {
+        return gettext("System Default");
+    }
+    let options = discover_spellcheck_language_options();
+    let labels: Vec<String> = bases
+        .into_iter()
+        .map(|base| {
+            options
+                .iter()
+                .find(|opt| opt.base_lang == base)
+                .map(|opt| opt.label.clone())
+                .or_else(|| spellcheck_base_language_label(&base))
+                .unwrap_or_else(|| base.to_ascii_uppercase())
+        })
+        .collect();
+    labels.join(", ")
+}
+
+fn effective_webkit_spellcheck_languages(languages: &[&str]) -> Vec<String> {
+    let mut result = Vec::new();
+    for lang in languages.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let normalized = if lang.contains('_') || lang.contains('-') {
+            lang.replace('-', "_")
+        } else {
+            let base = canonical_spellcheck_base_lang(lang);
+            preferred_codes_for_base_lang(&base)
+                .first()
+                .map(|c| c.replace('-', "_"))
+                .unwrap_or_else(|| lang.to_string())
+        };
+        if !result.contains(&normalized) {
+            result.push(normalized);
+        }
+    }
+    if !result.is_empty() {
+        return result;
+    }
+
+    let options = discover_spellcheck_language_options();
+    for sys_lang in glib::language_names() {
+        let clean = sys_lang
+            .as_str()
+            .split(['.', '@'])
+            .next()
+            .unwrap_or("")
+            .trim();
+        if clean.is_empty() || matches!(clean, "C" | "POSIX") {
+            continue;
+        }
+        let candidate = if clean.contains('_') || clean.contains('-') {
+            clean.replace('-', "_")
+        } else {
+            let base = canonical_spellcheck_base_lang(clean);
+            options
+                .iter()
+                .find(|opt| opt.base_lang == base)
+                .map(|opt| opt.code.replace('-', "_"))
+                .or_else(|| {
+                    preferred_codes_for_base_lang(&base)
+                        .first()
+                        .map(|c| c.replace('-', "_"))
+                })
+                .unwrap_or_default()
+        };
+        if !candidate.is_empty() && !result.contains(&candidate) {
+            result.push(candidate);
+            break;
+        }
+    }
+    if result.is_empty() {
+        result.push("en_US".to_string());
+    }
+    result
+}
+
+fn can_open_system_language_settings() -> bool {
+    !std::path::Path::new("/.flatpak-info").exists()
+        && glib::find_program_in_path("gnome-control-center").is_some()
+}
+
+fn spellcheck_dictionary_install_supported() -> bool {
+    hunspell_system_install_command("de").is_some()
+}
+
+fn scrolled_clamped_content(child: &impl IsA<gtk::Widget>, max_height: i32) -> gtk::ScrolledWindow {
+    let clamp = adw::Clamp::builder().maximum_size(440).child(child).build();
+    gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .max_content_height(max_height)
+        .child(&clamp)
+        .build()
+}
+
+pub(crate) fn present_spellcheck_languages_dialog(
+    parent: Option<&gtk::Widget>,
+    editor: Option<&HtmlEditor>,
+) {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let dialog = adw::Dialog::builder()
+        .title(gettext("Spelling Languages"))
+        .content_width(400)
+        .build();
+    let nav = adw::NavigationView::new();
+
+    let settings = AppSettings::try_new();
+    let editor_weak = editor.map(|ed| ed.downgrade());
+
+    let current_raw: Rc<dyn Fn() -> String> = {
+        let settings = settings.clone();
+        let editor_weak = editor_weak.clone();
+        Rc::new(move || {
+            settings
+                .as_ref()
+                .map(|s| s.spellcheck_languages())
+                .or_else(|| {
+                    editor_weak
+                        .as_ref()
+                        .and_then(|w| w.upgrade())
+                        .map(|ed| ed.spell_checking_languages().join(","))
+                })
+                .unwrap_or_default()
+        })
+    };
+
+    let apply_selection: Rc<dyn Fn(&[&str])> = {
+        let settings = settings.clone();
+        let editor_weak = editor_weak.clone();
+        Rc::new(move |codes: &[&str]| {
+            if let Some(ref s) = settings {
+                s.set_spellcheck_languages(&codes.join(","));
+            }
+            if let Some(ed) = editor_weak.as_ref().and_then(|w| w.upgrade()) {
+                ed.set_spell_checking_languages(codes);
+            }
+        })
+    };
+
+    // ---- Main page -------------------------------------------------------------------------
+    let main_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(18)
+        .margin_top(12)
+        .margin_bottom(18)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+
+    let group_auto = adw::PreferencesGroup::new();
+    let row_auto = adw::SwitchRow::builder()
+        .title(gettext("Automatic (System Default)"))
+        .subtitle(gettext("Follow system language"))
+        .use_markup(false)
+        .build();
+    group_auto.add(&row_auto);
+    if can_open_system_language_settings() {
+        let row_sys = adw::ActionRow::builder()
+            .title(gettext("System Language Settings"))
+            .use_markup(false)
+            .activatable(true)
+            .build();
+        let ext_icon = gtk::Image::from_icon_name("external-link-symbolic");
+        ext_icon.add_css_class("dim-label");
+        row_sys.add_suffix(&ext_icon);
+        row_sys.connect_activated(|_| {
+            let _ = std::process::Command::new("gnome-control-center")
+                .arg("system")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        });
+        group_auto.add(&row_sys);
+    }
+    main_box.append(&group_auto);
+
+    let group_langs = adw::PreferencesGroup::builder()
+        .title(gettext("Languages"))
+        .description(gettext("Select one or more languages to check simultaneously"))
+        .build();
+    main_box.append(&group_langs);
+
+    let add_language_row = adw::ActionRow::builder()
+        .title(gettext("Add Language…"))
+        .use_markup(false)
+        .activatable(true)
+        .build();
+    add_language_row.add_prefix(&gtk::Image::from_icon_name("list-add-symbolic"));
+    let chevron = gtk::Image::from_icon_name("go-next-symbolic");
+    chevron.add_css_class("dim-label");
+    add_language_row.add_suffix(&chevron);
+    {
+        let nav = nav.clone();
+        add_language_row.connect_activated(move |_| {
+            nav.push_by_tag("add-language");
+        });
+    }
+
+    let main_tv = adw::ToolbarView::new();
+    main_tv.add_top_bar(&adw::HeaderBar::new());
+    main_tv.set_content(Some(&scrolled_clamped_content(&main_box, 460)));
+    let main_page = adw::NavigationPage::builder()
+        .title(gettext("Spelling Languages"))
+        .tag("main")
+        .child(&main_tv)
+        .build();
+
+    // ---- "Add Language" page ---------------------------------------------------------------
+    let search_entry = gtk::SearchEntry::builder()
+        .placeholder_text(gettext("Search languages"))
+        .hexpand(true)
+        .build();
+    let search_bar_box = gtk::Box::builder()
+        .margin_start(16)
+        .margin_end(16)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build();
+    search_bar_box.append(&search_entry);
+
+    let add_list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .valign(gtk::Align::Start)
+        .css_classes(["boxed-list"])
+        .build();
+    add_list.set_placeholder(Some(
+        &gtk::Label::builder()
+            .label(gettext("No languages found"))
+            .css_classes(["dim-label"])
+            .margin_top(18)
+            .margin_bottom(18)
+            .build(),
+    ));
+    let query = Rc::new(RefCell::new(String::new()));
+    {
+        let query = query.clone();
+        add_list.set_filter_func(move |row| {
+            let q = query.borrow();
+            if q.is_empty() {
+                return true;
+            }
+            row.downcast_ref::<adw::ActionRow>()
+                .map(|r| r.title().to_lowercase().contains(q.as_str()))
+                .unwrap_or(true)
+        });
+    }
+    {
+        let query = query.clone();
+        let add_list = add_list.clone();
+        search_entry.connect_search_changed(move |entry| {
+            *query.borrow_mut() = entry.text().trim().to_lowercase();
+            add_list.invalidate_filter();
+        });
+    }
+    let add_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .margin_top(6)
+        .margin_bottom(18)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+    add_box.append(&add_list);
+
+    let add_tv = adw::ToolbarView::new();
+    add_tv.add_top_bar(&adw::HeaderBar::new());
+    add_tv.add_top_bar(&search_bar_box);
+    add_tv.set_content(Some(&scrolled_clamped_content(&add_box, 420)));
+    let add_page = adw::NavigationPage::builder()
+        .title(gettext("Add Language"))
+        .tag("add-language")
+        .child(&add_tv)
+        .build();
+    {
+        let search_entry = search_entry.clone();
+        add_page.connect_shown(move |_| {
+            search_entry.grab_focus();
+        });
+    }
+
+    // ---- Shared state & refresh -------------------------------------------------------------
+    let checks: Rc<RefCell<Vec<(String, String, gtk::CheckButton)>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let main_rows: Rc<RefCell<Vec<gtk::Widget>>> = Rc::new(RefCell::new(Vec::new()));
+    let updating = Rc::new(Cell::new(false));
+    let refresh_slot: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+
+    let selected_codes = {
+        let checks = checks.clone();
+        move || -> Vec<String> {
+            checks
+                .borrow()
+                .iter()
+                .filter(|(_, _, btn)| btn.is_active())
+                .map(|(_, code, _)| code.clone())
+                .collect()
+        }
+    };
+
+    let build_install_row = {
+        let nav = nav.clone();
+        let current_raw = current_raw.clone();
+        let apply_selection = apply_selection.clone();
+        let refresh_slot = refresh_slot.clone();
+        move |opt: &SpellcheckLanguageOption| -> adw::ActionRow {
+            let row = adw::ActionRow::builder()
+                .title(&opt.label)
+                .use_markup(false)
+                .build();
+            let Some(argv) = hunspell_system_install_command(&opt.base_lang) else {
+                return row;
+            };
+            let btn_install = gtk::Button::builder()
+                .icon_name("folder-download-symbolic")
+                .tooltip_text(gettext("Install"))
+                .valign(gtk::Align::Center)
+                .css_classes(["flat", "circular"])
+                .build();
+            set_accessible_label(&btn_install, &format!("{} – {}", gettext("Install"), opt.label));
+            let spinner = gtk::Spinner::builder()
+                .valign(gtk::Align::Center)
+                .visible(false)
+                .build();
+            row.add_suffix(&spinner);
+            row.add_suffix(&btn_install);
+            row.set_activatable_widget(Some(&btn_install));
+
+            let base = opt.base_lang.clone();
+            let row_weak = row.downgrade();
+            let nav = nav.clone();
+            let current_raw = current_raw.clone();
+            let apply_selection = apply_selection.clone();
+            let refresh_slot = refresh_slot.clone();
+            btn_install.connect_clicked(move |btn| {
+                btn.set_visible(false);
+                spinner.set_visible(true);
+                spinner.start();
+                if let Some(r) = row_weak.upgrade() {
+                    r.set_subtitle(&gettext("Installing…"));
+                }
+                let argv = argv.clone();
+                let base = base.clone();
+                let btn = btn.clone();
+                let spinner = spinner.clone();
+                let row_weak = row_weak.clone();
+                let nav = nav.clone();
+                let current_raw = current_raw.clone();
+                let apply_selection = apply_selection.clone();
+                let refresh_slot = refresh_slot.clone();
+                glib::MainContext::default().spawn_local(async move {
+                    let result = gio::spawn_blocking(move || {
+                        std::process::Command::new(&argv[0])
+                            .args(&argv[1..])
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status()
+                            .map(|status| status.code())
+                    })
+                    .await;
+
+                    let refreshed = discover_spellcheck_language_options();
+                    if let Some(new_opt) = refreshed
+                        .iter()
+                        .find(|o| o.base_lang == base && o.installed)
+                    {
+                        let mut codes: Vec<String> = Vec::new();
+                        for prev in parse_selected_spellcheck_bases(&current_raw()) {
+                            if let Some(found) =
+                                refreshed.iter().find(|o| o.base_lang == prev && o.installed)
+                            {
+                                if !codes.contains(&found.code) {
+                                    codes.push(found.code.clone());
+                                }
+                            }
+                        }
+                        if !codes.contains(&new_opt.code) {
+                            codes.push(new_opt.code.clone());
+                        }
+                        let refs: Vec<&str> = codes.iter().map(String::as_str).collect();
+                        apply_selection(&refs);
+                        if let Some(refresh) = refresh_slot.borrow().as_ref().cloned() {
+                            refresh();
+                        }
+                        nav.pop_to_tag("main");
+                        return;
+                    }
+
+                    spinner.stop();
+                    spinner.set_visible(false);
+                    btn.set_visible(true);
+                    if let Some(r) = row_weak.upgrade() {
+                        // pkexec returns 126 when the authentication dialog was dismissed.
+                        let dismissed = matches!(result, Ok(Ok(Some(126 | 127))));
+                        if dismissed {
+                            r.set_subtitle("");
+                        } else {
+                            r.set_subtitle(&gettext("Could not install dictionary"));
+                        }
+                    }
+                });
+            });
+            row
+        }
+    };
+
+    let refresh: Rc<dyn Fn()> = {
+        let group_langs = group_langs.clone();
+        let add_language_row = add_language_row.clone();
+        let add_list = add_list.clone();
+        let row_auto = row_auto.clone();
+        let checks = checks.clone();
+        let main_rows = main_rows.clone();
+        let updating = updating.clone();
+        let current_raw = current_raw.clone();
+        let apply_selection = apply_selection.clone();
+        let selected_codes = selected_codes.clone();
+        Rc::new(move || {
+            for widget in main_rows.borrow_mut().drain(..) {
+                group_langs.remove(&widget);
+            }
+            checks.borrow_mut().clear();
+            while let Some(child) = add_list.first_child() {
+                add_list.remove(&child);
+            }
+
+            let options = discover_spellcheck_language_options();
+            let selected_bases: Vec<String> = parse_selected_spellcheck_bases(&current_raw())
+                .into_iter()
+                .filter(|b| options.iter().any(|o| o.installed && &o.base_lang == b))
+                .collect();
+
+            updating.set(true);
+            row_auto.set_active(selected_bases.is_empty());
+            updating.set(false);
+
+            for opt in options.iter().filter(|o| o.installed) {
+                let check = gtk::CheckButton::builder()
+                    .active(selected_bases.iter().any(|b| b == &opt.base_lang))
+                    .valign(gtk::Align::Center)
+                    .css_classes(["selection-mode"])
+                    .build();
+                set_accessible_label(&check, &opt.label);
+                let row = adw::ActionRow::builder()
+                    .title(&opt.label)
+                    .use_markup(false)
+                    .activatable(true)
+                    .build();
+                row.add_suffix(&check);
+                row.set_activatable_widget(Some(&check));
+
+                let updating = updating.clone();
+                let row_auto = row_auto.clone();
+                let apply_selection = apply_selection.clone();
+                let selected_codes = selected_codes.clone();
+                check.connect_toggled(move |_| {
+                    if updating.get() {
+                        return;
+                    }
+                    updating.set(true);
+                    let codes = selected_codes();
+                    row_auto.set_active(codes.is_empty());
+                    let refs: Vec<&str> = codes.iter().map(String::as_str).collect();
+                    apply_selection(&refs);
+                    updating.set(false);
+                });
+
+                group_langs.add(&row);
+                main_rows.borrow_mut().push(row.upcast());
+                checks
+                    .borrow_mut()
+                    .push((opt.base_lang.clone(), opt.code.clone(), check));
+            }
+
+            if spellcheck_dictionary_install_supported() {
+                for opt in discover_installable_missing_spellcheck_options(&options) {
+                    add_list.append(&build_install_row(&opt));
+                }
+                group_langs.add(&add_language_row);
+                main_rows.borrow_mut().push(add_language_row.clone().upcast());
+            }
+        })
+    };
+    *refresh_slot.borrow_mut() = Some(refresh.clone());
+
+    {
+        let updating = updating.clone();
+        let checks = checks.clone();
+        let apply_selection = apply_selection.clone();
+        row_auto.connect_active_notify(move |row| {
+            if updating.get() {
+                return;
+            }
+            updating.set(true);
+            let borrowed = checks.borrow();
+            if row.is_active() {
+                for (_, _, btn) in borrowed.iter() {
+                    btn.set_active(false);
+                }
+                apply_selection(&[]);
+            } else {
+                let sys_default = effective_webkit_spellcheck_languages(&[]);
+                let sys_bases = parse_selected_spellcheck_bases(&sys_default.join(","));
+                let fallback_base = sys_bases.first().map(String::as_str).unwrap_or("en");
+                let mut codes: Vec<&str> = Vec::new();
+                for (base, code, btn) in borrowed.iter() {
+                    let active = base == fallback_base;
+                    btn.set_active(active);
+                    if active {
+                        codes.push(code.as_str());
+                    }
+                }
+                if codes.is_empty() {
+                    if let Some((_, code, btn)) = borrowed.first() {
+                        btn.set_active(true);
+                        codes.push(code.as_str());
+                    }
+                }
+                apply_selection(&codes);
+            }
+            updating.set(false);
+        });
+    }
+
+    refresh();
+
+    // The first page added to an empty AdwNavigationView becomes its root page.
+    nav.add(&main_page);
+    nav.add(&add_page);
+    dialog.connect_closed(move |_| {
+        // Break the refresh <-> install-row reference cycle once the dialog is gone.
+        refresh_slot.borrow_mut().take();
+    });
+    dialog.set_child(Some(&nav));
+    dialog.present(parent);
 }
 
 #[cfg(test)]
@@ -7743,12 +8577,57 @@ mod tests {
         };
 
         let opts = discover_spellcheck_language_options();
-        assert!(opts.iter().any(|(code, _)| code.is_empty()));
-        assert!(opts.iter().any(|(code, _)| code == "de-DE"));
-        assert!(opts.iter().any(|(code, _)| code == "en-US"));
+        assert!(opts.iter().any(|opt| opt.base_lang == "de" && opt.code == "de-DE"));
+        assert!(opts.iter().any(|opt| opt.base_lang == "en"));
+        assert_eq!(opts.iter().filter(|opt| opt.base_lang == "en").count(), 1);
+
+        let real: std::collections::BTreeSet<String> = [
+            "en_AU", "en_CA", "en_GB", "en_US", "fr_FR", "ckb_IQ", "gug_PY",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let symlinks: std::collections::BTreeSet<String> = ["en_AG", "en_BS", "en_BW", "en_ZW"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let collapsed = collapse_hunspell_stems_to_options(&real, &symlinks);
+        assert_eq!(collapsed.len(), 3);
+        assert_eq!(collapsed[0].base_lang, "de");
+        assert!(!collapsed[0].installed);
+        assert_eq!(collapsed[1].base_lang, "en");
+        assert_eq!(collapsed[1].code, "en-US");
+        assert!(collapsed[1].installed);
+        assert_eq!(collapsed[2].base_lang, "fr");
+        assert_eq!(collapsed[2].code, "fr-FR");
+        assert!(collapsed[2].installed);
+
+        if let Some(cmd) = hunspell_system_install_command("de") {
+            assert!(cmd.len() >= 4);
+            assert!(cmd[0].ends_with("pkexec"));
+            assert!(cmd.iter().any(|arg| arg.contains("de")));
+        }
+
+        assert_eq!(
+            parse_selected_spellcheck_bases("de-DE, en_US, en-GB"),
+            vec!["de".to_string(), "en".to_string()]
+        );
+        assert!(!format_spellcheck_languages_summary("de-DE,en-US").is_empty());
 
         let editor = HtmlEditor::new();
         editor.imp().pending_scripts.borrow_mut().clear();
+
+        // Image right-clicks only store the payload; the menu itself is WebKit's native one.
+        editor.handle_image_menu_script_message(
+            r#"{"id":"img1","x":10,"y":10,"img_x":0,"img_y":0,"img_w":100,"img_h":80,"align":"inline","size":"original"}"#,
+        );
+        assert!(editor.imp().pending_image_menu.borrow().is_some());
+        let image_menu = webkit6::ContextMenu::new();
+        assert!(editor.populate_image_context_menu(&image_menu));
+        assert_eq!(image_menu.n_items(), 10);
+        assert!(editor.imp().pending_image_menu.borrow().is_none());
+        // Without a pending payload WebKit's default handling is kept.
+        assert!(!editor.populate_image_context_menu(&webkit6::ContextMenu::new()));
 
         editor.set_plain_text_mode(true);
         editor.set_plain_text_mode(false);
@@ -7757,6 +8636,53 @@ mod tests {
         assert!(scripts.iter().any(|s| s.contains("__meridianPrePlainHtml")));
         assert!(scripts.iter().any(|s| s.contains("__meridianPrePlainSigHtml")));
         assert!(scripts.iter().any(|s| s.contains("canRestoreSig")));
+
+        let context_menu = webkit6::ContextMenu::new();
+        editor.populate_spellcheck_context_menu(&context_menu);
+        assert_eq!(context_menu.n_items(), 3);
     }
 }
 
+
+#[cfg(test)]
+mod spellcheck_dialog_tests {
+    use super::*;
+
+    fn find_descendant<T: IsA<gtk::Widget>>(root: &gtk::Widget, pred: &dyn Fn(&T) -> bool) -> Option<T> {
+        let mut child = root.first_child();
+        while let Some(c) = child {
+            if let Some(t) = c.downcast_ref::<T>() {
+                if pred(t) {
+                    return Some(t.clone());
+                }
+            }
+            if let Some(found) = find_descendant::<T>(&c, pred) {
+                return Some(found);
+            }
+            child = c.next_sibling();
+        }
+        None
+    }
+
+    #[test]
+    fn add_language_row_opens_add_language_page() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(ctx) = crate::window::gtk_test_main_context() else { return; };
+        let win = adw::Window::new();
+        win.present();
+        present_spellcheck_languages_dialog(Some(win.upcast_ref()), None);
+        for _ in 0..50 { ctx.iteration(false); }
+        let root: gtk::Widget = win.clone().upcast();
+        let nav = find_descendant::<adw::NavigationView>(&root, &|_| true).expect("nav");
+        let Some(row) = find_descendant::<adw::ActionRow>(&root, &|r| r.title() == gettext("Add Language…")) else {
+            // Dictionary installation is not supported on this host (e.g. inside Flatpak).
+            win.close();
+            return;
+        };
+        assert_eq!(nav.visible_page().and_then(|p| p.tag()).as_deref(), Some("main"));
+        row.emit_by_name::<()>("activate", &[]);
+        for _ in 0..50 { ctx.iteration(false); }
+        assert_eq!(nav.visible_page().and_then(|p| p.tag()).as_deref(), Some("add-language"));
+        win.close();
+    }
+}

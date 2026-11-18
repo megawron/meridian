@@ -4077,61 +4077,28 @@ impl PreferencesDialog {
             .active(true)
             .build();
 
-        let mut spellcheck_options: Vec<(String, String)> = vec![
-            (String::new(), "System Default".to_string()),
-            ("de-DE".to_string(), "German".to_string()),
-            ("en-US".to_string(), "English".to_string()),
-            ("de-DE,en-US".to_string(), "German and English".to_string()),
-        ];
-        {
-            let mut extra_codes = std::collections::BTreeSet::new();
-            for dir in ["/usr/share/hunspell", "/usr/share/myspell"] {
-                if let Ok(entries) = std::fs::read_dir(dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("dic") {
-                            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                                let normalized = stem.replace('_', "-");
-                                if !matches!(
-                                    normalized.as_str(),
-                                    "de-DE" | "en-US" | "de" | "en"
-                                ) {
-                                    extra_codes.insert(normalized);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            for code in extra_codes {
-                let lang_prefix = code.split('-').next().unwrap_or(&code);
-                let label = match lang_prefix {
-                    "de" => format!("German ({code})"),
-                    "en" => format!("English ({code})"),
-                    "fr" => format!("French ({code})"),
-                    "es" => format!("Spanish ({code})"),
-                    "it" => format!("Italian ({code})"),
-                    "pt" => format!("Portuguese ({code})"),
-                    "nl" => format!("Dutch ({code})"),
-                    "pl" => format!("Polish ({code})"),
-                    "ru" => format!("Russian ({code})"),
-                    "tr" => format!("Turkish ({code})"),
-                    "sv" => format!("Swedish ({code})"),
-                    "da" => format!("Danish ({code})"),
-                    "nb" | "nn" | "no" => format!("Norwegian ({code})"),
-                    "fi" => format!("Finnish ({code})"),
-                    "cs" => format!("Czech ({code})"),
-                    "uk" => format!("Ukrainian ({code})"),
-                    _ => code.clone(),
-                };
-                spellcheck_options.push((code, label));
-            }
-        }
-        let spellcheck_labels: Vec<&str> = spellcheck_options.iter().map(|(_, l)| l.as_str()).collect();
-        let row_spellcheck_languages = adw::ComboRow::builder()
-            .title(gettext("Spell check languages"))
-            .model(&gtk::StringList::new(&spellcheck_labels))
+        let spellcheck_summary_label = gtk::Label::builder()
+            .valign(gtk::Align::Center)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(28)
+            .css_classes(["dim-label"])
             .build();
+        let spellcheck_chevron = gtk::Image::from_icon_name("go-next-symbolic");
+        spellcheck_chevron.add_css_class("dim-label");
+
+        let row_spellcheck_languages = adw::ActionRow::builder()
+            .title(gettext("Spell check languages"))
+            .use_markup(false)
+            .activatable(true)
+            .build();
+        row_spellcheck_languages.add_suffix(&spellcheck_summary_label);
+        row_spellcheck_languages.add_suffix(&spellcheck_chevron);
+        row_spellcheck_languages.connect_activated(|row| {
+            crate::views::html_editor::present_spellcheck_languages_dialog(
+                Some(row.upcast_ref::<gtk::Widget>()),
+                None,
+            );
+        });
 
         if let Some(settings) = settings.clone() {
             let updating = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -4164,51 +4131,27 @@ impl PreferencesDialog {
         group_composer.add(&row_composer_inline_spelling);
 
         if let Some(settings) = settings.clone() {
-            let updating = std::rc::Rc::new(std::cell::Cell::new(false));
-            let updating_notify = updating.clone();
-            let settings_notify = settings.clone();
-            let options_for_parse = spellcheck_options.clone();
-            let options_for_notify = spellcheck_options.clone();
-
-            let parse_lang_selection = move |lang_str: &str| -> u32 {
-                let norm = lang_str.replace('_', "-");
-                match norm.as_str() {
-                    "" => 0,
-                    "de-DE" => 1,
-                    "en-US" => 2,
-                    "de-DE,en-US" => 3,
-                    other => options_for_parse
-                        .iter()
-                        .position(|(code, _)| code.eq_ignore_ascii_case(other))
-                        .unwrap_or(0) as u32,
-                }
-            };
-            let parse_for_change = parse_lang_selection.clone();
-
-            row_spellcheck_languages.set_selected(parse_lang_selection(&settings.spellcheck_languages()));
+            spellcheck_summary_label.set_label(
+                &crate::views::html_editor::format_spellcheck_languages_summary(
+                    &settings.spellcheck_languages(),
+                ),
+            );
             row_spellcheck_languages.set_sensitive(settings.composer_inline_spelling());
-            row_spellcheck_languages.connect_selected_notify(move |row| {
-                if updating_notify.get() {
-                    return;
-                }
-                let idx = row.selected() as usize;
-                let code = options_for_notify
-                    .get(idx)
-                    .map(|(c, _)| c.as_str())
-                    .unwrap_or("");
-                settings_notify.set_spellcheck_languages(code);
-            });
 
-            let row_for_change = row_spellcheck_languages.clone();
-            let updating_change = updating.clone();
+            let summary_weak = spellcheck_summary_label.downgrade();
             settings.connect_changed(Some("spellcheck-languages"), move |s, _| {
-                let target = parse_for_change(&s.string("spellcheck-languages"));
-                if row_for_change.selected() != target {
-                    updating_change.set(true);
-                    row_for_change.set_selected(target);
-                    updating_change.set(false);
+                if let Some(lbl) = summary_weak.upgrade() {
+                    lbl.set_label(
+                        &crate::views::html_editor::format_spellcheck_languages_summary(
+                            &s.string("spellcheck-languages"),
+                        ),
+                    );
                 }
             });
+        } else {
+            spellcheck_summary_label.set_label(
+                &crate::views::html_editor::format_spellcheck_languages_summary(""),
+            );
         }
         group_composer.add(&row_spellcheck_languages);
 
