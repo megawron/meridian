@@ -362,12 +362,13 @@ fi
 %{_datadir}/locale/*/LC_MESSAGES/meridian.mo
 
 %changelog
-* Tue Nov 10 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
-- Contrast-relative dark mode text and background color adaptation in MailViewer
-- Overhauled Rich Text Composer toolbar, circular color swatches, and interactive in-canvas table controls
-- Markdown auto-formatting in Composer with preference switch
-- Fixed local Drafts deletion and deduplicated messages in On This Computer
-- Added standard system folder icons and fixed default color reset in Folder Properties dialog
+* Wed Nov 18 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
+- Multi-language spell checking with system-wide dictionary installation
+- Image options in the native composer context menu, fixing a freeze on right-click
+- Unified templates with hover preview and direct draft editing
+- Snooze, scheduled send, read receipts and ManageSieve rules with vacation replies
+- Extensions manager and Command Palette
+- Task subtasks, iTIP propose-new-time, and correct all-day end dates and time zones
 EOF
 
     rpmbuild -bb --define "_topdir $work/rpmbuild" "$work/rpmbuild/SPECS/meridian.spec"

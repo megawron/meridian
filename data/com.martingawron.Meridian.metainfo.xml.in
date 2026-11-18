@@ -81,6 +81,20 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.5.0-beta.1" date="2026-11-18" type="development">
+      <description>
+        <p>Meridian 0.5.0-beta.1 improvements and fixes:</p>
+        <ul>
+          <li>Multi-language spell checking with a Libadwaita languages dialog and system-wide dictionary installation</li>
+          <li>Image options in the composer's native context menu, fixing a window freeze on right-click</li>
+          <li>Streamlined composer with unified templates, hover preview and direct draft editing</li>
+          <li>Snooze, scheduled send, read receipts and ManageSieve server rules with vacation replies</li>
+          <li>Extensions manager and Command Palette</li>
+          <li>Task subtasks, iTIP propose-new-time, and correct all-day event end dates and time zones</li>
+          <li>Status bar toggle and modern symbolic icons for toolbar and notifications</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.0-beta.1" date="2026-11-10" type="development">
       <description>
         <p>Meridian 0.4.0-beta.1 improvements and fixes:</p>
