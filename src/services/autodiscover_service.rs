@@ -1200,4 +1200,125 @@ mod tests {
         assert!(res.is_err());
         assert_eq!(res.unwrap_err(), "Operation cancelled");
     }
+
+    #[test]
+    fn test_known_provider_dav_autodiscovery() {
+        let mb = AutodiscoverService::discover_dav_endpoints_offline("alice@mailbox.org");
+        assert_eq!(
+            mb.caldav_url.as_deref(),
+            Some("https://dav.mailbox.org/caldav/")
+        );
+        assert_eq!(
+            mb.carddav_url.as_deref(),
+            Some("https://dav.mailbox.org/carddav/")
+        );
+
+        let posteo = AutodiscoverService::discover_dav_endpoints_offline("bob@posteo.de");
+        assert!(posteo.caldav_url.as_deref().is_some_and(|u| u.contains("posteo.de")));
+        assert!(posteo.carddav_url.as_deref().is_some_and(|u| u.contains("posteo.de")));
+
+        let fm = AutodiscoverService::discover_dav_endpoints_offline("carol@fastmail.com");
+        assert_eq!(
+            fm.caldav_url.as_deref(),
+            Some("https://caldav.fastmail.com/")
+        );
+        assert_eq!(
+            fm.carddav_url.as_deref(),
+            Some("https://carddav.fastmail.com/")
+        );
+    }
+}
+
+/// Discovered CalDAV & CardDAV server URLs for a domain or email address (RFC 6764).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DavDiscoveryResult {
+    pub caldav_url: Option<String>,
+    pub carddav_url: Option<String>,
+}
+
+impl AutodiscoverService {
+    /// Offline Tier-1 lookup of well-known CalDAV and CardDAV endpoints by domain.
+    pub fn discover_dav_endpoints_offline(email_or_domain: &str) -> DavDiscoveryResult {
+        let domain = email_or_domain
+            .trim()
+            .rsplit('@')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match domain.as_str() {
+            "fastmail.com" | "fastmail.fm" | "fastmail.org" => DavDiscoveryResult {
+                caldav_url: Some("https://caldav.fastmail.com/".to_string()),
+                carddav_url: Some("https://carddav.fastmail.com/".to_string()),
+            },
+            "mailbox.org" => DavDiscoveryResult {
+                caldav_url: Some("https://dav.mailbox.org/caldav/".to_string()),
+                carddav_url: Some("https://dav.mailbox.org/carddav/".to_string()),
+            },
+            "posteo.de" | "posteo.net" | "posteo.org" | "posteo.eu" => DavDiscoveryResult {
+                caldav_url: Some("https://posteo.de:8443/calendars/".to_string()),
+                carddav_url: Some("https://posteo.de:8843/addressbooks/".to_string()),
+            },
+            "icloud.com" | "me.com" | "mac.com" => DavDiscoveryResult {
+                caldav_url: Some("https://caldav.icloud.com/".to_string()),
+                carddav_url: Some("https://contacts.icloud.com/".to_string()),
+            },
+            "gmx.de" | "gmx.net" | "gmx.at" | "gmx.ch" | "gmx.com" => DavDiscoveryResult {
+                caldav_url: Some("https://caldav.gmx.net/".to_string()),
+                carddav_url: Some("https://carddav.gmx.net/".to_string()),
+            },
+            "web.de" => DavDiscoveryResult {
+                caldav_url: Some("https://caldav.web.de/".to_string()),
+                carddav_url: Some("https://carddav.web.de/".to_string()),
+            },
+            "gmail.com" | "googlemail.com" => DavDiscoveryResult {
+                caldav_url: Some("https://apidata.googleusercontent.com/caldav/v2/".to_string()),
+                carddav_url: Some("https://www.googleapis.com/carddav/v1/".to_string()),
+            },
+            _ => DavDiscoveryResult::default(),
+        }
+    }
+
+    /// Discover CalDAV and CardDAV endpoints via Tier-1 known provider table followed by
+    /// RFC 6764 `/.well-known/caldav` and `/.well-known/carddav` HTTP redirect probes.
+    pub fn discover_dav_endpoints(email_or_domain: &str) -> DavDiscoveryResult {
+        let mut result = Self::discover_dav_endpoints_offline(email_or_domain);
+        if result.caldav_url.is_some() && result.carddav_url.is_some() {
+            return result;
+        }
+        let domain = email_or_domain
+            .trim()
+            .rsplit('@')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if domain.is_empty() || !domain.contains('.') {
+            return result;
+        }
+        let Ok(client) = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(4))
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .user_agent("Meridian-DAV-Discovery/1.0")
+            .build()
+        else {
+            return result;
+        };
+
+        let probe = |well_known: &str| -> Option<String> {
+            let url = format!("https://{domain}/.well-known/{well_known}");
+            let resp = client.head(&url).send().ok()?;
+            let status = resp.status().as_u16();
+            if matches!(status, 200..=299 | 401 | 405) {
+                return Some(resp.url().to_string());
+            }
+            None
+        };
+
+        if result.caldav_url.is_none() {
+            result.caldav_url = probe("caldav");
+        }
+        if result.carddav_url.is_none() {
+            result.carddav_url = probe("carddav");
+        }
+        result
+    }
 }
