@@ -280,6 +280,10 @@ impl ECalService {
     }
 
     pub(crate) fn load_snapshot(&self) -> Result<CalendarSnapshot, ECalServiceError> {
+        self.load_snapshot_detailed().map(|loaded| loaded.snapshot)
+    }
+
+    fn load_snapshot_detailed(&self) -> Result<NativeSnapshotLoad, ECalServiceError> {
         #[cfg(all(target_os = "linux", eds_ecal_bridge))]
         {
             return load_snapshot_native();
@@ -2336,6 +2340,78 @@ fn read_calendar_load_cache(path: &std::path::Path) -> Option<CalendarSnapshot> 
     serde_json::from_reader(std::io::BufReader::new(file)).ok()
 }
 
+struct NativeSnapshotLoad {
+    snapshot: CalendarSnapshot,
+    warnings: Vec<String>,
+    events_had_failures: bool,
+    tasks_had_failures: bool,
+    memos_had_failures: bool,
+}
+
+fn merge_cached_snapshot_on_partial_failure(
+    snapshot: &mut CalendarSnapshot,
+    cached: &CalendarSnapshot,
+    events_had_failures: bool,
+    tasks_had_failures: bool,
+    memos_had_failures: bool,
+) {
+    if events_had_failures {
+        let loaded_event_sources: std::collections::HashSet<String> = snapshot
+            .events
+            .iter()
+            .filter(|ev| !ev.source_uid.is_empty())
+            .map(|ev| ev.source_uid.clone())
+            .collect();
+        for ev in &cached.events {
+            if !loaded_event_sources.contains(&ev.source_uid)
+                && !snapshot
+                    .events
+                    .iter()
+                    .any(|cur| cur.source_uid == ev.source_uid && cur.uid == ev.uid)
+            {
+                snapshot.events.push(ev.clone());
+            }
+        }
+    }
+    if tasks_had_failures {
+        let loaded_task_sources: std::collections::HashSet<String> = snapshot
+            .tasks
+            .iter()
+            .filter(|t| !t.source_uid.is_empty())
+            .map(|t| t.source_uid.clone())
+            .collect();
+        for task in &cached.tasks {
+            if !loaded_task_sources.contains(&task.source_uid)
+                && !snapshot
+                    .tasks
+                    .iter()
+                    .any(|cur| cur.source_uid == task.source_uid && cur.uid == task.uid)
+            {
+                snapshot.tasks.push(task.clone());
+            }
+        }
+    }
+    if memos_had_failures {
+        let loaded_memo_sources: std::collections::HashSet<String> = snapshot
+            .memos
+            .iter()
+            .filter(|m| !m.source_uid.is_empty())
+            .map(|m| m.source_uid.clone())
+            .collect();
+        for memo in &cached.memos {
+            if !loaded_memo_sources.contains(&memo.source_uid)
+                && !snapshot
+                    .memos
+                    .iter()
+                    .any(|cur| cur.source_uid == memo.source_uid && cur.uid == memo.uid)
+            {
+                snapshot.memos.push(memo.clone());
+            }
+        }
+    }
+    super::calendar_store_service::sort_snapshot(snapshot);
+}
+
 pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
     let offline_mode = crate::services::mail_transport_service::MailTransportService::shared()
         .snapshot()
@@ -2382,16 +2458,41 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
     }
 
     let ecal = ECalService::new();
-    match ecal.load_snapshot() {
-        Ok(mut snapshot) => {
+    match ecal.load_snapshot_detailed() {
+        Ok(NativeSnapshotLoad {
+            mut snapshot,
+            warnings,
+            events_had_failures,
+            tasks_had_failures,
+            memos_had_failures,
+        }) => {
             let local_service = CalendarStoreService::new();
             if local_service.is_writable() {
                 let local = local_service.load_snapshot();
                 snapshot.events.extend(local.events);
                 snapshot.tasks.extend(local.tasks);
                 snapshot.memos.extend(local.memos);
-                #[cfg(all(target_os = "linux", eds_ecal_bridge))]
-                sort_snapshot(&mut snapshot);
+                super::calendar_store_service::sort_snapshot(&mut snapshot);
+            }
+            if events_had_failures || tasks_had_failures || memos_had_failures {
+                // On cold boot / autostart, EDS calendar backends may not be ready yet while
+                // local task/memo lists succeed. Preserve cached entries from unreachable
+                // sources and never overwrite the cache with a degraded partial snapshot.
+                if let Some(cached) = load_calendar_load_cache() {
+                    merge_cached_snapshot_on_partial_failure(
+                        &mut snapshot,
+                        &cached,
+                        events_had_failures,
+                        tasks_had_failures,
+                        memos_had_failures,
+                    );
+                }
+                register_snapshot_components(&snapshot);
+                return CalendarLoadResult {
+                    snapshot,
+                    origin: CalendarDataOrigin::Eds,
+                    warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
+                };
             }
             if snapshot.events.is_empty() && snapshot.tasks.is_empty() && snapshot.memos.is_empty()
             {
@@ -2403,7 +2504,7 @@ pub(crate) fn load_snapshot_prefer_eds() -> CalendarLoadResult {
             CalendarLoadResult {
                 snapshot,
                 origin: CalendarDataOrigin::Eds,
-                warning: None,
+                warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
             }
         }
         Err(error) => {
@@ -2937,13 +3038,16 @@ fn ecal_source_lock(source_uid: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
 }
 
 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
-fn load_snapshot_native() -> Result<CalendarSnapshot, ECalServiceError> {
+fn load_snapshot_native() -> Result<NativeSnapshotLoad, ECalServiceError> {
     let _guard = ECAL_NATIVE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut snapshot = CalendarSnapshot::default();
     let mut warnings = Vec::new();
     let mut native_successes = 0;
+    let mut events_had_failures = false;
+    let mut tasks_had_failures = false;
+    let mut memos_had_failures = false;
 
     for (source_type, label) in [(0, "Calendars"), (1, "Task Lists"), (2, "Memo Lists")] {
         match load_components_native(source_type, &mut snapshot) {
@@ -2951,9 +3055,23 @@ fn load_snapshot_native() -> Result<CalendarSnapshot, ECalServiceError> {
                 native_successes += 1;
                 if let Some(warning) = result.warning {
                     warnings.push(format!("{label}: {warning}"));
+                    match source_type {
+                        0 => events_had_failures = true,
+                        1 => tasks_had_failures = true,
+                        2 => memos_had_failures = true,
+                        _ => {}
+                    }
                 }
             }
-            Err(error) => warnings.push(format!("{label}: {error}")),
+            Err(error) => {
+                warnings.push(format!("{label}: {error}"));
+                match source_type {
+                    0 => events_had_failures = true,
+                    1 => tasks_had_failures = true,
+                    2 => memos_had_failures = true,
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -2978,7 +3096,13 @@ fn load_snapshot_native() -> Result<CalendarSnapshot, ECalServiceError> {
     if !warnings.is_empty() {
         tracing::warn!(warning = %warnings.join("; "), "ECal loaded with source warnings");
     }
-    Ok(snapshot)
+    Ok(NativeSnapshotLoad {
+        snapshot,
+        warnings,
+        events_had_failures,
+        tasks_had_failures,
+        memos_had_failures,
+    })
 }
 
 #[cfg(all(target_os = "linux", eds_ecal_bridge))]
@@ -3207,5 +3331,53 @@ mod calendar_preview_cache_tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn partial_calendar_failure_preserves_cached_events_for_unreachable_sources() {
+        let make_ev = |source_uid: &str, uid: &str, summary: &str, start: &str, end: &str| {
+            CalendarEventRecord {
+                uid: uid.to_string(),
+                source_uid: source_uid.to_string(),
+                source_display_name: source_uid.to_string(),
+                component: String::new(),
+                summary: summary.to_string(),
+                start: start.to_string(),
+                end: end.to_string(),
+                location: String::new(),
+                description: String::new(),
+                all_day: false,
+            }
+        };
+
+        let mut fresh = CalendarSnapshot::default();
+        fresh.events.push(make_ev(
+            "local-calendar",
+            "local-1",
+            "Local Event",
+            "2026-11-23 09:00",
+            "2026-11-23 10:00",
+        ));
+
+        let mut cached = CalendarSnapshot::default();
+        cached.events.push(make_ev(
+            "ews-cal-1",
+            "work-1",
+            "Standup",
+            "2026-11-23 10:00",
+            "2026-11-23 10:30",
+        ));
+        cached.events.push(make_ev(
+            "local-calendar",
+            "local-stale",
+            "Deleted Local Event",
+            "2026-11-23 08:00",
+            "2026-11-23 08:30",
+        ));
+
+        merge_cached_snapshot_on_partial_failure(&mut fresh, &cached, true, false, false);
+        assert!(fresh.events.iter().any(|e| e.uid == "work-1"));
+        assert!(fresh.events.iter().any(|e| e.uid == "local-1"));
+        assert!(!fresh.events.iter().any(|e| e.uid == "local-stale"));
     }
 }

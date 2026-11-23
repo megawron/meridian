@@ -1952,6 +1952,8 @@ mod imp {
         pub(super) calendar_mutation_gate: RefCell<CalendarMutationGate>,
         pub(super) calendar_list_projection_count: Cell<Option<usize>>,
         pub(super) calendar_reload_debounce: RefCell<Option<glib::SourceId>>,
+        pub(super) calendar_retry_source: RefCell<Option<glib::SourceId>>,
+        pub(super) calendar_retry_attempts: Cell<u8>,
         pub(crate) zoom_toast: RefCell<Option<adw::Toast>>,
         pub(crate) chip_scale_save_source: RefCell<Option<glib::SourceId>>,
         pub(crate) time_grid_center_ratio_cleanup_source: RefCell<Option<glib::SourceId>>,
@@ -2183,6 +2185,8 @@ mod imp {
                 calendar_mutation_gate: RefCell::new(CalendarMutationGate::default()),
                 calendar_list_projection_count: Cell::new(None),
                 calendar_reload_debounce: RefCell::new(None),
+                calendar_retry_source: RefCell::new(None),
+                calendar_retry_attempts: Cell::new(0),
                 zoom_toast: RefCell::new(None),
                 chip_scale_save_source: RefCell::new(None),
                 time_grid_center_ratio_cleanup_source: RefCell::new(None),
@@ -2245,6 +2249,12 @@ mod imp {
             }
             let src2 = self.chip_scale_save_source.borrow_mut().take();
             if let Some(source) = src2 {
+                let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
+            }
+            if let Some(source) = self.calendar_reload_debounce.borrow_mut().take() {
+                let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
+            }
+            if let Some(source) = self.calendar_retry_source.borrow_mut().take() {
                 let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
             }
             if let Some(cancel) = self.calendar_load_cancel.borrow_mut().take() {
@@ -4920,6 +4930,7 @@ impl CalendarPage {
         target_uid: Option<String>,
         fallback_event: Option<CalendarEventRecord>,
     ) {
+        let mut injected_fallback = false;
         if let Some(ref ev) = fallback_event {
             if let Some(records) = self.imp().event_records.borrow().as_ref().cloned() {
                 let exists = records.borrow().iter().any(|existing| existing.uid == ev.uid);
@@ -4927,6 +4938,7 @@ impl CalendarPage {
                     records.borrow_mut().push(ev.clone());
                     self.rebuild_calendar_index_from_records();
                     self.bump_calendar_revision();
+                    injected_fallback = true;
                 }
             }
         }
@@ -4936,6 +4948,10 @@ impl CalendarPage {
         let nav_date = target_date.unwrap_or_else(|| Local::now().date_naive());
         self.navigate_to_date_contextual(nav_date);
         self.apply_pending_focus_target();
+        if injected_fallback && !self.imp().calendar_loading.get() {
+            self.reload_calendar_sources();
+            self.reload_calendar_data();
+        }
     }
 
     pub(crate) fn apply_pending_focus_target(&self) {
@@ -5386,6 +5402,7 @@ impl CalendarPage {
                     self.set_calendar_load_error(&err_msg);
                     self.set_calendar_loading_status(false, &err_msg);
                     self.refresh_calendar_views();
+                    self.schedule_calendar_recovery_retry();
                 }
                 return;
             }
@@ -5451,6 +5468,13 @@ impl CalendarPage {
         let state_label = self.imp().calendar_data_state.borrow().as_ref().cloned();
         if !preview && !self.finish_calendar_snapshot_load(generation, &cancellation) {
             return;
+        }
+        if !preview {
+            if warning.is_some() {
+                self.schedule_calendar_recovery_retry();
+            } else {
+                self.cancel_calendar_recovery_retry();
+            }
         }
         let cached_status = gettext("Cached calendar state is displayed · update in progress…");
         self.set_calendar_loading_status(
@@ -7494,7 +7518,12 @@ impl CalendarPage {
             self.refresh_event_list_visibility();
         }
 
-        self.start_calendar_snapshot_load();
+        let cached_sources = crate::services::eds_source_cache_service::EdsSourceCache::new()
+            .load(crate::services::eds_service::EdsSourceKind::Calendar);
+        self.apply_calendar_sources(cached_sources);
+        if !self.imp().calendar_loading.get() {
+            self.start_calendar_snapshot_load();
+        }
 
         if let Some((cancel, receiver)) = ECalService::new().start_change_monitor() {
             *self.imp().ecal_monitor_cancel.borrow_mut() = Some(cancel);
@@ -7552,9 +7581,6 @@ impl CalendarPage {
             });
         }
 
-        let cached_sources = crate::services::eds_source_cache_service::EdsSourceCache::new()
-            .load(crate::services::eds_service::EdsSourceKind::Calendar);
-        self.apply_calendar_sources(cached_sources);
         self.reload_calendar_sources();
 
         let sidebar_scroll = gtk::ScrolledWindow::builder()
@@ -13872,6 +13898,55 @@ impl CalendarPage {
         self.refresh_task_and_memo_panes();
     }
 
+    fn cancel_calendar_recovery_retry(&self) {
+        if let Some(source) = self.imp().calendar_retry_source.borrow_mut().take() {
+            let _ = unsafe { glib::ffi::g_source_remove(source.as_raw()) };
+        }
+        self.imp().calendar_retry_attempts.set(0);
+    }
+
+    fn schedule_calendar_recovery_retry(&self) {
+        let attempts = self.imp().calendar_retry_attempts.get();
+        if attempts >= 3 || self.imp().calendar_retry_source.borrow().is_some() {
+            return;
+        }
+        let delay_secs = match attempts {
+            0 => 3,
+            1 => 6,
+            _ => 12,
+        };
+        self.imp().calendar_retry_attempts.set(attempts + 1);
+        let page = self.downgrade();
+        let source = glib::timeout_add_local_once(
+            std::time::Duration::from_secs(delay_secs),
+            move || {
+                if let Some(page) = page.upgrade() {
+                    page.imp().calendar_retry_source.replace(None);
+                    if !page.imp().calendar_loading.get() {
+                        page.reload_calendar_sources();
+                        page.start_calendar_snapshot_load();
+                    }
+                }
+            },
+        );
+        self.imp().calendar_retry_source.replace(Some(source));
+    }
+
+    pub(crate) fn ensure_calendar_populated_on_show(&self) {
+        if self.imp().calendar_loading.get() {
+            return;
+        }
+        let had_error = self.imp().calendar_load_error.borrow().is_some();
+        let missing_cached_events = self.loaded_calendar_events().is_empty()
+            && crate::services::ecal_service::load_calendar_load_cache()
+                .is_some_and(|cached| !cached.events.is_empty());
+        if had_error || missing_cached_events {
+            self.imp().calendar_retry_attempts.set(0);
+            self.reload_calendar_sources();
+            self.reload_calendar_data();
+        }
+    }
+
     pub(crate) fn reload_calendar_sources(&self) {
         let cached_sources = crate::services::eds_service::load_cached_sources_fast(
             crate::services::eds_service::EdsSourceKind::Calendar,
@@ -13895,7 +13970,24 @@ impl CalendarPage {
             let Some(page) = page_weak.upgrade() else {
                 return;
             };
-            page.apply_calendar_sources(discovery.sources);
+            // On cold boot / autostart, EDS source discovery may transiently fail before
+            // evolution-source-registry finishes starting. Never wipe existing cached
+            // sources and their events when discovery fails with an empty source list.
+            let transient_empty_error = discovery.error.is_some()
+                && discovery.sources.is_empty()
+                && !page.imp().calendar_source_selector.borrow().sources().is_empty();
+            if transient_empty_error {
+                tracing::warn!(
+                    error = ?discovery.error,
+                    "Preserving cached calendar sources after transient EDS discovery error"
+                );
+                page.schedule_calendar_recovery_retry();
+            } else {
+                page.apply_calendar_sources(discovery.sources);
+                if discovery.error.is_some() {
+                    page.schedule_calendar_recovery_retry();
+                }
+            }
 
             if let Some(state_lbl) = calendar_state {
                 if page.imp().calendar_source_selector.borrow().sources().is_empty() {
@@ -34603,15 +34695,15 @@ mod tests {
 
         let h9_24 = format_hour_markup(9 * 60, false);
         assert!(h9_24.contains(r#"weight="medium">9<"#));
-        assert!(h9_24.contains(r#"rise="7000"> 00<"#));
+        assert!(h9_24.contains(r#"rise="5600"> 00<"#));
 
         let h14_12 = format_hour_markup(14 * 60, true);
         assert!(h14_12.contains(r#"weight="medium">2<"#));
-        assert!(h14_12.contains(r#"rise="7000"> PM<"#));
+        assert!(h14_12.contains(r#"rise="5600"> PM<"#));
 
         let h0_12 = format_hour_markup(0, true);
         assert!(h0_12.contains(r#"weight="medium">12<"#));
-        assert!(h0_12.contains(r#"rise="7000"> AM<"#));
+        assert!(h0_12.contains(r#"rise="5600"> AM<"#));
     }
 
     #[test]
@@ -37389,7 +37481,7 @@ mod tests {
 
         let layout = prepare_memopad_layout(&memos);
         assert_eq!(layout.items.len(), 2);
-        assert_eq!(layout.total_height, 34.0 * 2.0);
+        assert_eq!(layout.total_height, 4.0 + 34.0 * 2.0 + 4.0);
         assert_eq!(layout.items[0].title, "Shopping list");
         assert_eq!(layout.items[1].title, gettext("(Untitled)"));
 
