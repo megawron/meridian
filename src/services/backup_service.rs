@@ -3113,7 +3113,7 @@ mod tests {
                 "mail_recipient_column_width": 210,
                 "mail_date_column_width": 175,
                 "mail_list_view_profile": "custom",
-                "mail_list_column_order": "subject,sender,recipient,date,status,attachment,flagged,follow-up,important,avatar,preview,size,follow-up-due,location,messages"
+                "mail_list_column_order": "subject,sender,recipient,date,status,attachment,flagged,follow-up,memo,important,avatar,preview,size,follow-up-due,location,messages"
             },
             "files": []
         }))

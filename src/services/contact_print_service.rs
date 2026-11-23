@@ -724,6 +724,6 @@ mod tests {
         assert!(doc.html.contains("<td>+49 123 456789</td>"));
         assert!(doc.html.contains("<td>Charles Babbage</td>"));
         assert!(doc.plain_text.contains("Contacts (2 entries)"));
-        assert!(doc.plain_text.contains("Ada Lovelace | Engineer, Tech Corp | ada@example.com | +49 123 456789 | Local | Kollegen"));
+        assert!(doc.plain_text.contains("Ada Lovelace | Engineer, Tech Corp | ada@example.com | +49 123 456789 | Local | Colleagues"));
     }
 }
