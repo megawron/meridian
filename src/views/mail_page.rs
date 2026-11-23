@@ -444,18 +444,23 @@ impl FolderSelection {
         }
 
         match self.folder_id.as_str() {
-            "all" => true,
+            "rss:all" => message.folder_id().starts_with("rss:"),
+            fid if fid.starts_with("rss:") => message.folder_id() == fid,
+            "all" => !message.folder_id().starts_with("rss:"),
             "unified_inbox" => {
                 message.folder_id().eq_ignore_ascii_case("inbox")
                     && folder_included_in_unified_inbox(message)
             }
             "unified_unread" => {
                 message.is_unread()
+                    && !message.folder_id().starts_with("rss:")
                     && !message.folder_id().eq_ignore_ascii_case("trash")
                     && !message.folder_id().eq_ignore_ascii_case("junk")
                     && !message.folder_id().eq_ignore_ascii_case("spam")
             }
-            "unified_flagged" => message.is_flagged(),
+            "unified_flagged" => {
+                message.is_flagged() && !message.folder_id().starts_with("rss:")
+            }
             "unified_sent" => message.folder_id().eq_ignore_ascii_case("sent"),
             "spam" => message.folder_id().eq_ignore_ascii_case("junk"),
             folder_id => {
@@ -470,6 +475,17 @@ impl FolderSelection {
     }
 
     fn title_and_icon(&self) -> (String, &'static str) {
+        if self.folder_id == "rss:all" {
+            return (gettext("All Feeds"), "application-rss+xml-symbolic");
+        }
+        if self.folder_id.starts_with("rss:") {
+            return (
+                self.folder_name
+                    .clone()
+                    .unwrap_or_else(|| gettext("Feeds")),
+                "application-rss+xml-symbolic",
+            );
+        }
         if let Some(ref name) = self.folder_name {
             (name.clone(), MailPage::folder_icon_name(name))
         } else {
@@ -7607,6 +7623,7 @@ mod imp {
         pub thread_selection: RefCell<Option<gtk::MultiSelection>>,
         pub last_selected_mail_index: Cell<Option<u32>>,
         pub mail_selection_anchor: Cell<Option<u32>>,
+        pub pending_single_select_on_release: Cell<Option<u32>>,
         pub is_mouse_selecting: Cell<bool>,
         pub is_auto_selecting: Cell<bool>,
         pub(crate) folder_last_selected_mail: RefCell<HashMap<String, MailSelectionAnchor>>,
@@ -14388,24 +14405,53 @@ impl MailPage {
             }
             return Vec::new();
         }
+        let threading = self.imp().mail_threading.get();
+        let mut seen_ids = HashSet::new();
         let mut result = Vec::new();
+        let mut push_unique = |msg: MailMessageObject| {
+            if seen_ids.insert(msg.id()) {
+                result.push(msg);
+            }
+        };
         let min = bitset.minimum();
         let max = bitset.maximum();
         for i in min..=max {
             if selection.is_selected(i) {
                 if let Some(item) = selection.item(i) {
-                    let msg = item
-                        .clone()
-                        .downcast::<MailMessageObject>()
-                        .ok()
-                        .or_else(|| {
-                            item.downcast::<gtk::TreeListRow>()
-                                .ok()
-                                .and_then(|row| row.item())
-                                .and_then(|obj| obj.downcast::<MailMessageObject>().ok())
-                        });
-                    if let Some(m) = msg {
-                        result.push(m);
+                    if let Ok(m) = item.clone().downcast::<MailMessageObject>() {
+                        push_unique(m);
+                    } else if let Ok(row) = item.downcast::<gtk::TreeListRow>() {
+                        if let Some(m) = row.item().and_then(|obj| obj.downcast::<MailMessageObject>().ok()) {
+                            let is_collapsed_thread =
+                                threading && row.is_expandable() && !row.is_expanded();
+                            let thread_id = m.thread_id();
+                            push_unique(m);
+                            if is_collapsed_thread && !thread_id.is_empty() {
+                                let mut expanded_from_children = false;
+                                if let Some(children_rc) = self.imp().thread_children.borrow().as_ref() {
+                                    if let Some(child_store) = children_rc.borrow().get(&thread_id) {
+                                        for c_idx in 0..child_store.n_items() {
+                                            if let Some(child_msg) = child_store
+                                                .item(c_idx)
+                                                .and_downcast::<MailMessageObject>()
+                                            {
+                                                push_unique(child_msg);
+                                                expanded_from_children = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                if !expanded_from_children {
+                                    if let Some(members_rc) = self.imp().thread_members.borrow().as_ref() {
+                                        if let Some(members) = members_rc.borrow().get(&thread_id) {
+                                            for member in members {
+                                                push_unique(member.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -26078,10 +26124,18 @@ impl MailPage {
             })
         };
 
-        let subject = msg.subject();
+        let raw_subject = msg.subject();
+        let subject = crate::services::extension_service::apply_cached_subject_transformers(&raw_subject);
         let snippet = snippet_for_row;
         let is_important = msg.is_important();
-        let labels = msg.labels();
+        let mut labels = msg.labels();
+        for ext_badge in
+            crate::services::extension_service::cached_message_list_badges(&raw_subject, &sender_str)
+        {
+            if !labels.iter().any(|l| l.eq_ignore_ascii_case(&ext_badge)) {
+                labels.push(ext_badge);
+            }
+        }
         let markup_dark = format_mail_table_subject_markup(
             &subject,
             &snippet,
@@ -27903,7 +27957,55 @@ impl MailPage {
                     }
                 }
             }
-            if let Some(index) = found_flat_index {
+            let mut selected_ids = HashSet::new();
+            let sel_bitset = selection.selection();
+            if !sel_bitset.is_empty() {
+                for pos in sel_bitset.minimum()..=sel_bitset.maximum() {
+                    if selection.is_selected(pos) {
+                        if let Some(item) = selection.item(pos) {
+                            let row_msg = item
+                                .clone()
+                                .downcast::<MailMessageObject>()
+                                .ok()
+                                .or_else(|| {
+                                    item.downcast::<gtk::TreeListRow>()
+                                        .ok()
+                                        .and_then(|row| row.item())
+                                        .and_then(|obj| obj.downcast::<MailMessageObject>().ok())
+                                });
+                            if let Some(row_msg) = row_msg {
+                                selected_ids.insert(row_msg.id());
+                            }
+                        }
+                    }
+                }
+            }
+
+            if selected_ids.len() > 1 {
+                let prev = page.imp().thread_selection_syncing.replace(true);
+                flat_selection_for_tree.unselect_all();
+                let mut primary_flat_index = None;
+                for index in 0..flat_selection_for_tree.n_items() {
+                    let Some(candidate) = flat_selection_for_tree
+                        .item(index)
+                        .and_downcast::<MailMessageObject>()
+                    else {
+                        continue;
+                    };
+                    let cand_id = candidate.id();
+                    if selected_ids.contains(&cand_id) {
+                        if cand_id == message.id() {
+                            primary_flat_index = Some(index);
+                        } else {
+                            flat_selection_for_tree.select_item(index, false);
+                        }
+                    }
+                }
+                page.imp().thread_selection_syncing.set(prev);
+                if let Some(index) = primary_flat_index {
+                    flat_selection_for_tree.select_item(index, false);
+                }
+            } else if let Some(index) = found_flat_index {
                 let already_selected = flat_selection_for_tree.is_selected(index)
                     && flat_selection_for_tree.selection().size() == 1;
                 if already_selected {
@@ -28636,6 +28738,12 @@ impl MailPage {
                         page.imp().last_selected_mail_index.set(Some(pos));
                     }
                 }
+                let preserve_multi = page
+                    .imp()
+                    .thread_selection
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|s| s.selection().size() > 1);
                 if let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() {
                     if let Some(msg) = tree_row.item().and_downcast::<MailMessageObject>() {
                         if let Some(flat_sel) = page.imp().message_selection.borrow().as_ref() {
@@ -28643,9 +28751,11 @@ impl MailPage {
                                 if let Some(cand) = flat_sel.item(i).and_downcast::<MailMessageObject>() {
                                     if cand.id() == msg.id() {
                                         if !flat_sel.is_selected(i) {
-                                            flat_sel.select_item(i, true);
+                                            flat_sel.select_item(i, !preserve_multi);
                                         }
-                                        page.imp().last_selected_mail_index.set(Some(i));
+                                        if !page.imp().mail_threading.get() {
+                                            page.imp().last_selected_mail_index.set(Some(i));
+                                        }
                                         break;
                                     }
                                 }
@@ -28694,6 +28804,12 @@ impl MailPage {
                         page.imp().last_selected_mail_index.set(Some(pos));
                     }
                 }
+                let preserve_multi = page
+                    .imp()
+                    .thread_selection
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|s| s.selection().size() > 1);
                 if let Some(tree_row) = list_item.item().and_downcast::<gtk::TreeListRow>() {
                     if let Some(msg) = tree_row.item().and_downcast::<MailMessageObject>() {
                         if let Some(flat_sel) = page.imp().message_selection.borrow().as_ref() {
@@ -28701,9 +28817,11 @@ impl MailPage {
                                 if let Some(cand) = flat_sel.item(i).and_downcast::<MailMessageObject>() {
                                     if cand.id() == msg.id() {
                                         if !flat_sel.is_selected(i) {
-                                            flat_sel.select_item(i, true);
+                                            flat_sel.select_item(i, !preserve_multi);
                                         }
-                                        page.imp().last_selected_mail_index.set(Some(i));
+                                        if !page.imp().mail_threading.get() {
+                                            page.imp().last_selected_mail_index.set(Some(i));
+                                        }
                                         break;
                                     }
                                 }
@@ -31395,13 +31513,27 @@ impl MailPage {
                         let count = (anchor.max(model_index as u32) - start) + 1;
                         page.imp().last_selected_mail_index.set(Some(model_index as u32));
                         thread_sel_for_click.select_range(start, count, true);
+                    } else if n_press == 1
+                        && thread_sel_for_click.is_selected(model_index as u32)
+                        && thread_sel_for_click.selection().size() > 1
+                    {
+                        // Preserve multi-selection on press so dragging moves all selected
+                        // messages; collapse to single selection on release if no drag occurs.
+                        page.imp()
+                            .pending_single_select_on_release
+                            .set(Some(model_index as u32));
+                        page.imp()
+                            .last_selected_mail_index
+                            .set(Some(model_index as u32));
                     } else {
+                        page.imp().pending_single_select_on_release.set(None);
                         page.select_single_thread_row(&thread_sel_for_click, model_index as u32);
                     }
 
                     page.imp().is_mouse_selecting.set(false);
 
                     if n_press == 2 {
+                        page.imp().pending_single_select_on_release.set(None);
                         if let Some(item) = thread_sel_for_click.item(model_index as u32) {
                             let msg = if let Some(tree_row) = item.downcast_ref::<gtk::TreeListRow>() {
                                 tree_row.item().and_downcast::<MailMessageObject>()
@@ -31421,10 +31553,20 @@ impl MailPage {
         let page_for_release = self.downgrade();
         let canvas_for_release = mail_table_canvas.clone();
         click_gesture.connect_released(move |_gesture, n_press, x, y| {
+            let Some(page) = page_for_release.upgrade() else { return; };
+            if let Some(pending_idx) = page.imp().pending_single_select_on_release.take() {
+                if n_press == 1 {
+                    if let Some(thread_sel) = page.imp().thread_selection.borrow().as_ref().cloned() {
+                        page.imp().is_mouse_selecting.set(true);
+                        page.select_single_thread_row(&thread_sel, pending_idx);
+                        page.imp().is_mouse_selecting.set(false);
+                        canvas_for_release.queue_draw();
+                    }
+                }
+            }
             if n_press != 1 {
                 return;
             }
-            let Some(page) = page_for_release.upgrade() else { return; };
             if page.imp().is_mobile.get() || page.imp().is_tablet.get() {
                 let w = canvas_for_release.width().max(120) as f64;
                 let scroll_y = page.imp().list_vadjustment.borrow().as_ref().map(|a| a.value()).unwrap_or(0.0);
@@ -31450,6 +31592,12 @@ impl MailPage {
                         page.set_drill_down_level(MailDrillDownLevel::Viewer);
                     }
                 }
+            }
+        });
+        let page_for_click_cancel = self.downgrade();
+        click_gesture.connect_cancel(move |_, _| {
+            if let Some(page) = page_for_click_cancel.upgrade() {
+                page.imp().pending_single_select_on_release.set(None);
             }
         });
         mail_table_canvas.add_controller(click_gesture);
@@ -31506,6 +31654,7 @@ impl MailPage {
                     .item(idx)
                     .and_downcast::<gtk::TreeListRow>()
                 {
+                    let preserve_multi = thread_sel_for_right_click.selection().size() > 1;
                     if let Some(msg) = tree_row.item().and_downcast::<MailMessageObject>() {
                         if let Some(flat_sel) = page.imp().message_selection.borrow().as_ref() {
                             for i in 0..flat_sel.n_items() {
@@ -31514,7 +31663,7 @@ impl MailPage {
                                 {
                                     if cand.id() == msg.id() {
                                         if !flat_sel.is_selected(i) {
-                                            flat_sel.select_item(i, true);
+                                            flat_sel.select_item(i, !preserve_multi);
                                         }
                                         if !page.imp().mail_threading.get() {
                                             page.imp().last_selected_mail_index.set(Some(i));
@@ -31583,6 +31732,7 @@ impl MailPage {
                     .item(idx)
                     .and_downcast::<gtk::TreeListRow>()
                 {
+                    let preserve_multi = thread_sel_for_canvas_lp.selection().size() > 1;
                     if let Some(msg) = tree_row.item().and_downcast::<MailMessageObject>() {
                         if let Some(flat_sel) = page.imp().message_selection.borrow().as_ref() {
                             for i in 0..flat_sel.n_items() {
@@ -31591,7 +31741,7 @@ impl MailPage {
                                 {
                                     if cand.id() == msg.id() {
                                         if !flat_sel.is_selected(i) {
-                                            flat_sel.select_item(i, true);
+                                            flat_sel.select_item(i, !preserve_multi);
                                         }
                                         if !page.imp().mail_threading.get() {
                                             page.imp().last_selected_mail_index.set(Some(i));
@@ -31744,6 +31894,7 @@ impl MailPage {
             let Some(idx) = hit_idx else {
                 return None;
             };
+            page.imp().pending_single_select_on_release.set(None);
             page.imp().last_selected_mail_index.set(Some(idx as u32));
             if !thread_sel_for_canvas_drag.is_selected(idx as u32) {
                 page.imp().mail_selection_anchor.set(Some(idx as u32));
@@ -35737,6 +35888,18 @@ impl MailPage {
             attachment_bar.remove(&child);
         }
 
+        // Automatically mark RSS feed articles read when opened in the MailViewer preview
+        if let Some(article_id) = message.id().strip_prefix("rss::") {
+            if message.is_unread() {
+                message.set_unread(false);
+                let aid = article_id.to_string();
+                std::thread::spawn(move || {
+                    let _ = crate::services::extension_service::RssFeedStore::default()
+                        .mark_article_read(&aid, true);
+                });
+            }
+        }
+
         let mut itip_invitation = None;
         let attachments = message.attachments();
         for attachment in &attachments {
@@ -35792,7 +35955,48 @@ impl MailPage {
         mail_viewer.set_visible(!has_itip);
 
         let inline_images = message.inline_images();
-        let html_body = message.html_body();
+        let mut html_body = message.html_body();
+
+        // Extension inline attachment renderers (e.g., Markdown, CSV, JSON, XRechnung/ZUGFeRD XML)
+        let ext_registry = crate::services::extension_service::ExtensionRegistry::default();
+        if !attachments.is_empty() && !ext_registry.enabled_attachment_renderers().is_empty() {
+            let mut rendered_cards = String::new();
+            for attachment in &attachments {
+                let mime = attachment
+                    .mime_type
+                    .split(';')
+                    .next()
+                    .unwrap_or(&attachment.mime_type)
+                    .trim();
+                if let Some((renderer_title, fragment_html)) = ext_registry
+                    .render_inline_attachment(&attachment.filename, mime, &attachment.content)
+                {
+                    let escaped_name = attachment
+                        .filename
+                        .replace('&', "&amp;")
+                        .replace('<', "&lt;")
+                        .replace('>', "&gt;");
+                    let escaped_title = renderer_title
+                        .replace('&', "&amp;")
+                        .replace('<', "&lt;")
+                        .replace('>', "&gt;");
+                    rendered_cards.push_str(&format!(
+                        "<section class=\"meridian-ext-attachment-preview\" style=\"margin-top:18px;padding:12px 14px;border:1px solid rgba(128,128,128,0.28);border-radius:10px;\">\
+                         <div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid rgba(128,128,128,0.2);font-size:0.88em;opacity:0.85;\">\
+                         <strong>{escaped_name}</strong><span>{escaped_title}</span></div>\
+                         {fragment_html}</section>"
+                    ));
+                }
+            }
+            if !rendered_cards.is_empty() {
+                if let Some(pos) = html_body.to_ascii_lowercase().rfind("</body>") {
+                    html_body.insert_str(pos, &rendered_cards);
+                } else {
+                    html_body.push_str(&rendered_cards);
+                }
+            }
+        }
+
         let sender = sender_header(message);
         mail_viewer.set_current_sender(Some(&sender));
         mail_viewer.load_message_content_with_fallback(
@@ -35806,6 +36010,11 @@ impl MailPage {
         let is_junk = message_is_junk(message);
         mail_viewer.set_trash_banner_visible(is_trash);
         mail_viewer.set_junk_banner_visible(!is_trash && is_junk);
+        let spoofing_warning = crate::views::mail_viewer::detect_sender_spoofing(
+            &message.sender_name(),
+            &message.sender_email(),
+        );
+        mail_viewer.set_spoofing_warning(spoofing_warning.as_deref());
 
         // Opportunistic Autocrypt OpenPGP key import (background, deduplicated per session)
         if !is_trash
@@ -36675,6 +36884,43 @@ fn create_attachment_bar_chip(
 
     chip_box.append(&btn_save);
 
+    // Enable dragging the attachment directly out of Meridian into Nautilus, Desktop, or a browser.
+    if !att.content.is_empty() {
+        let drag_source = gtk::DragSource::builder()
+            .actions(gdk::DragAction::COPY)
+            .build();
+        let drag_filename = att.filename.clone();
+        let drag_content = att.content.clone();
+        drag_source.connect_prepare(move |_, _, _| {
+            let safe_name: String = drag_filename
+                .chars()
+                .map(|c| {
+                    if c == '/' || c == '\\' || c == '\0' {
+                        '_'
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            let final_name = if safe_name.trim().is_empty() {
+                "attachment.bin".to_string()
+            } else {
+                safe_name
+            };
+            let drag_dir = std::env::temp_dir().join("meridian-drag");
+            if std::fs::create_dir_all(&drag_dir).is_ok() {
+                let target_path = drag_dir.join(&final_name);
+                if std::fs::write(&target_path, &drag_content).is_ok() {
+                    let gfile = gio::File::for_path(&target_path);
+                    let file_list = gdk::FileList::from_array(&[gfile]);
+                    return Some(gdk::ContentProvider::for_value(&file_list.to_value()));
+                }
+            }
+            None
+        });
+        chip_box.add_controller(drag_source);
+    }
+
     let fn_open = att.filename.clone();
     let ct_open = att.content.clone();
     let parent_open = parent_window.cloned();
@@ -37264,6 +37510,11 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
         sec.set_visible(true);
     }
 
+    pub(crate) fn invalidate_mail_table_for_extensions(&self) {
+        self.imp().mail_table_layout.replace(None);
+        self.queue_mail_table_draw();
+    }
+
     pub(crate) fn refresh_extension_sidebar_items(&self) {
         let Some(sec) = self.imp().extension_sidebar_section.borrow().clone() else {
             return;
@@ -37271,71 +37522,463 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
         while let Some(child) = sec.first_child() {
             sec.remove(&child);
         }
-        let items =
-            crate::services::extension_service::ExtensionRegistry::default().enabled_sidebar_items();
+        let registry = crate::services::extension_service::ExtensionRegistry::default();
+        let items = registry.enabled_sidebar_items();
         if items.is_empty() {
             sec.set_visible(false);
             return;
         }
-        let header = gtk::Label::builder()
-            .label(gettext("Add-ons"))
-            .css_classes(["heading", "caption", "dim-label"])
-            .halign(gtk::Align::Start)
-            .margin_start(14)
-            .margin_top(10)
-            .margin_bottom(2)
-            .build();
-        sec.append(&header);
 
-        let list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(["navigation-sidebar"])
-            .build();
+        let rss_enabled = items.iter().any(|(ext, _)| ext.manifest.id == "meridian.rss-feeds");
+        let other_items: Vec<_> = items
+            .into_iter()
+            .filter(|(ext, _)| ext.manifest.id != "meridian.rss-feeds")
+            .collect();
 
-        for (ext, item) in items {
-            let row = gtk::ListBoxRow::new();
-            let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            hbox.set_margin_start(8);
-            hbox.set_margin_end(8);
-            hbox.set_margin_top(4);
-            hbox.set_margin_bottom(4);
-            let icon_name = if item.icon_name.trim().is_empty() {
-                "application-x-addon-symbolic"
-            } else {
-                item.icon_name.trim()
-            };
-            let icon = gtk::Image::from_icon_name(icon_name);
-            let lbl = gtk::Label::builder()
-                .label(&item.title)
-                .xalign(0.0)
+        // Native Feeds sidebar section matching `unified_folder_toolbar` & `create_unified_folder_row`
+        // pixel-for-pixel (same header height, chevron, `account-heading`, `mail-sidebar-row`, icon size, and badge).
+        if rss_enabled {
+            let store = crate::services::extension_service::RssFeedStore::default();
+            let subs = store.subscriptions();
+            let articles = store.articles();
+            let total_unread = articles.iter().filter(|a| !a.is_read).count();
+
+            let is_collapsed = self
+                .imp()
+                .dynamic_folder_expanded
+                .borrow()
+                .contains("rss:collapsed");
+
+            let arrow = gtk::Image::builder()
+                .icon_name(if is_collapsed {
+                    "pan-end-symbolic"
+                } else {
+                    "pan-down-symbolic"
+                })
+                .pixel_size(16)
+                .valign(gtk::Align::Center)
+                .build();
+
+            let feeds_header = gtk::Label::builder()
+                .label(gettext("Feeds"))
+                .css_classes(["account-heading"])
+                .halign(gtk::Align::Start)
                 .hexpand(true)
                 .ellipsize(pango::EllipsizeMode::End)
                 .build();
-            hbox.append(&icon);
-            hbox.append(&lbl);
-            row.set_child(Some(&hbox));
 
-            let click = gtk::GestureClick::builder().button(1).build();
-            let page_weak = self.downgrade();
-            let ext_id = ext.manifest.id.clone();
-            let cmd_id = item.command.clone();
-            click.connect_released(move |_, _, _, _| {
-                let Some(p) = page_weak.upgrade() else {
-                    return;
-                };
-                if ext_id == "meridian.rss-feeds" {
-                    p.present_rss_feeds_dialog();
-                } else if !cmd_id.is_empty()
-                    && let Some(win) = p.root().and_downcast::<crate::window::MeridianWindow>()
-                {
-                    win.execute_extension_command(&cmd_id);
+            let header_badge = gtk::Label::builder()
+                .label(&total_unread.to_string())
+                .xalign(1.0)
+                .valign(gtk::Align::Center)
+                .css_classes(["badge", "numeric"])
+                .visible(is_collapsed && total_unread > 0)
+                .build();
+
+            // Subtle 14px clickable icons (without gtk::Button padding) so header height matches native account rows.
+            let refresh_icon = gtk::Image::builder()
+                .icon_name("view-refresh-symbolic")
+                .pixel_size(14)
+                .valign(gtk::Align::Center)
+                .margin_end(4)
+                .css_classes(["dim-label"])
+                .tooltip_text(gettext("Refresh Feeds"))
+                .build();
+            refresh_icon.set_cursor_from_name(Some("pointer"));
+            {
+                let page_weak = self.downgrade();
+                let click_ref = gtk::GestureClick::builder().button(1).build();
+                click_ref.connect_released(move |gesture, _, _, _| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    let pw = page_weak.clone();
+                    let (tx, rx) = async_channel::bounded(1);
+                    std::thread::spawn(move || {
+                        let res = crate::services::extension_service::RssFeedStore::default()
+                            .refresh_all_blocking();
+                        let _ = tx.send_blocking(res);
+                    });
+                    glib::spawn_future_local(async move {
+                        let _ = rx.recv().await;
+                        if let Some(p) = pw.upgrade() {
+                            p.refresh_extension_sidebar_items();
+                            let active = p.active_folder_selection();
+                            if active.folder_id == "rss:all" {
+                                p.open_rss_feed_in_mail_list(None, &gettext("All Feeds"));
+                            } else if let Some(fid) = active.folder_id.strip_prefix("rss:") {
+                                let title = active
+                                    .folder_name
+                                    .clone()
+                                    .unwrap_or_else(|| gettext("Feeds"));
+                                p.open_rss_feed_in_mail_list(Some(fid), &title);
+                            }
+                        }
+                    });
+                });
+                refresh_icon.add_controller(click_ref);
+            }
+
+            let add_icon = gtk::Image::builder()
+                .icon_name("list-add-symbolic")
+                .pixel_size(14)
+                .valign(gtk::Align::Center)
+                .css_classes(["dim-label"])
+                .tooltip_text(gettext("Add or Manage Feeds…"))
+                .build();
+            add_icon.set_cursor_from_name(Some("pointer"));
+            {
+                let page_weak = self.downgrade();
+                let click_add = gtk::GestureClick::builder().button(1).build();
+                click_add.connect_released(move |gesture, _, _, _| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    if let Some(p) = page_weak.upgrade() {
+                        p.present_rss_feeds_dialog();
+                    }
+                });
+                add_icon.add_controller(click_add);
+            }
+
+            let feeds_header_row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(2)
+                .margin_start(1)
+                .margin_end(5)
+                .margin_top(1)
+                .margin_bottom(0)
+                .css_classes([
+                    "sidebar-account-row",
+                    "account-root-row",
+                    "mail-sidebar-row",
+                ])
+                .tooltip_text(if is_collapsed {
+                    gettext("Expand group")
+                } else {
+                    gettext("Collapse group")
+                })
+                .build();
+            feeds_header_row.set_cursor_from_name(Some("pointer"));
+            feeds_header_row.append(&arrow);
+            feeds_header_row.append(&feeds_header);
+            feeds_header_row.append(&header_badge);
+            feeds_header_row.append(&refresh_icon);
+            feeds_header_row.append(&add_icon);
+            sec.append(&feeds_header_row);
+
+            let rss_list = gtk::ListBox::builder()
+                .selection_mode(gtk::SelectionMode::Single)
+                .css_classes(["navigation-sidebar"])
+                .visible(!is_collapsed)
+                .build();
+
+            {
+                let page_weak = self.downgrade();
+                let arrow_c = arrow.clone();
+                let list_c = rss_list.clone();
+                let badge_c = header_badge.clone();
+                let hdr_c = feeds_header_row.clone();
+                let click_toggle = gtk::GestureClick::builder().button(1).build();
+                click_toggle.connect_released(move |_, _, _, _| {
+                    let Some(page) = page_weak.upgrade() else {
+                        return;
+                    };
+                    let mut set = page.imp().dynamic_folder_expanded.borrow_mut();
+                    let is_now_collapsed = if set.contains("rss:collapsed") {
+                        set.remove("rss:collapsed");
+                        false
+                    } else {
+                        set.insert("rss:collapsed".to_string());
+                        true
+                    };
+                    let set_clone = set.clone();
+                    drop(set);
+                    page.persist_dynamic_folder_expanded(&set_clone);
+
+                    arrow_c.set_icon_name(Some(if is_now_collapsed {
+                        "pan-end-symbolic"
+                    } else {
+                        "pan-down-symbolic"
+                    }));
+                    hdr_c.set_tooltip_text(Some(&if is_now_collapsed {
+                        gettext("Expand group")
+                    } else {
+                        gettext("Collapse group")
+                    }));
+                    list_c.set_visible(!is_now_collapsed);
+                    badge_c.set_visible(is_now_collapsed && total_unread > 0);
+                });
+                feeds_header_row.add_controller(click_toggle);
+            }
+
+            let active_folder_id = self.active_folder_selection().folder_id;
+
+            if subs.is_empty() {
+                let row = Self::create_unified_folder_row(
+                    "rss:add",
+                    "list-add-symbolic",
+                    &gettext("Add Feed…"),
+                    "",
+                );
+                let click = gtk::GestureClick::builder().button(1).build();
+                let pw = self.downgrade();
+                click.connect_released(move |_, _, _, _| {
+                    if let Some(p) = pw.upgrade() {
+                        p.present_rss_feeds_dialog();
+                    }
+                });
+                row.add_controller(click);
+                rss_list.append(&row);
+            } else {
+                let all_feeds_title = gettext("All Feeds");
+                let all_row = self.build_rss_sidebar_row(None, &all_feeds_title, total_unread);
+                rss_list.append(&all_row);
+                if active_folder_id == "rss:all" {
+                    rss_list.select_row(Some(&all_row));
                 }
-            });
-            row.add_controller(click);
-            list.append(&row);
+                for sub in subs {
+                    let unread = articles
+                        .iter()
+                        .filter(|a| a.feed_id == sub.id && !a.is_read)
+                        .count();
+                    let sub_row = self.build_rss_sidebar_row(Some(&sub.id), &sub.title, unread);
+                    rss_list.append(&sub_row);
+                    if active_folder_id == format!("rss:{}", sub.id) {
+                        rss_list.select_row(Some(&sub_row));
+                    }
+                }
+            }
+            sec.append(&rss_list);
         }
-        sec.append(&list);
+
+        if !other_items.is_empty() {
+            let arrow = gtk::Image::builder()
+                .icon_name("pan-down-symbolic")
+                .pixel_size(16)
+                .valign(gtk::Align::Center)
+                .build();
+            let header = gtk::Label::builder()
+                .label(gettext("Add-ons"))
+                .css_classes(["account-heading"])
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .ellipsize(pango::EllipsizeMode::End)
+                .build();
+            let header_row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(2)
+                .margin_start(1)
+                .margin_end(5)
+                .margin_top(1)
+                .margin_bottom(0)
+                .css_classes([
+                    "sidebar-account-row",
+                    "account-root-row",
+                    "mail-sidebar-row",
+                ])
+                .build();
+            header_row.append(&arrow);
+            header_row.append(&header);
+            sec.append(&header_row);
+
+            let list = gtk::ListBox::builder()
+                .selection_mode(gtk::SelectionMode::None)
+                .css_classes(["navigation-sidebar"])
+                .build();
+
+            for (_ext, item) in other_items {
+                let icon_name = if item.icon_name.trim().is_empty() {
+                    "application-x-addon-symbolic"
+                } else {
+                    item.icon_name.trim()
+                };
+                let row = Self::create_unified_folder_row(&item.id, icon_name, &item.title, "");
+                let click = gtk::GestureClick::builder().button(1).build();
+                let page_weak = self.downgrade();
+                let cmd_id = item.command.clone();
+                click.connect_released(move |_, _, _, _| {
+                    let Some(p) = page_weak.upgrade() else {
+                        return;
+                    };
+                    if !cmd_id.is_empty()
+                        && let Some(win) = p.root().and_downcast::<crate::window::MeridianWindow>()
+                    {
+                        win.execute_extension_command(&cmd_id);
+                    }
+                });
+                row.add_controller(click);
+                list.append(&row);
+            }
+            sec.append(&list);
+        }
+
         sec.set_visible(true);
+    }
+
+    fn build_rss_sidebar_row(
+        &self,
+        feed_id: Option<&str>,
+        title: &str,
+        unread_count: usize,
+    ) -> gtk::ListBoxRow {
+        let folder_id = match feed_id {
+            Some(fid) => format!("rss:{fid}"),
+            None => "rss:all".to_string(),
+        };
+        let badge_text = if unread_count > 0 {
+            unread_count.to_string()
+        } else {
+            String::new()
+        };
+        let row = Self::create_unified_folder_row(
+            &folder_id,
+            "application-rss+xml-symbolic",
+            title,
+            &badge_text,
+        );
+
+        let click = gtk::GestureClick::builder().button(1).build();
+        let page_weak = self.downgrade();
+        let fid_owned = feed_id.map(str::to_string);
+        let title_owned = title.to_string();
+        click.connect_released(move |_, _, _, _| {
+            if let Some(p) = page_weak.upgrade() {
+                p.open_rss_feed_in_mail_list(fid_owned.as_deref(), &title_owned);
+            }
+        });
+        row.add_controller(click);
+        row
+    }
+
+    /// Populate the standard Mail list and MailViewer preview directly with RSS/Atom articles.
+    pub(crate) fn open_rss_feed_in_mail_list(&self, feed_id: Option<&str>, feed_title: &str) {
+        let store = crate::services::extension_service::RssFeedStore::default();
+        let all_articles = store.articles();
+
+        let target_folder_id = match feed_id {
+            Some(fid) => format!("rss:{fid}"),
+            None => "rss:all".to_string(),
+        };
+        let target_sel = FolderSelection {
+            folder_id: target_folder_id,
+            source_uid: None,
+            folder_name: Some(feed_title.to_string()),
+        };
+
+        // Build MailMessageObject entries for all RSS articles so switching between feeds is instant
+        let mut rss_objects: Vec<MailMessageObject> = Vec::with_capacity(all_articles.len());
+        for art in &all_articles {
+            let msg_id = format!("rss::{}", art.id);
+            let folder_id = format!("rss:{}", art.feed_id);
+            let snippet = crate::services::html_sanitizer::html_to_plain_text(&art.summary_html);
+            let snippet_short: String = snippet.chars().take(180).collect();
+            let esc_title = art
+                .title
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let esc_feed = art
+                .feed_title
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let esc_date = art
+                .published
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let link_html = if art.link.starts_with("https://") || art.link.starts_with("http://") {
+                let esc_link = art.link.replace('"', "&quot;");
+                format!(
+                    "<p style=\"margin:8px 0 0 0;\"><a href=\"{esc_link}\" style=\"display:inline-block;padding:6px 12px;border-radius:8px;background:rgba(53,132,228,0.16);color:#3584e4;text-decoration:none;font-weight:600;\">{} ↗</a></p>",
+                    gettext("Open Original Article")
+                )
+            } else {
+                String::new()
+            };
+            let html_body = format!(
+                "<article style=\"max-width:740px;margin:0 auto;padding:8px 4px;\">\
+                 <header style=\"margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid rgba(128,128,128,0.25);\">\
+                 <div style=\"font-size:0.86em;opacity:0.75;margin-bottom:4px;\">{esc_feed} · {esc_date}</div>\
+                 <h2 style=\"margin:0;line-height:1.3;\">{esc_title}</h2>\
+                 {link_html}\
+                 </header>\
+                 <div class=\"rss-article-body\">{}</div>\
+                 </article>",
+                art.summary_html
+            );
+            let obj = MailMessageObject::new(
+                &msg_id,
+                &folder_id,
+                &art.feed_title,
+                &art.link,
+                "",
+                "",
+                "",
+                "",
+                &art.title,
+                Some(msg_id.clone()),
+                Vec::new(),
+                Vec::new(),
+                &msg_id,
+                1,
+                0,
+                &art.published,
+                html_body.len(),
+                &snippet_short,
+                &html_body,
+                !art.is_read,
+                false,
+                false,
+                MailFollowUpState::None,
+                MailFollowUpMetadata::default(),
+                vec!["RSS".to_string()],
+                None,
+                Vec::new(),
+            );
+            rss_objects.push(obj);
+        }
+
+        // Replace any previous RSS messages in both message_store and thread_root_store
+        let strip_rss_items = |list_store: &gio::ListStore| {
+            let mut idx = list_store.n_items();
+            while idx > 0 {
+                idx -= 1;
+                if let Some(m) = list_store.item(idx).and_downcast::<MailMessageObject>() {
+                    if m.id().starts_with("rss::") {
+                        list_store.remove(idx);
+                    }
+                }
+            }
+        };
+        if let Some(mstore) = self.imp().message_store.borrow().as_ref() {
+            strip_rss_items(mstore);
+            for obj in &rss_objects {
+                mstore.append(obj);
+            }
+        }
+        if let Some(rstore) = self.imp().thread_root_store.borrow().as_ref() {
+            strip_rss_items(rstore);
+            for obj in &rss_objects {
+                rstore.append(obj);
+            }
+        }
+
+        if let Some(cur) = self.imp().folder_selection.borrow().as_ref() {
+            cur.replace(target_sel);
+        }
+        self.invalidate_message_filters();
+        self.imp().mail_table_layout.replace(None);
+
+        // Select the first RSS article so it opens directly in MailViewer
+        if let Some(sel) = self.imp().thread_selection.borrow().as_ref() {
+            if sel.n_items() > 0 {
+                sel.select_item(0, true);
+            } else {
+                sel.unselect_all();
+            }
+        }
+        self.queue_mail_table_draw();
+        if let Some(win) = self.root().and_downcast::<crate::window::MeridianWindow>() {
+            win.sync_unread_counter_and_title();
+        }
     }
 
     pub(crate) fn present_rss_feeds_dialog(&self) {
@@ -37497,9 +38140,14 @@ fn show_attachment_chip_context_menu<W: IsA<gtk::Widget> + Clone + 'static>(
                         let _ = tx.send_blocking(res);
                     });
                     let pop_after = pop_add.clone();
+                    let pw_after = page_weak.clone();
                     glib::spawn_future_local(async move {
                         let _ = rx.recv().await;
                         pop_after();
+                        if let Some(p) = pw_after.upgrade() {
+                            p.refresh_extension_sidebar_items();
+                            p.open_rss_feed_in_mail_list(None, &gettext("All Feeds"));
+                        }
                     });
                 }
                 Err(err) => {
@@ -52604,16 +53252,16 @@ mod tests {
                 mail_list_profile_allows_column("messages", false, column),
                 matches!(
                     column,
-                    "avatar" | "status" | "attachment" | "flagged" | "follow-up" | "sender" | "subject" | "date"
+                    "avatar" | "status" | "attachment" | "flagged" | "follow-up" | "memo" | "sender" | "subject" | "date"
                 )
             );
             assert_eq!(
                 mail_list_profile_allows_column("wide", true, column),
-                matches!(column, "status" | "flagged" | "follow-up" | "messages")
+                matches!(column, "status" | "flagged" | "follow-up" | "memo" | "messages")
             );
             assert_eq!(
                 mail_list_profile_allows_column("cards", false, column),
-                matches!(column, "avatar" | "status" | "flagged" | "follow-up" | "labels" | "preview")
+                matches!(column, "avatar" | "status" | "flagged" | "follow-up" | "memo" | "labels" | "preview")
             );
         }
 
@@ -56697,6 +57345,109 @@ mod tests {
         assert_eq!(fallback_selection_index(5, None), Some(0));
         assert_eq!(fallback_selection_index(0, None), None);
         assert_eq!(fallback_selection_index(5, Some(2)), Some(2));
+    }
+
+    #[test]
+    fn selected_messages_expands_collapsed_threads_and_preserves_explicit_multi_select() {
+        let _gtk_lock = crate::window::GTK_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(_context) = crate::window::gtk_test_main_context() else {
+            return;
+        };
+
+        let page = MailPage::new();
+        page.imp().mail_threading.set(true);
+
+        let make_inbox_msg = |id: &str, subject: &str, pos: usize| {
+            MailMessageObject::new(
+                id,
+                "inbox",
+                "Alice",
+                "alice@example.com",
+                "bob@example.com",
+                "",
+                "",
+                "",
+                subject,
+                None,
+                vec![],
+                vec![],
+                "thread-conv",
+                2,
+                pos,
+                "10:00",
+                512,
+                "Snippet",
+                "Body",
+                false,
+                false,
+                false,
+                MailFollowUpState::None,
+                MailFollowUpMetadata::default(),
+                vec![],
+                None,
+                vec![],
+            )
+        };
+        let root_msg = make_inbox_msg("conv-1", "Project thread", 0);
+        let child_msg = make_inbox_msg("conv-2", "Re: Project thread", 1);
+
+        let child_store = gio::ListStore::new::<MailMessageObject>();
+        child_store.append(&child_msg);
+        if let Some(children_rc) = page.imp().thread_children.borrow().as_ref() {
+            children_rc
+                .borrow_mut()
+                .insert("thread-conv".to_string(), child_store);
+        }
+        if let Some(members_rc) = page.imp().thread_members.borrow().as_ref() {
+            members_rc
+                .borrow_mut()
+                .insert("thread-conv".to_string(), vec![root_msg.clone(), child_msg.clone()]);
+        }
+        if let Some(root_store) = page.imp().thread_root_store.borrow().as_ref() {
+            root_store.remove_all();
+            root_store.append(&root_msg);
+        }
+        if let Some(msg_store) = page.imp().message_store.borrow().as_ref() {
+            msg_store.remove_all();
+            msg_store.append(&root_msg);
+            msg_store.append(&child_msg);
+        }
+
+        let thread_sel = page
+            .imp()
+            .thread_selection
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("thread_selection");
+        assert_eq!(thread_sel.n_items(), 1);
+        thread_sel.select_item(0, true);
+
+        // Collapsed thread root selected -> both conversation messages are included.
+        let collapsed_ids: Vec<String> = page.selected_messages().into_iter().map(|m| m.id()).collect();
+        assert_eq!(collapsed_ids, vec!["conv-1".to_string(), "conv-2".to_string()]);
+
+        // Expand the conversation row -> selecting only root selects only root.
+        let root_row = thread_sel
+            .item(0)
+            .and_downcast::<gtk::TreeListRow>()
+            .expect("root TreeListRow");
+        root_row.set_expanded(true);
+        assert_eq!(thread_sel.n_items(), 2);
+        thread_sel.select_item(0, true);
+        let root_only_ids: Vec<String> = page.selected_messages().into_iter().map(|m| m.id()).collect();
+        assert_eq!(root_only_ids, vec!["conv-1".to_string()]);
+
+        // Select both expanded rows -> both messages are selected in thread_selection and synced to message_selection.
+        thread_sel.select_range(0, 2, true);
+        let both_ids: Vec<String> = page.selected_messages().into_iter().map(|m| m.id()).collect();
+        assert_eq!(both_ids, vec!["conv-1".to_string(), "conv-2".to_string()]);
+
+        page.imp().mail_threading.set(false);
+        let flat_ids: Vec<String> = page.selected_messages().into_iter().map(|m| m.id()).collect();
+        assert_eq!(flat_ids, vec!["conv-1".to_string(), "conv-2".to_string()]);
     }
 
     #[test]
