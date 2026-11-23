@@ -16965,3 +16965,189 @@ msgstr "Vom Text umfließen lassen"
 
 msgid "Full Width (100%)"
 msgstr "Volle Breite (100 %)"
+
+msgid "Installed"
+msgstr "Installiert"
+
+msgid "Discover"
+msgstr "Entdecken"
+
+msgid "Discover Extensions"
+msgstr "Erweiterungen entdecken"
+
+msgid "Install optional tabs, inline document viewers, regex rules, CSS themes, and language packs as editable local extensions."
+msgstr "Optionale Tabs, eingebettete Dokumentvorschauen, Regex-Regeln, CSS-Designs und Sprachpakete als bearbeitbare lokale Erweiterungen installieren."
+
+msgid "Open extension folder"
+msgstr "Erweiterungsordner öffnen"
+
+msgid "Browse the Discover tab to install extensions with one click."
+msgstr "Im Reiter „Entdecken“ lassen sich Erweiterungen mit einem Klick installieren."
+
+msgid "Permissions"
+msgstr "Berechtigungen"
+
+msgid "No matching extensions found"
+msgstr "Keine passenden Erweiterungen gefunden"
+
+msgid "All Feeds"
+msgstr "Alle Feeds"
+
+msgid "Feeds"
+msgstr "Feeds"
+
+msgid "Add or Manage Feeds…"
+msgstr "Feeds hinzufügen oder verwalten…"
+
+msgid "Add RSS or Atom Feed…"
+msgstr "RSS- oder Atom-Feed hinzufügen…"
+
+msgid "Open Original Article"
+msgstr "Originalartikel öffnen"
+
+msgid "Enter URL (https://…)"
+msgstr "URL eingeben (https://…)"
+
+msgid "Reload"
+msgstr "Neu laden"
+
+msgid "Your message mentions"
+msgstr "Ihre Nachricht erwähnt"
+
+msgid "No files are attached. Send anyway?"
+msgstr "Es wurden keine Dateien angehängt. Trotzdem senden?"
+
+msgid "Did You Forget to Attach a File?"
+msgstr "Haben Sie vergessen, eine Datei anzuhängen?"
+
+msgid "Only Bcc Recipients"
+msgstr "Nur Bcc-Empfänger"
+
+msgid "This message contains only blind carbon copy (Bcc) recipients. Send anyway?"
+msgstr "Diese Nachricht enthält nur Blindkopie-Empfänger (Bcc). Trotzdem senden?"
+
+msgid "Extension settings"
+msgstr "Erweiterungseinstellungen"
+
+msgid "Extension Settings"
+msgstr "Erweiterungseinstellungen"
+
+msgid "Extension setting saved"
+msgstr "Erweiterungseinstellung gespeichert"
+
+msgid "The sender display name does not match the actual email address."
+msgstr "Der Anzeigename des Absenders stimmt nicht mit der tatsächlichen E-Mail-Adresse überein."
+
+msgid "Possible sender spoofing — display name claims"
+msgstr "Mögliche Absenderfälschung — Anzeigename gibt vor"
+
+msgid "actual address"
+msgstr "tatsächliche Adresse"
+
+msgid "Browse Discover to add extensions"
+msgstr "Unter „Entdecken“ Erweiterungen hinzufügen"
+
+msgid "Built-in"
+msgstr "Integriert"
+
+msgid "Built-in Optional Feature"
+msgstr "Integrierte optionale Funktion"
+
+msgid "About"
+msgstr "Über"
+
+msgid "Open Extension Folder"
+msgstr "Erweiterungsordner öffnen"
+
+msgid "Remove Extension"
+msgstr "Erweiterung entfernen"
+
+msgid "Network access"
+msgstr "Netzwerkzugriff"
+
+msgid "Embedded web tab"
+msgstr "Eingebetteter Web-Tab"
+
+msgid "Appearance & UI customization"
+msgstr "Erscheinungsbild & Oberflächen-Anpassung"
+
+msgid "Read email content & attachments"
+msgstr "E-Mail-Inhalte & Anhänge lesen"
+
+msgid "Modify email display or drafts"
+msgstr "E-Mail-Darstellung oder Entwürfe anpassen"
+
+msgid "Run local extension scripts"
+msgstr "Lokale Erweiterungsskripte ausführen"
+
+msgid "Add Feed…"
+msgstr "Feed hinzufügen…"
+
+msgid "Build Your Own Extension"
+msgstr "Eigene Erweiterung erstellen"
+
+msgid "Documentation, AI guide, and starter template"
+msgstr "Dokumentation, KI-Leitfaden und Startvorlage"
+
+msgid "Copy Guide for AI Assistants"
+msgstr "Leitfaden für KI-Assistenten kopieren"
+
+msgid "Paste into any LLM to generate a Meridian extension"
+msgstr "In ein beliebiges LLM einfügen, um eine Meridian-Erweiterung zu erzeugen"
+
+msgid "Extension guide copied to clipboard"
+msgstr "Erweiterungsleitfaden in die Zwischenablage kopiert"
+
+msgid "Open Extension Guide"
+msgstr "Erweiterungsdokumentation öffnen"
+
+msgid "Could not open file"
+msgstr "Datei konnte nicht geöffnet werden"
+
+msgid "Generate a sample folder with extension.json and script"
+msgstr "Erstellt einen Beispielordner mit extension.json und Skript"
+
+msgid "Can connect to external servers or websites"
+msgstr "Kann Verbindungen zu externen Servern oder Webseiten herstellen"
+
+msgid "Adds a web workspace tab inside Meridian"
+msgstr "Fügt einen Web-Tab direkt in Meridian hinzu"
+
+msgid "Can customize app styling, email CSS, or UI labels"
+msgstr "Kann App-Design, E-Mail-CSS oder Oberflächentexte anpassen"
+
+msgid "Can inspect opened messages and attachments"
+msgstr "Kann geöffnete Nachrichten und Anhänge lesen"
+
+msgid "Can transform email HTML, list badges, or drafts"
+msgstr "Kann E-Mail-HTML, Listen-Badges oder Entwürfe anpassen"
+
+msgid "Executes local scripts inside the extension folder"
+msgstr "Führt lokale Skripte im Erweiterungsordner aus"
+
+msgid "Toggle Extension Sidebar"
+msgstr "Erweiterungs-Seitenleiste umschalten"
+
+msgid "Close Sidebar"
+msgstr "Seitenleiste schließen"
+
+msgid "Top-Level Tab"
+msgstr "Eigener Haupt-Tab"
+
+msgid "Global Right Sidebar"
+msgstr "Globale rechte Seitenleiste"
+
+msgid "Page-Specific Right Sidebar"
+msgstr "Seitenspezifische rechte Seitenleiste"
+
+msgid "Placement"
+msgstr "Position"
+
+msgid "Where this extension appears in Meridian"
+msgstr "Wo diese Erweiterung in Meridian angezeigt wird"
+
+msgid "Secret saved securely in system keyring"
+msgstr "Geheimnis sicher im System-Schlüsselbund gespeichert"
+
+msgid "Task created"
+msgstr "Aufgabe erstellt"
