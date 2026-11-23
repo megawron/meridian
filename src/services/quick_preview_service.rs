@@ -53,9 +53,14 @@ pub fn write_attachment_to_cache(filename: &str, content: &[u8]) -> Result<PathB
     Ok(path)
 }
 
-/// Opens a local file on disk using internal handlers for calendar/contact files or
-/// `gtk::FileLauncher` (XDG Desktop Portal `OpenURI.OpenFile` with file descriptor)
-/// and fallback to `gio::AppInfo::launch_default_for_uri`.
+fn should_fallback_after_file_launcher_error(err: &glib::Error) -> bool {
+    !err.matches(gtk::DialogError::Dismissed) && !err.matches(gtk::DialogError::Cancelled)
+}
+
+/// Opens a local file on disk using internal handlers for calendar/contact files,
+/// direct XDG default app launch (`gio::AppInfo::launch_default_for_uri`) on native
+/// host installs (avoiding the XDG portal "Open With" chooser modal on every click),
+/// or `gtk::FileLauncher` (XDG Desktop Portal `OpenURI.OpenFile`) inside Flatpak.
 pub fn open_file_with_system_viewer(
     path: &Path,
     parent_window: Option<&gtk::Window>,
@@ -78,11 +83,26 @@ pub fn open_file_with_system_viewer(
     }
 
     let file = gio::File::for_path(path);
+    let uri = file.uri();
+
+    // Outside Flatpak, launch the system default handler directly via GIO/XDG MIME
+    // so files like JPG/PDF open immediately in the default viewer (e.g. Loupe/Papers)
+    // instead of triggering the portal's "Open With" modal every time.
+    if !is_running_in_flatpak() {
+        if gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>).is_ok() {
+            return Ok(());
+        }
+    }
+
     if gtk::is_initialized() {
         let launcher = gtk::FileLauncher::new(Some(&file));
+        launcher.set_always_ask(false);
         let file_for_fallback = file.clone();
         launcher.launch(parent_window, gio::Cancellable::NONE, move |res| {
             if let Err(err) = res {
+                if !should_fallback_after_file_launcher_error(&err) {
+                    return;
+                }
                 tracing::warn!(%err, "FileLauncher failed; falling back to AppInfo::launch_default_for_uri");
                 let uri = file_for_fallback.uri();
                 if let Err(fallback_err) =
@@ -94,7 +114,6 @@ pub fn open_file_with_system_viewer(
         });
         Ok(())
     } else {
-        let uri = file.uri();
         gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
             .map_err(|e| format!("Could not open file: {e}"))
     }
@@ -360,6 +379,9 @@ pub fn open_folder_in_file_manager_with_parent(
         };
         launcher.open_containing_folder(parent_window, gio::Cancellable::NONE, move |res| {
             if let Err(err) = res {
+                if !should_fallback_after_file_launcher_error(&err) {
+                    return;
+                }
                 tracing::warn!(%err, "open_containing_folder failed; falling back to launch_default_for_uri");
                 let dir_uri = gio::File::for_path(&folder_path).uri();
                 if let Err(fallback_err) =
@@ -436,6 +458,17 @@ mod tests {
 
         let _ = std::fs::remove_file(&target);
         let _ = std::fs::remove_file(&target2);
+    }
+
+    #[test]
+    fn test_file_launcher_dismissed_does_not_trigger_fallback_open() {
+        let dismissed = glib::Error::new(gtk::DialogError::Dismissed, "User closed Open With");
+        let cancelled = glib::Error::new(gtk::DialogError::Cancelled, "Cancelled");
+        let failed = glib::Error::new(gtk::DialogError::Failed, "Portal unavailable");
+
+        assert!(!should_fallback_after_file_launcher_error(&dismissed));
+        assert!(!should_fallback_after_file_launcher_error(&cancelled));
+        assert!(should_fallback_after_file_launcher_error(&failed));
     }
 }
 
