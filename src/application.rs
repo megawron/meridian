@@ -195,6 +195,7 @@ mod imp {
             tracing::debug!("Application activate");
             crate::services::account_config_service::ensure_profiles_synced_to_eds();
             app.setup_reminder_scheduler();
+            request_flatpak_background_portal_once();
 
             // GTK4-rs/libadwaita is the single production frontend.  EDS and
             // Camel services remain independent of this widget layer.
@@ -1499,6 +1500,55 @@ impl Default for MeridianApplication {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Request XDG Background Portal permission (`org.freedesktop.portal.Background`) once per
+/// session when running inside Flatpak so background mail sync, scheduled send, and calendar
+/// reminders continue cleanly when the main window is hidden.
+fn request_flatpak_background_portal_once() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static REQUESTED: AtomicBool = AtomicBool::new(false);
+    if !std::path::Path::new("/.flatpak-info").exists() {
+        return;
+    }
+    if REQUESTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let wants_background = AppSettings::try_new()
+        .map(|s| s.reminder_notify_with_tray())
+        .unwrap_or(false);
+    if !wants_background {
+        return;
+    }
+    std::thread::spawn(move || {
+        let Ok(proxy) = gio::DBusProxy::for_bus_sync(
+            gio::BusType::Session,
+            gio::DBusProxyFlags::DO_NOT_LOAD_PROPERTIES | gio::DBusProxyFlags::DO_NOT_CONNECT_SIGNALS,
+            None,
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Background",
+            gio::Cancellable::NONE,
+        ) else {
+            return;
+        };
+        let mut options: std::collections::HashMap<&str, glib::Variant> =
+            std::collections::HashMap::new();
+        options.insert(
+            "reason",
+            "Synchronize mail and deliver scheduled reminders in the background".to_variant(),
+        );
+        options.insert("autostart", false.to_variant());
+        options.insert("dbus-activatable", false.to_variant());
+        let params = ("", options).to_variant();
+        let _ = proxy.call_sync(
+            "RequestBackground",
+            Some(&params),
+            gio::DBusCallFlags::NONE,
+            3000,
+            gio::Cancellable::NONE,
+        );
+    });
 }
 
 #[cfg(test)]
