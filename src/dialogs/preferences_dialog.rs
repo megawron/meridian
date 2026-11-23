@@ -4002,22 +4002,6 @@ impl PreferencesDialog {
         
         // group_backup configured in backup section
 
-
-        let row_plugins = adw::ActionRow::builder()
-            .title(gettext("Plugins…"))
-            .activatable(true)
-            .build();
-        
-        let dialog_weak_plugins = self.downgrade();
-        let s_plugins = settings.clone();
-        row_plugins.connect_activated(move |_| {
-            if let Some(d) = dialog_weak_plugins.upgrade() {
-                crate::dialogs::plugins_dialog::present_plugins_dialog(Some(&d), s_plugins.clone());
-            }
-        });
-        
-        // group_plugins configured in backup section
-
         let group_composer = adw::PreferencesGroup::builder()
             .title(gettext("Composer"))
             .build();
@@ -8194,7 +8178,6 @@ impl PreferencesDialog {
             .title(gettext("Diagnostics"))
             .build();
         row_debug_console.set_visible(false);
-        row_plugins.set_visible(false);
         group_backup_diag.add(&row_debug_console);
         group_backup_diag.add(&row_diagnostic);
 
@@ -8225,7 +8208,6 @@ impl PreferencesDialog {
             }
         });
         group_backup_diag.add(&row_open_dev_console);
-        group_backup_diag.add(&row_plugins);
 
         page_sub_backup_advanced.add(&group_backup_storage);
         page_sub_backup_advanced.add(&group_backup_diag);

@@ -1319,51 +1319,6 @@ impl AppSettings {
         self.set_mail_notification_sound_file(value);
     }
 
-    pub fn is_plugin_enabled(&self, id: &str) -> bool {
-        let config = crate::services::plugin_service::PluginConfig::load();
-        !config.disabled_plugins.iter().any(|d| d == id)
-    }
-
-    pub fn set_plugin_enabled(&self, id: &str, enabled: bool) {
-        let mut config = crate::services::plugin_service::PluginConfig::load();
-        if enabled {
-            config.disabled_plugins.retain(|d| d != id);
-        } else if !config.disabled_plugins.iter().any(|d| d == id) {
-            config.disabled_plugins.push(id.to_string());
-        }
-        config.save();
-    }
-
-    pub fn plugin_attachment_reminder_enabled(&self) -> bool {
-        crate::services::plugin_service::PluginConfig::load().attachment_reminder_enabled
-    }
-
-    pub fn set_plugin_attachment_reminder_enabled(&self, value: bool) {
-        let mut config = crate::services::plugin_service::PluginConfig::load();
-        config.attachment_reminder_enabled = value;
-        config.save();
-    }
-
-    pub fn plugin_attachment_reminder_keywords(&self) -> Vec<String> {
-        crate::services::plugin_service::PluginConfig::load().attachment_reminder_keywords
-    }
-
-    pub fn set_plugin_attachment_reminder_keywords(&self, values: &[String]) {
-        let mut config = crate::services::plugin_service::PluginConfig::load();
-        config.attachment_reminder_keywords = values.to_vec();
-        config.save();
-    }
-
-    pub fn plugin_external_editor_command(&self) -> String {
-        crate::services::plugin_service::PluginConfig::load().external_editor_command
-    }
-
-    pub fn set_plugin_external_editor_command(&self, value: &str) {
-        let mut config = crate::services::plugin_service::PluginConfig::load();
-        config.external_editor_command = value.to_string();
-        config.save();
-    }
-
     pub fn confirm_destructive_actions(&self) -> bool {
         self.settings.boolean("confirm-destructive-actions")
     }
