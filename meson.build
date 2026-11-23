@@ -6,7 +6,7 @@
 project(
   'meridian',
   'rust',
-  version: '0.5.0-beta.1',
+  version: '0.6.0-beta.1',
   license: 'GPL-3.0-or-later',
   meson_version: '>= 0.64.0',
 )

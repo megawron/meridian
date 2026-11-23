@@ -81,6 +81,20 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.6.0-beta.1" date="2026-11-23" type="development">
+      <description>
+        <p>Meridian 0.6.0-beta.1 improvements and fixes:</p>
+        <ul>
+          <li>Extension System v2 with custom tabs, global and page-specific right sidebars, GTK4/MailViewer CSS, regex transformers, inline document renderers, and community language packs</li>
+          <li>Redesigned Libadwaita Extensions browser with Discover catalog, drill-down detail pages, keyring-backed secret settings, permission-enforced JS bridge, and built-in LLM/developer guide</li>
+          <li>Native RSS and Atom Feeds integrated directly into the Mail sidebar, message list, and MailViewer preview</li>
+          <li>Automatic width fitting for fixed-width HTML emails, external link tracking parameter stripping, and sender spoofing alerts</li>
+          <li>Forgotten-attachment reminder in Composer, attachment drag-out to desktop/files, and direct system-default attachment opening</li>
+          <li>Reliable autostart calendar loading with partial-failure cache preservation and multi-select/collapsed thread move fixes</li>
+          <li>RFC 6764 CalDAV/CardDAV endpoint autodiscovery and Flatpak XDG Background Portal support</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.5.0-beta.1" date="2026-11-18" type="development">
       <description>
         <p>Meridian 0.5.0-beta.1 improvements and fixes:</p>

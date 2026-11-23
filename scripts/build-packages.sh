@@ -362,13 +362,14 @@ fi
 %{_datadir}/locale/*/LC_MESSAGES/meridian.mo
 
 %changelog
-* Wed Nov 18 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
-- Multi-language spell checking with system-wide dictionary installation
-- Image options in the native composer context menu, fixing a freeze on right-click
-- Unified templates with hover preview and direct draft editing
-- Snooze, scheduled send, read receipts and ManageSieve rules with vacation replies
-- Extensions manager and Command Palette
-- Task subtasks, iTIP propose-new-time, and correct all-day end dates and time zones
+* Mon Nov 23 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
+- Extension System v2: tabs, global/page right sidebars, CSS packs, regex rules, inline document renderers, language packs, keyring secrets, and JS host bridge
+- Redesigned Extensions dialog with Discover browser, detail pages, and LLM-ready EXTENSION_GUIDE.md
+- Native RSS & Atom feeds directly inside the Mail sidebar, list, and MailViewer
+- Auto-fit wide HTML emails, link tracking parameter stripping, and sender spoofing alerts
+- Forgotten-attachment reminder in Composer, attachment drag-out, and direct system viewer opening
+- Fixed autostart empty calendar loading and multi-select/collapsed conversation moves
+- Added CalDAV/CardDAV autodiscovery and Flatpak XDG Background Portal support
 EOF
 
     rpmbuild -bb --define "_topdir $work/rpmbuild" "$work/rpmbuild/SPECS/meridian.spec"
