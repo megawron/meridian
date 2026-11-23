@@ -49,6 +49,7 @@ mod imp {
         pub banner: adw::Banner,
         pub trash_banner: adw::Banner,
         pub junk_banner: adw::Banner,
+        pub spoofing_banner: adw::Banner,
         pub mdn_banner: adw::Banner,
         pub on_mdn_send: RefCell<Option<Box<dyn Fn() + 'static>>>,
         pub last_measured_content_height: Cell<Option<i32>>,
@@ -470,6 +471,16 @@ impl MailViewer {
         disable_banner_animation(&junk_banner, "dialog-warning-symbolic");
         box_container.append(&junk_banner);
 
+        // ── 3a. Sender Spoofing Warning Banner ─────────────────────────────
+        let spoofing_banner = adw::Banner::builder()
+            .title(gettext("The sender display name does not match the actual email address."))
+            .revealed(false)
+            .visible(false)
+            .css_classes(["mail-status-banner"])
+            .build();
+        disable_banner_animation(&spoofing_banner, "security-low-symbolic");
+        box_container.append(&spoofing_banner);
+
         // ── 3b. Read Receipt (MDN) Banner ──────────────────────────────────
         let mdn_banner = adw::Banner::builder()
             .title(gettext("The sender requested a read receipt."))
@@ -722,6 +733,7 @@ impl MailViewer {
             (*mut_imp).banner = banner;
             (*mut_imp).trash_banner = trash_banner;
             (*mut_imp).junk_banner = junk_banner;
+            (*mut_imp).spoofing_banner = spoofing_banner;
             (*mut_imp).mdn_banner = mdn_banner;
         }
 
@@ -899,6 +911,7 @@ impl MailViewer {
         self.set_current_sender(None);
         self.set_trash_banner_visible(false);
         self.set_junk_banner_visible(false);
+        self.set_spoofing_warning(None);
         self.set_mdn_banner(None);
         self.imp().last_measured_content_height.set(None);
         self.imp().adapted_card_height.set(None);
@@ -972,6 +985,7 @@ impl MailViewer {
         self.imp().displayed_plaintext.take();
         self.set_trash_banner_visible(false);
         self.set_junk_banner_visible(false);
+        self.set_spoofing_warning(None);
         self.set_mdn_banner(None);
         self.imp().last_measured_content_height.set(None);
         self.imp().adapted_card_height.set(None);
@@ -1777,6 +1791,21 @@ impl MailViewer {
         }
     }
 
+    pub fn set_spoofing_warning(&self, warning_title: Option<&str>) {
+        let visible = warning_title.is_some();
+        if let Some(title) = warning_title {
+            self.imp().spoofing_banner.set_title(title);
+        }
+        self.imp().spoofing_banner.set_visible(visible);
+        self.imp().spoofing_banner.set_revealed(visible);
+        if visible && !self.imp().suppressed_by_itip.get() {
+            self.set_visible(true);
+        }
+        if let Some(ch) = self.imp().last_measured_content_height.get() {
+            self.apply_adapted_height(ch);
+        }
+    }
+
     pub fn set_mdn_banner(&self, on_send: Option<Box<dyn Fn() + 'static>>) {
         let visible = on_send.is_some();
         self.imp().on_mdn_send.replace(on_send);
@@ -2457,6 +2486,8 @@ impl MailViewer {
                 let lastContinues = null;
                 let lastMeasuredHeight = 0;
                 let lastMeasuredWidth = 0;
+                let lastFitViewportWidth = 0;
+                let fitInProgress = false;
                 let lastClientH = 0;
 
                 let darkModeNormalized = false;
@@ -2608,23 +2639,50 @@ impl MailViewer {
                     } catch (e) {}
                 }
 
+                function fitWideEmailToViewport(force) {
+                    try {
+                        if (fitInProgress) return;
+                        const docEl = document.documentElement;
+                        const body = document.body;
+                        if (!docEl || !body) return;
+                        const availW = Math.floor(docEl.clientWidth || window.innerWidth || 0);
+                        if (availW < 180) return;
+                        if (!force && lastFitViewportWidth === availW) return;
+                        fitInProgress = true;
+                        lastFitViewportWidth = availW;
+                        body.style.removeProperty('zoom');
+                        docEl.style.removeProperty('overflow-x');
+                        const naturalW = Math.max(body.scrollWidth || 0, docEl.scrollWidth || 0);
+                        if (naturalW > availW + 6) {
+                            const scale = Math.max(0.5, Math.min(1.0, (availW - 2) / naturalW));
+                            body.style.setProperty('zoom', scale.toFixed(4), 'important');
+                            docEl.style.setProperty('overflow-x', scale <= 0.51 ? 'auto' : 'hidden', 'important');
+                        }
+                    } catch (e) {
+                    } finally {
+                        fitInProgress = false;
+                    }
+                }
+
                 function normalizeResponsiveImages() {
                     try {
                         normalizeDarkModeContrast();
                         const imgs = document.images;
-                        if (!imgs) return;
-                        for (let i = 0; i < imgs.length; i++) {
-                            const img = imgs[i];
-                            if (img.hasAttribute('data-meridian-placeholder')) continue;
-                            const src = img.getAttribute('src') || '';
-                            if (src.startsWith('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP')) continue;
-                            if (img.naturalWidth > 0 && img.naturalHeight > 0 && img.clientWidth > 0 && img.clientHeight > 0) {
-                                const expectedH = Math.round(img.clientWidth * img.naturalHeight / img.naturalWidth);
-                                if (Math.abs(img.clientHeight - expectedH) > 3) {
-                                    img.style.setProperty('height', 'auto', 'important');
+                        if (imgs) {
+                            for (let i = 0; i < imgs.length; i++) {
+                                const img = imgs[i];
+                                if (img.hasAttribute('data-meridian-placeholder')) continue;
+                                const src = img.getAttribute('src') || '';
+                                if (src.startsWith('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP')) continue;
+                                if (img.naturalWidth > 0 && img.naturalHeight > 0 && img.clientWidth > 0 && img.clientHeight > 0) {
+                                    const expectedH = Math.round(img.clientWidth * img.naturalHeight / img.naturalWidth);
+                                    if (Math.abs(img.clientHeight - expectedH) > 3) {
+                                        img.style.setProperty('height', 'auto', 'important');
+                                    }
                                 }
                             }
                         }
+                        fitWideEmailToViewport(false);
                     } catch (e) {}
                 }
 
@@ -2818,25 +2876,31 @@ impl MailViewer {
                     if (lastMeasuredWidth > 0 && window.innerWidth !== lastMeasuredWidth) {
                         resizeGuardUntil = performance.now() + 250;
                     }
+                    fitWideEmailToViewport(true);
                     updateMetrics(false);
                 }, { passive: true });
 
                 if (window.ResizeObserver && document.body) {
                     const ro = new ResizeObserver(() => {
-                        updateMetrics(false);
+                        if (!fitInProgress) {
+                            updateMetrics(false);
+                        }
                     });
                     ro.observe(document.body);
                 }
                 if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                    fitWideEmailToViewport(true);
                     updateMetrics(false);
-                    setTimeout(() => updateMetrics(false), 30);
+                    setTimeout(() => { fitWideEmailToViewport(true); updateMetrics(false); }, 30);
                 } else {
                     window.addEventListener('DOMContentLoaded', () => {
+                        fitWideEmailToViewport(true);
                         updateMetrics(false);
-                        setTimeout(() => updateMetrics(false), 30);
+                        setTimeout(() => { fitWideEmailToViewport(true); updateMetrics(false); }, 30);
                     });
                 }
                 window.addEventListener('load', () => {
+                    fitWideEmailToViewport(true);
                     measureBodyHeight();
                     updateMetrics(false);
                 });
@@ -2983,7 +3047,7 @@ impl MailViewer {
                                     )
                                         && let Some(viewer) = viewer_for_policy.upgrade()
                                     {
-                                        let uri_owned = uri.to_string();
+                                        let uri_owned = strip_tracking_query_params(&uri);
                                         let alert = adw::AlertDialog::new(
                                             Some(&gettext("Suspicious Link")),
                                             Some(&warning_detail),
@@ -3008,12 +3072,13 @@ impl MailViewer {
                                         alert.present(Some(&viewer));
                                         return true;
                                     }
+                                    let clean_uri = strip_tracking_query_params(&uri);
                                     tracing::info!(
-                                        uri = %redact_renderer_uri(&uri),
+                                        uri = %redact_renderer_uri(&clean_uri),
                                         "Opening external link in browser"
                                     );
                                     let _ = gio::AppInfo::launch_default_for_uri(
-                                        &uri,
+                                        &clean_uri,
                                         None::<&gio::AppLaunchContext>,
                                     );
                                     return true;
@@ -5076,6 +5141,19 @@ fn compose_sanitized_mail_document(
 ) -> String {
     let mail_font_family = safe_css_font_family(mail_font_family);
     let mail_font_size = safe_mail_font_size(mail_font_size);
+    let ext_registry = crate::services::extension_service::ExtensionRegistry::default();
+    let transformed_storage;
+    let sanitized = if render_html {
+        let transformed = ext_registry.apply_message_html_transformers(sanitized);
+        if transformed != sanitized {
+            transformed_storage = transformed;
+            transformed_storage.as_str()
+        } else {
+            sanitized
+        }
+    } else {
+        sanitized
+    };
     let lower_initial = sanitized.to_ascii_lowercase();
     let has_native_dark_mode = has_effective_native_dark_mode_from_lower(&lower_initial);
     let adapted_storage;
@@ -5137,9 +5215,13 @@ fn compose_sanitized_mail_document(
     } else {
         " img[src^=\"http://\"], img[src^=\"https://\"], img[src^=\"//\"], img[srcset], source[srcset], img[xlink\\:href^=\"http://\"], img[xlink\\:href^=\"https://\"], img[xlink\\:href^=\"//\"] { display: none !important; }"
     };
+    let extension_viewer_css = ext_registry
+        .enabled_mail_viewer_css()
+        .replace("</style", "/* blocked */")
+        .replace("</STYLE", "/* blocked */");
     let baseline_style_tag = format!("<style>{body_css}</style>");
     let override_style_tag = format!(
-        "<style>{USER_MAIL_OVERRIDE_CSS} {citation_css}{remote_images_css}{dark_inversion_css}</style>"
+        "<style>{USER_MAIL_OVERRIDE_CSS} {citation_css}{remote_images_css}{dark_inversion_css}{extension_viewer_css}</style>"
     );
     let style_tag = format!("{baseline_style_tag}{override_style_tag}");
 
@@ -7055,4 +7137,144 @@ pub(crate) fn detect_suspicious_link_warning(
         }
     }
     None
+}
+
+/// Remove known analytics and marketing tracking query parameters (`utm_*`, `fbclid`,
+/// `gclid`, `mc_eid`, etc.) before launching external HTTP(S) links in the browser.
+pub(crate) fn strip_tracking_query_params(url: &str) -> String {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return trimmed.to_string();
+    }
+    let Some(q_idx) = trimmed.find('?') else {
+        return trimmed.to_string();
+    };
+    let (base, rest) = trimmed.split_at(q_idx);
+    let (query, fragment) = match rest[1..].find('#') {
+        Some(hash_idx) => (&rest[1..1 + hash_idx], &rest[1 + hash_idx..]),
+        None => (&rest[1..], ""),
+    };
+    if query.is_empty() {
+        return trimmed.to_string();
+    }
+
+    const TRACKING_KEYS: &[&str] = &[
+        "fbclid",
+        "gclid",
+        "dclid",
+        "gbraid",
+        "wbraid",
+        "msclkid",
+        "yclid",
+        "mc_cid",
+        "mc_eid",
+        "igshid",
+        "mkt_tok",
+        "_hsenc",
+        "_hsmi",
+        "vero_id",
+        "oly_enc_id",
+        "oly_anon_id",
+        "rb_clickid",
+        "s_cid",
+        "ref_src",
+    ];
+
+    let mut kept = Vec::new();
+    let mut removed_any = false;
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let key = pair
+            .split('=')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let is_tracking = key.starts_with("utm_") || TRACKING_KEYS.contains(&key.as_str());
+        if is_tracking {
+            removed_any = true;
+        } else {
+            kept.push(pair);
+        }
+    }
+    if !removed_any {
+        return trimmed.to_string();
+    }
+    if kept.is_empty() {
+        format!("{base}{fragment}")
+    } else {
+        format!("{base}?{}{fragment}", kept.join("&"))
+    }
+}
+
+/// Detect high-confidence sender display-name spoofing where the display name embeds
+/// a different email address than the actual `From` address (e.g. `"ceo@company.com" <scam@evil.org>`).
+pub(crate) fn detect_sender_spoofing(sender_name: &str, sender_email: &str) -> Option<String> {
+    let actual_email = sender_email
+        .trim()
+        .trim_matches(['<', '>'])
+        .to_ascii_lowercase();
+    if !actual_email.contains('@') {
+        return None;
+    }
+    let name_clean = sender_name.trim().trim_matches('"').trim();
+    if name_clean.is_empty() || !name_clean.contains('@') {
+        return None;
+    }
+
+    for token in name_clean.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '(' | ')' | '"' | '\'' | ',' | ';')) {
+        let t = token.trim();
+        if let Some((local, domain)) = t.split_once('@') {
+            if !local.is_empty()
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+            {
+                let claimed = t.to_ascii_lowercase();
+                if claimed != actual_email {
+                    return Some(format!(
+                        "{}: {} ({}: {})",
+                        gettext("Possible sender spoofing — display name claims"),
+                        claimed,
+                        gettext("actual address"),
+                        actual_email,
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod privacy_protection_tests {
+    use super::*;
+
+    #[test]
+    fn tracking_params_are_stripped_while_functional_params_stay() {
+        assert_eq!(
+            strip_tracking_query_params(
+                "https://example.org/article?id=42&utm_source=newsletter&utm_medium=email&fbclid=abc#top"
+            ),
+            "https://example.org/article?id=42#top"
+        );
+        assert_eq!(
+            strip_tracking_query_params("https://example.org/page?utm_campaign=spring"),
+            "https://example.org/page"
+        );
+        assert_eq!(
+            strip_tracking_query_params("mailto:user@example.org?subject=Hi"),
+            "mailto:user@example.org?subject=Hi"
+        );
+    }
+
+    #[test]
+    fn sender_spoofing_flags_mismatched_embedded_email_only() {
+        assert!(detect_sender_spoofing("ceo@company.com", "attacker@evil.xyz").is_some());
+        assert!(detect_sender_spoofing("Alice Smith", "alice@company.com").is_none());
+        assert!(detect_sender_spoofing("alice@company.com", "alice@company.com").is_none());
+    }
 }
