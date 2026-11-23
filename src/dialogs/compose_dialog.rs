@@ -6299,13 +6299,14 @@ impl ComposeDialog {
             .map(|s| s.composer_prompt_only_bcc())
             .unwrap_or(true);
 
-        let subject_empty = self
+        let subject_text = self
             .imp()
             .entry_subject
             .borrow()
             .as_ref()
-            .map(|e| e.text().trim().is_empty())
-            .unwrap_or(false);
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+        let subject_empty = subject_text.trim().is_empty();
 
         let to_empty = self
             .imp()
@@ -6332,33 +6333,97 @@ impl ComposeDialog {
 
         let dialog_weak = self.downgrade();
         let on_confirmed = Rc::new(RefCell::new(Some(on_confirmed)));
-        let on_confirmed_bcc = Rc::clone(&on_confirmed);
+
+        // Step 3: Forgotten attachment check (runs only when 0 attachments are attached)
+        let dialog_weak_att = self.downgrade();
+        let on_confirmed_att = Rc::clone(&on_confirmed);
+        let subject_for_att = subject_text.clone();
+        let check_attachment_step = move || {
+            let Some(dialog) = dialog_weak_att.upgrade() else {
+                return;
+            };
+            let has_attachments = !dialog.imp().attachments.borrow().is_empty();
+            if has_attachments {
+                if let Some(action) = on_confirmed_att.borrow_mut().take() {
+                    action();
+                }
+                return;
+            }
+            let Some(editor) = dialog.imp().html_editor.borrow().as_ref().cloned() else {
+                if let Some(action) = on_confirmed_att.borrow_mut().take() {
+                    action();
+                }
+                return;
+            };
+            let dlg_w = dialog.downgrade();
+            let on_done = Rc::clone(&on_confirmed_att);
+            let subj = subject_for_att.clone();
+            editor.read_content(move |res| {
+                let Some(dlg) = dlg_w.upgrade() else {
+                    return;
+                };
+                let body_plain = match res {
+                    Ok(c) if c.plain_text => c.body,
+                    Ok(c) => crate::services::html_sanitizer::html_to_plain_text(&c.body),
+                    Err(_) => String::new(),
+                };
+                if let Some(cue) = detect_missing_attachment_cue(&subj, &body_plain, false) {
+                    let msg = format!(
+                        "{} \"{}\". {}",
+                        gettext("Your message mentions"),
+                        cue,
+                        gettext("No files are attached. Send anyway?"),
+                    );
+                    let alert = adw::AlertDialog::new(
+                        Some(&gettext("Did You Forget to Attach a File?")),
+                        Some(&msg),
+                    );
+                    alert.add_responses(&[
+                        ("cancel", &gettext("Cancel")),
+                        ("send", &gettext("Send Anyway")),
+                    ]);
+                    alert.set_default_response(Some("cancel"));
+                    alert.set_close_response("cancel");
+                    let on_send = Rc::clone(&on_done);
+                    alert.choose(&dlg, None::<&gio::Cancellable>, move |response| {
+                        if response == "send" {
+                            if let Some(action) = on_send.borrow_mut().take() {
+                                action();
+                            }
+                        }
+                    });
+                } else if let Some(action) = on_done.borrow_mut().take() {
+                    action();
+                }
+            });
+        };
+
+        let check_attachment_step = Rc::new(check_attachment_step);
+        let att_after_bcc = Rc::clone(&check_attachment_step);
         let check_bcc_step = move || {
             let Some(dialog) = dialog_weak.upgrade() else {
                 return;
             };
             if prompt_only_bcc && only_bcc {
                 let alert = adw::AlertDialog::new(
-                    Some("Only Bcc Recipients"),
-                    Some(
+                    Some(&gettext("Only Bcc Recipients")),
+                    Some(&gettext(
                         "This message contains only blind carbon copy (Bcc) recipients. Send anyway?",
-                    ),
+                    )),
                 );
                 alert.add_responses(&[
                     ("cancel", &gettext("Cancel")),
                     ("send", &gettext("Send")),
                 ]);
                 alert.set_response_appearance("send", adw::ResponseAppearance::Suggested);
-                let on_confirmed_action = Rc::clone(&on_confirmed_bcc);
+                let next_step = Rc::clone(&att_after_bcc);
                 alert.choose(&dialog, None::<&gio::Cancellable>, move |response| {
                     if response == "send" {
-                        if let Some(action) = on_confirmed_action.borrow_mut().take() {
-                            action();
-                        }
+                        next_step();
                     }
                 });
-            } else if let Some(action) = on_confirmed_bcc.borrow_mut().take() {
-                action();
+            } else {
+                att_after_bcc();
             }
         };
 
@@ -10836,9 +10901,94 @@ fn close_request_decision(
     }
 }
 
+/// Detect whether the newly authored email text (ignoring quoted reply lines `>`
+/// and signatures after `-- `) mentions an attachment while none is attached.
+fn detect_missing_attachment_cue(
+    subject: &str,
+    plain_body: &str,
+    has_attachments: bool,
+) -> Option<&'static str> {
+    if has_attachments {
+        return None;
+    }
+    let mut authored = String::with_capacity(subject.len() + plain_body.len() + 2);
+    authored.push_str(subject);
+    authored.push('\n');
+    for line in plain_body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed == "--" || line == "-- " {
+            break;
+        }
+        if trimmed.starts_with('>') {
+            continue;
+        }
+        authored.push_str(line);
+        authored.push('\n');
+    }
+    let lower = authored.to_lowercase();
+    const CUES: &[&str] = &[
+        "attachment",
+        "attached",
+        "attaching",
+        "enclosed",
+        "anhang",
+        "angehängt",
+        "anbei",
+        "beigefügt",
+        "beiliegend",
+        "anlage",
+    ];
+    for &cue in CUES {
+        let mut search_from = 0usize;
+        while let Some(rel) = lower[search_from..].find(cue) {
+            let start = search_from + rel;
+            let end = start + cue.len();
+            let prev_ok = lower[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric());
+            let next_ok = lower[end..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric());
+            if prev_ok && next_ok {
+                return Some(cue);
+            }
+            search_from = end;
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_attachment_cue_ignores_quotes_and_detects_real_mentions() {
+        assert_eq!(
+            detect_missing_attachment_cue("Rechnung", "Hallo,\nanbei sende ich das PDF.", false),
+            Some("anbei")
+        );
+        assert_eq!(
+            detect_missing_attachment_cue("Report", "Please see the attached file.", false),
+            Some("attached")
+        );
+        // When an attachment is present, never warn
+        assert_eq!(
+            detect_missing_attachment_cue("Report", "Please see the attached file.", true),
+            None
+        );
+        // Quoted reply lines and signature blocks must not trigger false positives
+        assert_eq!(
+            detect_missing_attachment_cue(
+                "Re: Report",
+                "Thanks, got it!\n\n> Please see the attached file.\n-- \nSent with attachment footer",
+                false
+            ),
+            None
+        );
+    }
 
     #[test]
     fn only_one_compose_operation_can_start_at_a_time() {
