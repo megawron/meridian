@@ -105,6 +105,15 @@ mod imp {
         pub(crate) account_reload_source: RefCell<Option<glib::SourceId>>,
         pub explicit_quit: Cell<bool>,
         pub extension_header_box: RefCell<Option<gtk::Box>>,
+        pub extension_css_provider: RefCell<Option<gtk::CssProvider>>,
+        pub extension_view_pages: RefCell<Vec<String>>,
+        pub extension_sidebar_pane: RefCell<Option<gtk::Box>>,
+        pub extension_sidebar_stack: RefCell<Option<gtk::Stack>>,
+        pub extension_sidebar_switcher: RefCell<Option<gtk::StackSwitcher>>,
+        pub extension_sidebar_title: RefCell<Option<gtk::Label>>,
+        pub extension_sidebar_toggle: RefCell<Option<gtk::ToggleButton>>,
+        pub extension_sidebar_pages: RefCell<Vec<String>>,
+        pub extension_sidebar_open: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -434,6 +443,559 @@ impl MeridianWindow {
             container.append(&btn);
         }
         container.set_visible(true);
+    }
+
+    /// Reload GTK4 user-level CSS contributed by enabled extensions (`stylesheets` targeting `app`).
+    pub fn refresh_extension_app_css(&self) {
+        let css = crate::services::extension_service::ExtensionRegistry::default().enabled_app_css();
+        let provider = {
+            let mut slot = self.imp().extension_css_provider.borrow_mut();
+            if let Some(existing) = slot.as_ref() {
+                existing.clone()
+            } else {
+                let created = gtk::CssProvider::new();
+                if let Some(display) = gtk::gdk::Display::default() {
+                    gtk::style_context_add_provider_for_display(
+                        &display,
+                        &created,
+                        gtk::STYLE_PROVIDER_PRIORITY_USER,
+                    );
+                }
+                *slot = Some(created.clone());
+                created
+            }
+        };
+        provider.load_from_string(&css);
+    }
+
+    /// Build a WebKitGTK container for an extension view (shared by Tabs and Right Sidebars),
+    /// with optional navigation bar, CSP enforcement, and permission-checked `window.meridian.*` bridge.
+    fn build_extension_webview_widget(
+        &self,
+        ext: &crate::services::extension_service::InstalledExtension,
+        view: &crate::services::extension_service::ExtensionViewContribution,
+    ) -> gtk::Box {
+        use webkit6::prelude::*;
+
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        root.set_hexpand(true);
+        root.set_vexpand(true);
+
+        let is_local_html = !view.html_file.trim().is_empty() && !view.html_file.contains("..");
+        let user_content = webkit6::UserContentManager::new();
+
+        let web_view = webkit6::WebView::builder()
+            .user_content_manager(&user_content)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        if let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
+            settings.set_enable_javascript(view.allow_javascript);
+            settings.set_enable_developer_extras(false);
+        }
+
+        // Only mount the `window.meridian.*` host bridge on local `html_file` extension apps,
+        // never on untrusted external websites.
+        if is_local_html && view.allow_javascript {
+            let bridge_js = r#"
+(function() {
+  if (window.meridian) return;
+  let nextId = 1;
+  const pending = new Map();
+  window.__meridianResolve = function(id, ok, payload) {
+    const entry = pending.get(id);
+    if (!entry) return;
+    pending.delete(id);
+    if (ok) entry.resolve(payload);
+    else entry.reject(new Error(typeof payload === 'string' ? payload : JSON.stringify(payload)));
+  };
+  function call(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = nextId++;
+      pending.set(id, { resolve, reject });
+      try {
+        window.webkit.messageHandlers.meridianBridge.postMessage(
+          JSON.stringify({ id, method, params: params || {} })
+        );
+      } catch (err) {
+        pending.delete(id);
+        reject(err);
+      }
+    });
+  }
+  window.meridian = {
+    call,
+    getContext: () => call('get_context', {}),
+    getSelectedMail: () => call('get_selected_mail', {}),
+    getSetting: (key) => call('get_setting', { key }),
+    showToast: (message) => call('show_toast', { message }),
+    openReplyDraft: (html) => call('open_reply_draft', { html }),
+    createTask: (title) => call('create_task', { title }),
+    openUrl: (url) => call('open_url', { url }),
+  };
+})();
+"#;
+            let script = webkit6::UserScript::new(
+                bridge_js,
+                webkit6::UserContentInjectedFrames::TopFrame,
+                webkit6::UserScriptInjectionTime::Start,
+                &[],
+                &[],
+            );
+            user_content.add_script(&script);
+            user_content.register_script_message_handler("meridianBridge", None);
+
+            let win_weak = self.downgrade();
+            let wv_weak = web_view.downgrade();
+            let ext_owned = ext.clone();
+            user_content.connect_local(
+                "script-message-received::meridianBridge",
+                false,
+                move |values| {
+                    let Some(win) = win_weak.upgrade() else {
+                        return None;
+                    };
+                    let Some(wv) = wv_weak.upgrade() else {
+                        return None;
+                    };
+                    let Some(raw) = values
+                        .get(1)
+                        .and_then(|v| v.get::<javascriptcore6::Value>().ok())
+                        .map(|v| v.to_str().to_string())
+                    else {
+                        return None;
+                    };
+                    let Ok(req) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                        return None;
+                    };
+                    let id = req.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("");
+                    let params = req
+                        .get("params")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({}));
+
+                    let result: Result<serde_json::Value, String> = match method {
+                        "get_context" => Ok(serde_json::json!({
+                            "active_view": win.active_view_name(),
+                            "extension_id": ext_owned.manifest.id,
+                            "permissions": ext_owned.manifest.permissions,
+                        })),
+                        "get_selected_mail" => {
+                            if !ext_owned.has_permission("read_mail") {
+                                Err("Permission denied: extension must declare 'read_mail'".to_string())
+                            } else if let Some(mp) = win.mail_page() {
+                                if let Some((subj, body, mid, sender, rcpts, _tid)) =
+                                    mp.selected_message_conversion_snapshot()
+                                {
+                                    Ok(serde_json::json!({
+                                        "id": mid,
+                                        "subject": subj,
+                                        "sender": sender,
+                                        "recipients": rcpts,
+                                        "body_text": body,
+                                    }))
+                                } else {
+                                    Ok(serde_json::Value::Null)
+                                }
+                            } else {
+                                Ok(serde_json::Value::Null)
+                            }
+                        }
+                        "get_setting" => {
+                            let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
+                            let val = crate::services::extension_service::ExtensionRegistry::default()
+                                .get_effective_setting_value(&ext_owned, key);
+                            Ok(match val {
+                                Some(s) => serde_json::Value::String(s),
+                                None => serde_json::Value::Null,
+                            })
+                        }
+                        "show_toast" => {
+                            if let Some(msg) = params.get("message").and_then(|v| v.as_str()) {
+                                win.add_toast(&adw::Toast::new(msg));
+                            }
+                            Ok(serde_json::json!(true))
+                        }
+                        "open_reply_draft" => {
+                            if !ext_owned.has_permission("modify_mail") {
+                                Err("Permission denied: extension must declare 'modify_mail'".to_string())
+                            } else {
+                                let html = params.get("html").and_then(|v| v.as_str()).unwrap_or("");
+                                let compose = if let Some(mp) = win.mail_page()
+                                    && let Some((subj, _body, _mid, sender, _rcpts, _tid)) =
+                                        mp.selected_message_conversion_snapshot()
+                                {
+                                    crate::dialogs::ComposeDialog::reply_to(&sender, &subj)
+                                } else {
+                                    crate::dialogs::ComposeDialog::new()
+                                };
+                                if !html.is_empty()
+                                    && let Some(ed) = compose.html_editor()
+                                {
+                                    ed.set_html(html);
+                                }
+                                compose.present_modal(&win);
+                                Ok(serde_json::json!(true))
+                            }
+                        }
+                        "create_task" => {
+                            if !ext_owned.has_permission("modify_mail") {
+                                Err("Permission denied: extension must declare 'modify_mail'".to_string())
+                            } else {
+                                let title = params
+                                    .get("title")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .trim();
+                                if title.is_empty() {
+                                    Err("Task title must not be empty".to_string())
+                                } else {
+                                    win.create_quick_task_from_text(title, "", None);
+                                    win.add_toast(&adw::Toast::new(&format!(
+                                        "{}: {}",
+                                        gettext("Task created"),
+                                        title
+                                    )));
+                                    Ok(serde_json::json!(true))
+                                }
+                            }
+                        }
+                        "open_url" => {
+                            if !ext_owned.has_permission("network") {
+                                Err("Permission denied: extension must declare 'network'".to_string())
+                            } else {
+                                let url = params.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                                if url.starts_with("https://") || url.starts_with("http://") {
+                                    let _ = gio::AppInfo::launch_default_for_uri(
+                                        url,
+                                        gio::AppLaunchContext::NONE,
+                                    );
+                                    Ok(serde_json::json!(true))
+                                } else {
+                                    Err("Only http:// and https:// URLs are allowed".to_string())
+                                }
+                            }
+                        }
+                        other => Err(format!("Unknown meridian bridge method '{other}'")),
+                    };
+
+                    let (ok_js, payload_json) = match result {
+                        Ok(val) => ("true", serde_json::to_string(&val).unwrap_or_else(|_| "null".to_string())),
+                        Err(err) => ("false", serde_json::to_string(&err).unwrap_or_else(|_| "\"error\"".to_string())),
+                    };
+                    let js = format!("window.__meridianResolve({id}, {ok_js}, {payload_json});");
+                    wv.evaluate_javascript(&js, None, None, gio::Cancellable::NONE, |_| {});
+                    None
+                },
+            );
+        }
+
+        if view.show_navigation_bar {
+            let nav_bar = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(6)
+                .margin_start(8)
+                .margin_end(8)
+                .margin_top(6)
+                .margin_bottom(6)
+                .build();
+
+            let back_btn = gtk::Button::builder()
+                .icon_name("go-previous-symbolic")
+                .tooltip_text(gettext("Back"))
+                .css_classes(["flat"])
+                .build();
+            let fwd_btn = gtk::Button::builder()
+                .icon_name("go-next-symbolic")
+                .tooltip_text(gettext("Forward"))
+                .css_classes(["flat"])
+                .build();
+            let reload_btn = gtk::Button::builder()
+                .icon_name("view-refresh-symbolic")
+                .tooltip_text(gettext("Reload"))
+                .css_classes(["flat"])
+                .build();
+            let url_entry = gtk::Entry::builder()
+                .hexpand(true)
+                .placeholder_text(gettext("Enter URL (https://…)"))
+                .build();
+            if !view.url.trim().is_empty() {
+                url_entry.set_text(view.url.trim());
+            }
+
+            let wv_back = web_view.clone();
+            back_btn.connect_clicked(move |_| wv_back.go_back());
+            let wv_fwd = web_view.clone();
+            fwd_btn.connect_clicked(move |_| wv_fwd.go_forward());
+            let wv_reload = web_view.clone();
+            reload_btn.connect_clicked(move |_| wv_reload.reload());
+
+            let wv_go = web_view.clone();
+            url_entry.connect_activate(move |entry| {
+                let raw = entry.text().trim().to_string();
+                if raw.is_empty() {
+                    return;
+                }
+                let target = if raw.starts_with("http://") || raw.starts_with("https://") {
+                    raw
+                } else if raw.contains('.') && !raw.contains(' ') {
+                    format!("https://{raw}")
+                } else {
+                    format!("https://duckduckgo.com/?q={}", raw.replace(' ', "+"))
+                };
+                wv_go.load_uri(&target);
+            });
+
+            let entry_weak = url_entry.downgrade();
+            web_view.connect_uri_notify(move |wv| {
+                if let (Some(entry), Some(uri)) = (entry_weak.upgrade(), wv.uri()) {
+                    if !entry.has_focus() {
+                        entry.set_text(uri.as_str());
+                    }
+                }
+            });
+
+            nav_bar.append(&back_btn);
+            nav_bar.append(&fwd_btn);
+            nav_bar.append(&reload_btn);
+            nav_bar.append(&url_entry);
+            root.append(&nav_bar);
+            root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        }
+
+        if is_local_html {
+            if let Some(root_dir) = &ext.root_dir {
+                let html_path = root_dir.join(view.html_file.trim());
+                if let Ok(mut html) = std::fs::read_to_string(&html_path) {
+                    // Enforce `network` permission strictly on local HTML extensions via CSP
+                    if !ext.has_permission("network") {
+                        let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self' 'unsafe-inline' data: blob:; connect-src 'none';\">";
+                        if let Some(pos) = html.to_ascii_lowercase().find("<head>") {
+                            html.insert_str(pos + 6, csp);
+                        } else {
+                            html.insert_str(0, csp);
+                        }
+                    }
+                    let base = format!("file://{}/", root_dir.display());
+                    web_view.load_html(&html, Some(&base));
+                }
+            }
+        } else if view.url.starts_with("https://") || view.url.starts_with("http://") {
+            web_view.load_uri(&view.url);
+        }
+
+        root.append(&web_view);
+        unsafe {
+            root.set_data("meridian-ext-last-url", view.url.clone());
+        }
+        root
+    }
+
+    fn current_extension_surface(&self) -> crate::services::extension_service::ExtensionSurface {
+        match self.active_view_name().as_str() {
+            "calendar" => crate::services::extension_service::ExtensionSurface::Calendar,
+            "contacts" => crate::services::extension_service::ExtensionSurface::Contacts,
+            "tasks" | "memos" => crate::services::extension_service::ExtensionSurface::Tasks,
+            _ => crate::services::extension_service::ExtensionSurface::Mail,
+        }
+    }
+
+    /// Update visibility of the right-hand Extension Sidebar Pane & its header toggle button
+    /// according to the active view (`GlobalSidebar` stays visible across pages; `PageSidebar`
+    /// only appears on its configured surfaces).
+    pub fn refresh_extension_sidebar_visibility(&self) {
+        use crate::services::extension_service::{ExtensionRegistry, ExtensionSurface, ExtensionViewPlacement};
+
+        let Some(pane) = self.imp().extension_sidebar_pane.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(stack) = self.imp().extension_sidebar_stack.borrow().as_ref().cloned() else {
+            return;
+        };
+        let current_surface = self.current_extension_surface();
+        let enabled_views = ExtensionRegistry::default().enabled_views();
+
+        let mut visible_pages: Vec<(String, String, i32)> = Vec::new();
+        for (ext, view) in enabled_views {
+            let applies = match view.placement {
+                ExtensionViewPlacement::Tab => false,
+                ExtensionViewPlacement::GlobalSidebar => true,
+                ExtensionViewPlacement::PageSidebar => {
+                    if view.surfaces.is_empty() {
+                        current_surface == ExtensionSurface::Mail
+                    } else {
+                        view.surfaces.contains(&current_surface)
+                    }
+                }
+            };
+            let page_name = format!("ext-side:{}:{}", ext.manifest.id, view.id);
+            if let Some(child) = stack.child_by_name(&page_name) {
+                child.set_visible(applies);
+            }
+            if applies {
+                let width = view.default_width.unwrap_or(360).clamp(260, 640);
+                visible_pages.push((page_name, view.title, width));
+            }
+        }
+
+        let has_any = !visible_pages.is_empty();
+        if let Some(toggle) = self.imp().extension_sidebar_toggle.borrow().as_ref() {
+            toggle.set_visible(has_any);
+            if !has_any && toggle.is_active() {
+                toggle.set_active(false);
+            }
+        }
+
+        if !has_any {
+            pane.set_visible(false);
+            return;
+        }
+
+        // Ensure visible child in stack is one of the applicable pages for the current surface
+        let current_child = stack.visible_child_name().map(|s| s.to_string());
+        if !current_child
+            .as_deref()
+            .is_some_and(|c| visible_pages.iter().any(|(n, _, _)| n == c))
+        {
+            if let Some((first_name, _, _)) = visible_pages.first() {
+                stack.set_visible_child_name(first_name);
+            }
+        }
+
+        let active_name = stack.visible_child_name().map(|s| s.to_string());
+        if let Some((_, title, width)) = visible_pages
+            .iter()
+            .find(|(n, _, _)| active_name.as_deref() == Some(n.as_str()))
+            .or_else(|| visible_pages.first())
+        {
+            pane.set_width_request(*width);
+            if let Some(lbl) = self.imp().extension_sidebar_title.borrow().as_ref() {
+                lbl.set_label(title);
+                lbl.set_visible(visible_pages.len() == 1);
+            }
+        }
+        if let Some(switcher) = self.imp().extension_sidebar_switcher.borrow().as_ref() {
+            switcher.set_visible(visible_pages.len() > 1);
+        }
+
+        pane.set_visible(self.imp().extension_sidebar_open.get());
+    }
+
+    /// Dynamically add or remove top-level `adw::ViewStack` tabs AND right-hand sidebar panels
+    /// contributed by enabled extensions (`contributes.views`).
+    pub fn sync_extension_view_tabs(&self) {
+        use crate::services::extension_service::{ExtensionRegistry, ExtensionViewPlacement};
+        use webkit6::prelude::*;
+
+        let Some(view_stack) = self.imp().view_stack.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        let enabled_views = ExtensionRegistry::default().enabled_views();
+
+        // 1. Sync top-level Tabs (`placement == Tab`)
+        let tab_views: Vec<_> = enabled_views
+            .iter()
+            .filter(|(_, v)| v.placement == ExtensionViewPlacement::Tab)
+            .cloned()
+            .collect();
+        let desired_tab_names: Vec<String> = tab_views
+            .iter()
+            .map(|(ext, view)| format!("ext-view:{}:{}", ext.manifest.id, view.id))
+            .collect();
+
+        let previously_added_tabs = self.imp().extension_view_pages.borrow().clone();
+        for old_name in &previously_added_tabs {
+            if !desired_tab_names.iter().any(|n| n == old_name) {
+                if view_stack.visible_child_name().as_deref() == Some(old_name.as_str()) {
+                    view_stack.set_visible_child_name("mail");
+                }
+                if let Some(child) = view_stack.child_by_name(old_name) {
+                    view_stack.remove(&child);
+                }
+            }
+        }
+
+        let mut active_tab_names = Vec::new();
+        for ((ext, view), page_name) in tab_views.into_iter().zip(desired_tab_names.into_iter()) {
+            if let Some(existing) = view_stack.child_by_name(&page_name) {
+                let page = view_stack.page(&existing);
+                if page.title().as_deref() != Some(view.title.as_str()) {
+                    page.set_title(Some(&view.title));
+                }
+                let last_url = unsafe {
+                    existing
+                        .data::<String>("meridian-ext-last-url")
+                        .map(|p| p.as_ref().clone())
+                        .unwrap_or_default()
+                };
+                if !view.url.trim().is_empty()
+                    && view.url != last_url
+                    && (view.url.starts_with("https://") || view.url.starts_with("http://"))
+                {
+                    let mut cur = existing.first_child();
+                    while let Some(child) = cur {
+                        if let Some(wv) = child.downcast_ref::<webkit6::WebView>() {
+                            wv.load_uri(&view.url);
+                            break;
+                        }
+                        cur = child.next_sibling();
+                    }
+                    unsafe {
+                        existing.set_data("meridian-ext-last-url", view.url.clone());
+                    }
+                }
+                active_tab_names.push(page_name);
+                continue;
+            }
+
+            let root = self.build_extension_webview_widget(&ext, &view);
+            let page = view_stack.add_titled(&root, Some(&page_name), &view.title);
+            page.set_icon_name(Some(&view.icon_name));
+            active_tab_names.push(page_name);
+        }
+        self.imp().extension_view_pages.replace(active_tab_names);
+
+        // 2. Sync right-hand Sidebar views (`GlobalSidebar` and `PageSidebar`)
+        if let Some(sidebar_stack) = self.imp().extension_sidebar_stack.borrow().as_ref().cloned() {
+            let side_views: Vec<_> = enabled_views
+                .into_iter()
+                .filter(|(_, v)| v.placement != ExtensionViewPlacement::Tab)
+                .collect();
+            let desired_side_names: Vec<String> = side_views
+                .iter()
+                .map(|(ext, view)| format!("ext-side:{}:{}", ext.manifest.id, view.id))
+                .collect();
+
+            let previously_added_side = self.imp().extension_sidebar_pages.borrow().clone();
+            for old_name in &previously_added_side {
+                if !desired_side_names.iter().any(|n| n == old_name) {
+                    if let Some(child) = sidebar_stack.child_by_name(old_name) {
+                        sidebar_stack.remove(&child);
+                    }
+                }
+            }
+
+            let mut active_side_names = Vec::new();
+            for ((ext, view), page_name) in side_views.into_iter().zip(desired_side_names.into_iter()) {
+                if let Some(existing) = sidebar_stack.child_by_name(&page_name) {
+                    let page = sidebar_stack.page(&existing);
+                    if page.title().as_deref() != Some(view.title.as_str()) {
+                        page.set_title(&view.title);
+                    }
+                    active_side_names.push(page_name);
+                    continue;
+                }
+                let root = self.build_extension_webview_widget(&ext, &view);
+                let page = sidebar_stack.add_titled(&root, Some(&page_name), &view.title);
+                page.set_icon_name(&view.icon_name);
+                active_side_names.push(page_name);
+            }
+            self.imp().extension_sidebar_pages.replace(active_side_names);
+        }
+
+        self.refresh_extension_sidebar_visibility();
     }
 
     pub fn execute_extension_command(&self, command_id: &str) {
@@ -4087,21 +4649,26 @@ impl MeridianWindow {
                     });
                 let effective_vis = if is_mobile { false } else { sidebar_vis };
                 match name {
-                    "calendar"
+                    "calendar" => {
                         if calendar_bin
                             .child()
                             .map(|child| child.is::<adw::StatusPage>())
-                            .unwrap_or(true) =>
-                    {
-                        let page = CalendarPage::new();
-                        page.set_screen_mode(is_mobile, is_tablet);
-                        if let Some(win) = window_weak.upgrade() {
-                            page.set_medium_mode(win.imp().is_medium.get());
-                            win.attach_calendar_year_view_options_button(&page);
+                            .unwrap_or(true)
+                        {
+                            let page = CalendarPage::new();
+                            page.set_screen_mode(is_mobile, is_tablet);
+                            if let Some(win) = window_weak.upgrade() {
+                                page.set_medium_mode(win.imp().is_medium.get());
+                                win.attach_calendar_year_view_options_button(&page);
+                            }
+                            page.set_sidebar_position(sidebar_pos);
+                            page.set_sidebar_visible(effective_vis);
+                            calendar_bin.set_child(Some(&page));
+                        } else if let Some(page) =
+                            calendar_bin.child().and_downcast::<CalendarPage>()
+                        {
+                            page.ensure_calendar_populated_on_show();
                         }
-                        page.set_sidebar_position(sidebar_pos);
-                        page.set_sidebar_visible(effective_vis);
-                        calendar_bin.set_child(Some(&page));
                     }
                     "contacts"
                         if contacts_bin
@@ -4640,12 +5207,36 @@ impl MeridianWindow {
         self.imp()
             .extension_header_box
             .replace(Some(extension_header_box));
+
+        let extension_sidebar_toggle = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-right-symbolic")
+            .tooltip_text(gettext("Toggle Extension Sidebar"))
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        {
+            let win_weak = self.downgrade();
+            extension_sidebar_toggle.connect_toggled(move |btn| {
+                if let Some(win) = win_weak.upgrade() {
+                    win.imp().extension_sidebar_open.set(btn.is_active());
+                    win.refresh_extension_sidebar_visibility();
+                }
+            });
+        }
+        header_bar.pack_end(&extension_sidebar_toggle);
+        self.imp()
+            .extension_sidebar_toggle
+            .replace(Some(extension_sidebar_toggle));
+
         self.refresh_extension_header_actions();
+        self.refresh_extension_app_css();
         {
             let win_weak = self.downgrade();
             view_stack.connect_visible_child_name_notify(move |_| {
                 if let Some(win) = win_weak.upgrade() {
                     win.refresh_extension_header_actions();
+                    win.refresh_extension_sidebar_visibility();
                 }
             });
         }
@@ -4654,10 +5245,14 @@ impl MeridianWindow {
             let rx = crate::services::extension_service::subscribe_extension_updates();
             glib::spawn_future_local(async move {
                 while rx.recv().await.is_ok() {
+                    crate::i18n::reload_extension_locales();
                     if let Some(win) = win_weak.upgrade() {
                         win.refresh_extension_header_actions();
+                        win.refresh_extension_app_css();
+                        win.sync_extension_view_tabs();
                         if let Some(mp) = win.mail_page() {
                             mp.refresh_extension_sidebar_items();
+                            mp.invalidate_mail_table_for_extensions();
                         }
                     } else {
                         break;
@@ -4980,12 +5575,105 @@ impl MeridianWindow {
         header_box.append(&sidebar_header);
         header_box.append(&header_bar);
 
+        // Right-hand collapsible Extension Sidebar Pane (hidden until a sidebar extension is active)
+        let extension_sidebar_stack = gtk::Stack::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .transition_type(gtk::StackTransitionType::None)
+            .build();
+        let extension_sidebar_switcher = gtk::StackSwitcher::builder()
+            .stack(&extension_sidebar_stack)
+            .hexpand(true)
+            .visible(false)
+            .build();
+        let extension_sidebar_title = gtk::Label::builder()
+            .css_classes(["heading"])
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        let ext_sidebar_close = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .tooltip_text(gettext("Close Sidebar"))
+            .css_classes(["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        {
+            let win_weak = self.downgrade();
+            ext_sidebar_close.connect_clicked(move |_| {
+                if let Some(win) = win_weak.upgrade() {
+                    win.imp().extension_sidebar_open.set(false);
+                    if let Some(t) = win.imp().extension_sidebar_toggle.borrow().as_ref() {
+                        t.set_active(false);
+                    }
+                    win.refresh_extension_sidebar_visibility();
+                }
+            });
+        }
+        let ext_sidebar_hdr = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(10)
+            .margin_end(6)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        ext_sidebar_hdr.append(&extension_sidebar_title);
+        ext_sidebar_hdr.append(&extension_sidebar_switcher);
+        ext_sidebar_hdr.append(&ext_sidebar_close);
+
+        let ext_sidebar_inner = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        ext_sidebar_inner.append(&ext_sidebar_hdr);
+        ext_sidebar_inner.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        ext_sidebar_inner.append(&extension_sidebar_stack);
+
+        let extension_sidebar_pane = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .width_request(360)
+            .hexpand(false)
+            .vexpand(true)
+            .visible(false)
+            .build();
+        extension_sidebar_pane.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        extension_sidebar_pane.append(&ext_sidebar_inner);
+
+        self.imp()
+            .extension_sidebar_pane
+            .replace(Some(extension_sidebar_pane.clone()));
+        self.imp()
+            .extension_sidebar_stack
+            .replace(Some(extension_sidebar_stack));
+        self.imp()
+            .extension_sidebar_switcher
+            .replace(Some(extension_sidebar_switcher));
+        self.imp()
+            .extension_sidebar_title
+            .replace(Some(extension_sidebar_title));
+
+        let main_content_split = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        main_content_split.append(&view_stack);
+        main_content_split.append(&extension_sidebar_pane);
+
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header_box);
         toolbar_view.add_bottom_bar(&view_switcher_bar);
         toolbar_view.add_bottom_bar(&debug_revealer);
         toolbar_view.add_bottom_bar(&statusbar_box);
-        toolbar_view.set_content(Some(&view_stack));
+        toolbar_view.set_content(Some(&main_content_split));
+
+        // Mount any enabled extension tabs and sidebar panels now that both containers exist.
+        self.sync_extension_view_tabs();
 
         let toast_overlay = &self.imp().toast_overlay;
         toast_overlay.set_hexpand(true);
