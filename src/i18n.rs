@@ -1,14 +1,51 @@
-//! Internationalization (i18n) module using GNU gettext.
+//! Internationalization (i18n) module using GNU gettext with optional
+//! community language-pack overrides contributed by Meridian extensions.
 //!
 //! Follows the GNOME standard conventions:
 //! - Canonical source language in code is English.
 //! - Translatable strings are wrapped with `gettext("...")` or the `_("...")` macro.
 //! - Translations are stored as `.po` files in `po/` and compiled to `.mo` catalogs.
+//! - Enabled extension `locales` JSON packs can override or add languages at runtime.
 
-pub use gettextrs::{gettext, ngettext, pgettext};
+pub use gettextrs::{ngettext, pgettext};
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::RwLock;
 
 pub const GETTEXT_PACKAGE: &str = "meridian";
+
+static EXTENSION_LOCALE_OVERRIDES: Lazy<RwLock<HashMap<String, String>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+/// Look up a localized UI string, consulting enabled extension language packs first
+/// and falling back to GNU gettext.
+pub fn gettext(msgid: impl AsRef<str>) -> String {
+    let key = msgid.as_ref();
+    if let Ok(guard) = EXTENSION_LOCALE_OVERRIDES.read() {
+        if let Some(translated) = guard.get(key) {
+            return translated.clone();
+        }
+    }
+    gettextrs::gettext(key)
+}
+
+/// Reload translation overrides from currently enabled extension language packs.
+pub fn reload_extension_locales() {
+    let active_locale = std::env::var("LANGUAGE")
+        .ok()
+        .and_then(|v| v.split(':').next().map(str::to_string))
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| std::env::var("LC_ALL").ok().filter(|v| !v.trim().is_empty()))
+        .or_else(|| std::env::var("LC_MESSAGES").ok().filter(|v| !v.trim().is_empty()))
+        .or_else(|| std::env::var("LANG").ok().filter(|v| !v.trim().is_empty()))
+        .unwrap_or_default();
+    let overrides = crate::services::extension_service::ExtensionRegistry::default()
+        .active_locale_overrides(&active_locale);
+    if let Ok(mut guard) = EXTENSION_LOCALE_OVERRIDES.write() {
+        *guard = overrides;
+    }
+}
 
 /// Initializes gettext localization with system locale and binds textdomain.
 pub fn init_i18n() {
@@ -53,6 +90,7 @@ pub fn init_i18n() {
     let _ = gettextrs::bindtextdomain(GETTEXT_PACKAGE, localedir_str.as_ref());
     let _ = gettextrs::bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
     let _ = gettextrs::textdomain(GETTEXT_PACKAGE);
+    reload_extension_locales();
 }
 
 /// Macro shortcut for `gettext`.

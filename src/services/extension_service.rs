@@ -4,12 +4,17 @@
 // for Meridian add-ons ("simple core, flexible via extensions").
 //
 // Extensions declare contribution points in `extension.json` (modeled after
-// VS Code's `contributes` manifest):
+// VS Code's `contributes` manifest and Obsidian's CSS/plugin model):
 // - `commands`: executable actions invoked from the Command Palette, buttons, or menus
 // - `header_actions`: symbolic icon buttons mounted in Mail, Composer, Calendar, Tasks, or Contacts
 // - `sidebar_items`: custom navigation items / panels in the Mail & Shell sidebar
 // - `message_actions`: contextual actions on selected messages
 // - `composer_hooks`: draft transformation or pre-send hooks
+// - `views`: custom top-level shell tabs (WebView URL, local HTML app, or full mini-browser)
+// - `stylesheets`: GTK4 shell CSS and MailViewer CSS customizations
+// - `message_transformers`: declarative regex rules for MailViewer HTML, subjects, and list badges
+// - `attachment_renderers`: inline document renderers (Markdown, CSV, JSON, E-Invoice XML, or scripts)
+// - `locales`: community JSON translation packs layered onto Meridian's i18n lookup
 //
 // Both bundled optional add-ons (disabled by default to keep the core UI minimal)
 // and user-installed folder extensions under `<app_data_dir>/extensions/<id>/`
@@ -17,8 +22,9 @@
 
 use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -34,6 +40,78 @@ const MAX_SCRIPT_OUTPUT_BYTES: usize = 512 * 1024;
 static EXTENSION_REVISION: AtomicU64 = AtomicU64::new(1);
 static EXTENSION_LISTENERS: Lazy<Mutex<Vec<async_channel::Sender<u64>>>> =
     Lazy::new(|| Mutex::new(Vec::new()));
+
+struct CompiledListTransformers {
+    revision: u64,
+    subject_rules: Vec<(Regex, String)>,
+    badge_rules: Vec<(Regex, String)>,
+}
+
+static LIST_TRANSFORMER_CACHE: Lazy<Mutex<Option<CompiledListTransformers>>> =
+    Lazy::new(|| Mutex::new(None));
+
+fn with_cached_list_transformers<R>(f: impl FnOnce(&CompiledListTransformers) -> R) -> R {
+    let rev = current_extension_revision();
+    let mut guard = LIST_TRANSFORMER_CACHE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let needs_rebuild = guard.as_ref().is_none_or(|c| c.revision != rev);
+    if needs_rebuild {
+        let reg = ExtensionRegistry::default();
+        let subject_rules = reg
+            .enabled_message_transformers(TransformerTarget::Subject)
+            .into_iter()
+            .filter_map(|(_, r)| Regex::new(&r.pattern).ok().map(|re| (re, r.replacement)))
+            .collect();
+        let badge_rules = reg
+            .enabled_message_transformers(TransformerTarget::ListBadge)
+            .into_iter()
+            .filter_map(|(_, r)| Regex::new(&r.pattern).ok().map(|re| (re, r.replacement)))
+            .collect();
+        *guard = Some(CompiledListTransformers {
+            revision: rev,
+            subject_rules,
+            badge_rules,
+        });
+    }
+    f(guard.as_ref().expect("cache populated"))
+}
+
+/// Fast O(1)-cached subject transformation for Mail list rendering.
+pub fn apply_cached_subject_transformers(subject: &str) -> String {
+    with_cached_list_transformers(|cache| {
+        if cache.subject_rules.is_empty() {
+            return subject.to_string();
+        }
+        let mut current = subject.to_string();
+        for (re, repl) in &cache.subject_rules {
+            current = re.replace_all(&current, repl.as_str()).into_owned();
+        }
+        current
+    })
+}
+
+/// Fast O(1)-cached badge label extraction for Mail list rendering.
+pub fn cached_message_list_badges(subject: &str, sender: &str) -> Vec<String> {
+    with_cached_list_transformers(|cache| {
+        if cache.badge_rules.is_empty() {
+            return Vec::new();
+        }
+        let haystack = format!("{subject}\n{sender}");
+        let mut badges = Vec::new();
+        for (re, repl) in &cache.badge_rules {
+            if let Some(caps) = re.captures(&haystack) {
+                let mut label = String::new();
+                caps.expand(repl, &mut label);
+                let label = label.trim().to_string();
+                if !label.is_empty() {
+                    badges.push(label);
+                }
+            }
+        }
+        badges
+    })
+}
 
 /// Target UI surface where an extension button can appear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -117,6 +195,136 @@ pub struct ExtensionComposerHook {
     pub command: String,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// Where an extension's WebView is mounted in Meridian's shell.
+/// Extension authors pick the sensible default; users can also override it in Extensions UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionViewPlacement {
+    /// Top-level workspace tab in the main ViewSwitcher.
+    #[default]
+    Tab,
+    /// Global right-hand collapsible sidebar shared across Mail, Calendar, Contacts, and Tasks.
+    GlobalSidebar,
+    /// Page-specific right-hand collapsible sidebar shown only on `surfaces` (defaults to Mail).
+    PageSidebar,
+}
+
+/// Custom workspace view contributed by an extension (top-level tab, global right sidebar,
+/// or page-specific right sidebar — loading an external URL or a local HTML/JS app).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionViewContribution {
+    pub id: String,
+    pub title: String,
+    #[serde(default = "default_extension_icon")]
+    pub icon_name: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub html_file: String,
+    #[serde(default)]
+    pub show_navigation_bar: bool,
+    #[serde(default = "default_true")]
+    pub allow_javascript: bool,
+    #[serde(default)]
+    pub placement: ExtensionViewPlacement,
+    /// Surfaces where `PageSidebar` appears (e.g. `["mail", "calendar"]`). Defaults to `["mail"]`.
+    #[serde(default)]
+    pub surfaces: Vec<ExtensionSurface>,
+    /// Optional preferred sidebar width in pixels (`260..=640`, default `360`).
+    #[serde(default)]
+    pub default_width: Option<i32>,
+}
+
+/// Target surface for a custom CSS stylesheet contributed by an extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StylesheetTarget {
+    #[default]
+    App,
+    MailViewer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionStylesheetContribution {
+    #[serde(default)]
+    pub target: StylesheetTarget,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub css: String,
+}
+
+/// Target surface for a declarative regex transformer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TransformerTarget {
+    #[default]
+    BodyHtml,
+    Subject,
+    ListBadge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionMessageTransformer {
+    pub id: String,
+    #[serde(default)]
+    pub target: TransformerTarget,
+    pub pattern: String,
+    pub replacement: String,
+    #[serde(default)]
+    pub badge_color: String,
+}
+
+/// Inline attachment document renderer contributed by an extension.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionAttachmentRenderer {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub mime_types: Vec<String>,
+    #[serde(default)]
+    pub exec: String,
+}
+
+/// Community language pack / UI translation override contributed by an extension.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionLocaleContribution {
+    /// Locale code such as `"ja"`, `"ko"`, `"zh_CN"`, `"de"`, or `"*"` for always-active overrides.
+    pub code: String,
+    pub name: String,
+    pub json_file: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionSettingKind {
+    #[default]
+    String,
+    Bool,
+    /// Stored encrypted in the OS keyring (`libsecret` / GNOME Keyring), never plaintext JSON.
+    Secret,
+}
+
+/// Declarative setting rendered automatically in the Extensions UI (`contributes.settings`).
+/// Referenced in URLs/patterns via `{{setting:<key>}}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionSettingSchema {
+    pub key: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub kind: ExtensionSettingKind,
+    #[serde(default)]
+    pub default_value: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtensionContributions {
     #[serde(default)]
@@ -129,6 +337,18 @@ pub struct ExtensionContributions {
     pub message_actions: Vec<ExtensionMessageActionContribution>,
     #[serde(default)]
     pub composer_hooks: Vec<ExtensionComposerHook>,
+    #[serde(default)]
+    pub views: Vec<ExtensionViewContribution>,
+    #[serde(default)]
+    pub stylesheets: Vec<ExtensionStylesheetContribution>,
+    #[serde(default)]
+    pub message_transformers: Vec<ExtensionMessageTransformer>,
+    #[serde(default)]
+    pub attachment_renderers: Vec<ExtensionAttachmentRenderer>,
+    #[serde(default)]
+    pub locales: Vec<ExtensionLocaleContribution>,
+    #[serde(default)]
+    pub settings: Vec<ExtensionSettingSchema>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +365,8 @@ pub struct ExtensionManifest {
     #[serde(default)]
     pub enabled_by_default: bool,
     #[serde(default)]
+    pub permissions: Vec<String>,
+    #[serde(default)]
     pub contributes: ExtensionContributions,
 }
 
@@ -158,6 +380,16 @@ pub struct InstalledExtension {
     pub root_dir: Option<PathBuf>,
     pub is_bundled: bool,
     pub enabled: bool,
+}
+
+impl InstalledExtension {
+    /// Returns true if this extension explicitly declared `permission` in `extension.json`.
+    pub fn has_permission(&self, permission: &str) -> bool {
+        self.manifest
+            .permissions
+            .iter()
+            .any(|p| p.trim().eq_ignore_ascii_case(permission))
+    }
 }
 
 /// JSON payload passed on stdin to external extension commands.
@@ -213,6 +445,10 @@ struct ExtensionStateFile {
     version: u32,
     #[serde(default)]
     enabled_overrides: BTreeMap<String, bool>,
+    #[serde(default)]
+    settings_values: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default)]
+    view_placement_overrides: BTreeMap<String, ExtensionViewPlacement>,
 }
 
 pub fn extensions_dir() -> PathBuf {
@@ -223,6 +459,186 @@ pub fn extensions_dir() -> PathBuf {
         return custom;
     }
     super::app_data_dir().join("extensions")
+}
+
+/// Concise, self-contained extension authoring guide optimized for both humans and LLMs.
+/// Automatically written to `<extensions_dir>/EXTENSION_GUIDE.md` so users can point any
+/// AI coding assistant at the folder and generate working Meridian extensions immediately.
+pub const EXTENSION_DEV_GUIDE_MD: &str = r##"# Meridian Extension Development Guide (LLM & Developer Reference)
+
+Create a folder inside Meridian's extensions directory containing an `extension.json` file:
+- Native Linux: `~/.local/share/meridian/extensions/<your-extension-id>/extension.json`
+- Flatpak: `~/.var/app/com.martingawron.Meridian/data/meridian/extensions/<your-extension-id>/extension.json`
+
+Meridian hot-reloads extensions when toggled, installed, or configured in **Menu → Extensions**.
+
+## 1. Minimal `extension.json` Schema
+
+```json
+{
+  "id": "author.my-extension",
+  "name": "My Extension",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "description": "Short explanation of what this extension does.",
+  "icon_name": "application-x-addon-symbolic",
+  "enabled_by_default": true,
+  "permissions": ["read_mail", "modify_mail"],
+  "contributes": {
+    "views": [],
+    "stylesheets": [],
+    "message_transformers": [],
+    "attachment_renderers": [],
+    "locales": [],
+    "settings": [],
+    "commands": [],
+    "header_actions": [],
+    "sidebar_items": [],
+    "message_actions": [],
+    "composer_hooks": []
+  }
+}
+```
+
+- `id`: ASCII letters, digits, `.`, `-`, `_` only (1–128 chars).
+- `permissions`: optional informational badges: `"network"`, `"webview"`, `"ui_css"`, `"read_mail"`, `"modify_mail"`, `"shell"`.
+- Verified Adwaita symbolic icons: `application-x-addon-symbolic`, `mail-message-new-symbolic`, `web-browser-symbolic`, `x-office-document-symbolic`, `edit-find-replace-symbolic`, `applications-graphics-symbolic`, `preferences-desktop-locale-symbolic`, `utilities-terminal-symbolic`, `application-rss+xml-symbolic`, `system-users-symbolic`, `starred-symbolic`, `folder-symbolic`.
+
+## 2. Contribution Points
+
+### A. Custom Workspace Views (`views` — Tabs, Global Sidebar, or Page-Specific Sidebar)
+Developers choose where the view mounts by default (`placement`), and users can override it on the extension's detail page:
+- `"tab"`: top-level tab alongside Mail, Calendar, Contacts, and Tasks (default).
+- `"global_sidebar"`: collapsible right-hand sidebar shared across all Meridian views (great for AI chat, notes, or timers).
+- `"page_sidebar"`: collapsible right-hand sidebar shown only on `surfaces` (e.g. `["mail"]` or `["mail", "calendar"]`).
+```json
+"views": [
+  {
+    "id": "ai-assistant",
+    "title": "AI Assistant",
+    "icon_name": "mail-message-new-symbolic",
+    "url": "",
+    "html_file": "index.html",
+    "placement": "global_sidebar",
+    "surfaces": ["mail"],
+    "default_width": 380,
+    "show_navigation_bar": false,
+    "allow_javascript": true
+  }
+]
+```
+- Use `url` (`https://...`) for web apps (Element/Matrix, Nextcloud, Zulip, etc.) or set `"show_navigation_bar": true` for a Back/Forward/Reload/URL bar.
+- Or leave `url` empty and set `html_file` to a relative file inside the extension folder (e.g. `"index.html"`).
+
+#### JavaScript Host Bridge (`window.meridian.*`) for Local `html_file` Views
+Local HTML/JS extension views automatically receive an async `window.meridian` API with **enforced permissions** (and strict `connect-src 'none'` CSP unless `"network"` is declared):
+- `await window.meridian.getContext()` → `{ active_view, extension_id, permissions }`
+- `await window.meridian.getSelectedMail()` *(requires `"read_mail"`)* → `{ id, subject, sender, recipients, body_text }` or `null`
+- `await window.meridian.getSetting(key)` → reads any declared `string`, `bool`, or keyring-backed `secret` setting (e.g. an LLM API key)
+- `await window.meridian.openReplyDraft(html)` *(requires `"modify_mail"`)* → opens Meridian's Composer prefilled as a reply
+- `await window.meridian.createTask(title)` *(requires `"modify_mail"`)* → creates a task in the default task list
+- `await window.meridian.openUrl(url)` *(requires `"network"`)* → opens an `https://` link in the system browser
+- `await window.meridian.showToast(message)` → displays a native toast notification
+
+### B. User-Editable Settings (`settings`, including Keyring Secrets)
+Meridian automatically renders a native libadwaita settings UI on the extension's detail page.
+Reference string values in `views[].url`, `views[].title`, `message_transformers[].pattern`, or `replacement` using `{{setting:<key>}}`.
+```json
+"settings": [
+  {
+    "key": "api_key",
+    "title": "API Key",
+    "description": "Stored encrypted in the OS keyring, never in plaintext JSON.",
+    "kind": "secret",
+    "default_value": ""
+  },
+  {
+    "key": "server_url",
+    "title": "Server URL",
+    "description": "Web app or API endpoint URL.",
+    "kind": "string",
+    "default_value": "https://app.element.io"
+  }
+]
+```
+`kind`: `"string"`, `"bool"` (`"true"` / `"false"`), or `"secret"` (masked `PasswordEntryRow` saved in GNOME Keyring / `libsecret`).
+
+### C. Custom CSS (`stylesheets`)
+Target either `"app"` (GTK4 shell CSS) or `"mail_viewer"` (injected into HTML email previews).
+```json
+"stylesheets": [
+  { "target": "app", "path": "app.css", "css": "" },
+  { "target": "mail_viewer", "path": "viewer.css", "css": "" }
+]
+```
+
+### D. Declarative Regex Rules (`message_transformers`)
+Apply Rust regex rules without writing any scripts!
+- `target`: `"body_html"` (safely transforms text nodes outside HTML tags), `"subject"` (rewrites displayed subject in Mail list), or `"list_badge"` (adds a badge chip in the Mail list from capture group `$1`).
+```json
+"message_transformers": [
+  {
+    "id": "ticket-highlight",
+    "target": "body_html",
+    "pattern": "\\b([A-Z]{2,8}-\\d{1,6})\\b",
+    "replacement": "<span style=\"padding:1px 6px;border-radius:6px;background:rgba(53,132,228,0.16);color:#3584e4;font-weight:600;\">$1</span>"
+  },
+  {
+    "id": "invoice-badge",
+    "target": "list_badge",
+    "pattern": "(?i)\\b(INVOICE|RECHNUNG)\\b",
+    "replacement": "$1",
+    "badge_color": "#e01b24"
+  }
+]
+```
+
+### E. Inline Attachment Document Renderers (`attachment_renderers`)
+Render attachments directly inside the MailViewer below the email body.
+```json
+"attachment_renderers": [
+  {
+    "id": "custom-yaml",
+    "title": "YAML Preview",
+    "extensions": ["yml", "yaml"],
+    "mime_types": ["application/yaml", "text/yaml"],
+    "exec": "render_yaml.py"
+  }
+]
+```
+- Built-in renderers: `"builtin:markdown"`, `"builtin:csv"`, `"builtin:json"`, `"builtin:e-invoice"`.
+- Custom script (`exec`): receives JSON `{"filename","mime_type","content_utf8"}` on `stdin` and prints sanitized HTML fragment on `stdout` (5s timeout).
+
+### F. Community Language Packs (`locales`)
+Override or add any UI language via a simple English-to-target JSON dictionary:
+```json
+"locales": [
+  { "code": "ja", "name": "Japanese", "json_file": "ja.json" }
+]
+```
+Use `"code": "*"` to apply overrides regardless of system locale.
+
+### G. Executable Commands, Header Buttons & Message Actions (`commands`, `header_actions`, `message_actions`, `sidebar_items`)
+- Scripts receive JSON `ExtensionExecutionContext` on `stdin`:
+  `{ "command_id", "active_surface", "message_id", "message_subject", "message_sender", "message_recipients", "message_date", "message_body_text", "composer_to", "composer_subject", "composer_body_html" }`
+- Scripts print JSON `ExtensionHostResponse` on `stdout`:
+  `{ "toast", "open_url", "insert_composer_html", "replace_composer_html", "replace_composer_subject", "add_label", "create_task_title", "output_title", "output_body" }`
+- `header_actions[].surface`: `"mail"`, `"composer"`, `"calendar"`, `"contacts"`, or `"tasks"`.
+- Remember to make scripts executable (`chmod +x script.py`) with a valid shebang (`#!/usr/bin/env python3`).
+"##;
+
+/// Ensure `<ext_dir>/EXTENSION_GUIDE.md` exists and is up to date so developers and LLMs
+/// always have complete, accurate documentation right inside the extensions directory.
+pub fn ensure_extension_guide_written(ext_dir: &Path) -> io::Result<PathBuf> {
+    fs::create_dir_all(ext_dir)?;
+    let guide_path = ext_dir.join("EXTENSION_GUIDE.md");
+    let needs_write = fs::read_to_string(&guide_path)
+        .map(|existing| existing != EXTENSION_DEV_GUIDE_MD)
+        .unwrap_or(true);
+    if needs_write {
+        fs::write(&guide_path, EXTENSION_DEV_GUIDE_MD)?;
+    }
+    Ok(guide_path)
 }
 
 fn state_file_path() -> PathBuf {
@@ -261,11 +677,12 @@ pub fn bundled_extensions() -> Vec<ExtensionManifest> {
         ExtensionManifest {
             id: "meridian.rss-feeds".to_string(),
             name: "RSS & Atom Feeds".to_string(),
-            version: "1.0.0".to_string(),
+            version: "1.1.0".to_string(),
             author: "Meridian Team".to_string(),
-            description: "Adds a clean Feeds section to the mail sidebar for reading RSS and Atom subscriptions alongside email.".to_string(),
+            description: "Adds a Feeds section to the mail sidebar and renders RSS and Atom articles directly in the mail list and message preview.".to_string(),
             icon_name: "application-rss+xml-symbolic".to_string(),
             enabled_by_default: false,
+            permissions: vec!["network".to_string()],
             contributes: ExtensionContributions {
                 commands: vec![ExtensionCommandContribution {
                     id: "rss.manage-feeds".to_string(),
@@ -275,7 +692,6 @@ pub fn bundled_extensions() -> Vec<ExtensionManifest> {
                     exec: "builtin:rss.manage".to_string(),
                     args: Vec::new(),
                 }],
-                header_actions: Vec::new(),
                 sidebar_items: vec![ExtensionSidebarContribution {
                     id: "meridian.sidebar.rss".to_string(),
                     title: "Feeds".to_string(),
@@ -283,8 +699,7 @@ pub fn bundled_extensions() -> Vec<ExtensionManifest> {
                     panel_kind: SidebarPanelKind::RssFeeds,
                     command: "rss.manage-feeds".to_string(),
                 }],
-                message_actions: Vec::new(),
-                composer_hooks: Vec::new(),
+                ..ExtensionContributions::default()
             },
         },
         ExtensionManifest {
@@ -295,6 +710,7 @@ pub fn bundled_extensions() -> Vec<ExtensionManifest> {
             description: "Personalizes outgoing messages per recipient using {{name}}, {{first_name}}, and {{email}} placeholders.".to_string(),
             icon_name: "system-users-symbolic".to_string(),
             enabled_by_default: false,
+            permissions: vec!["modify_mail".to_string()],
             contributes: ExtensionContributions {
                 commands: vec![ExtensionCommandContribution {
                     id: "mail-merge.insert-placeholder".to_string(),
@@ -311,9 +727,7 @@ pub fn bundled_extensions() -> Vec<ExtensionManifest> {
                     tooltip: "Insert Mail Merge placeholder ({{first_name}}, {{email}})".to_string(),
                     surface: ExtensionSurface::Composer,
                 }],
-                sidebar_items: Vec::new(),
-                message_actions: Vec::new(),
-                composer_hooks: Vec::new(),
+                ..ExtensionContributions::default()
             },
         },
         ExtensionManifest {
@@ -322,8 +736,9 @@ pub fn bundled_extensions() -> Vec<ExtensionManifest> {
             version: "1.0.0".to_string(),
             author: "Meridian Team".to_string(),
             description: "Adds a quick header button and activity log view to inspect background sync, filter, and transport operations.".to_string(),
-            icon_name: "utilities-system-monitor-symbolic".to_string(),
+            icon_name: "utilities-terminal-symbolic".to_string(),
             enabled_by_default: false,
+            permissions: Vec::new(),
             contributes: ExtensionContributions {
                 commands: vec![ExtensionCommandContribution {
                     id: "activity.open-monitor".to_string(),
@@ -336,13 +751,11 @@ pub fn bundled_extensions() -> Vec<ExtensionManifest> {
                 header_actions: vec![ExtensionHeaderActionContribution {
                     id: "activity.mail-header-btn".to_string(),
                     command: "activity.open-monitor".to_string(),
-                    icon_name: "utilities-system-monitor-symbolic".to_string(),
+                    icon_name: "utilities-terminal-symbolic".to_string(),
                     tooltip: "Activity Monitor".to_string(),
                     surface: ExtensionSurface::Mail,
                 }],
-                sidebar_items: Vec::new(),
-                message_actions: Vec::new(),
-                composer_hooks: Vec::new(),
+                ..ExtensionContributions::default()
             },
         },
     ]
@@ -380,11 +793,15 @@ impl ExtensionRegistry {
             return ExtensionStateFile {
                 version: STATE_VERSION,
                 enabled_overrides: BTreeMap::new(),
+                settings_values: BTreeMap::new(),
+                view_placement_overrides: BTreeMap::new(),
             };
         };
         serde_json::from_slice::<ExtensionStateFile>(&bytes).unwrap_or(ExtensionStateFile {
             version: STATE_VERSION,
             enabled_overrides: BTreeMap::new(),
+            settings_values: BTreeMap::new(),
+            view_placement_overrides: BTreeMap::new(),
         })
     }
 
@@ -395,11 +812,144 @@ impl ExtensionRegistry {
         let payload = serde_json::to_vec_pretty(&ExtensionStateFile {
             version: STATE_VERSION,
             enabled_overrides: state.enabled_overrides.clone(),
+            settings_values: state.settings_values.clone(),
+            view_placement_overrides: state.view_placement_overrides.clone(),
         })
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let tmp = self.state_path.with_extension("json.tmp");
         fs::write(&tmp, payload)?;
         fs::rename(tmp, &self.state_path)
+    }
+
+    pub fn extension_settings_values(&self, extension_id: &str) -> BTreeMap<String, String> {
+        self.load_state()
+            .settings_values
+            .remove(extension_id)
+            .unwrap_or_default()
+    }
+
+    pub fn set_extension_setting(
+        &self,
+        extension_id: &str,
+        key: &str,
+        value: &str,
+    ) -> io::Result<()> {
+        let mut state = self.load_state();
+        state
+            .settings_values
+            .entry(extension_id.to_string())
+            .or_default()
+            .insert(key.to_string(), value.to_string());
+        self.save_state(&state)?;
+        notify_extensions_changed();
+        Ok(())
+    }
+
+    fn secret_keyring_id(extension_id: &str, key: &str) -> String {
+        format!("ext-secret::{extension_id}::{key}")
+    }
+
+    /// Store an extension secret (e.g. an LLM API key) securely in the system keyring.
+    pub fn set_extension_secret(
+        &self,
+        extension_id: &str,
+        key: &str,
+        secret: &str,
+    ) -> Result<(), String> {
+        let keyring_id = Self::secret_keyring_id(extension_id, key);
+        if secret.trim().is_empty() {
+            let _ = super::credential_service::CredentialService::remove_password(&keyring_id);
+        } else {
+            super::credential_service::CredentialService::set_password(&keyring_id, secret)?;
+        }
+        notify_extensions_changed();
+        Ok(())
+    }
+
+    /// Retrieve an extension secret from the system keyring.
+    pub fn get_extension_secret(&self, extension_id: &str, key: &str) -> Option<String> {
+        let keyring_id = Self::secret_keyring_id(extension_id, key);
+        super::credential_service::CredentialService::fetch_password(&keyring_id)
+            .ok()
+            .flatten()
+            .filter(|v| !v.is_empty())
+    }
+
+    /// Resolve a setting value (handling `Secret`, `Bool`, and `String` with default fallback).
+    pub fn get_effective_setting_value(
+        &self,
+        ext: &InstalledExtension,
+        key: &str,
+    ) -> Option<String> {
+        let schema = ext
+            .manifest
+            .contributes
+            .settings
+            .iter()
+            .find(|s| s.key == key)?;
+        if schema.kind == ExtensionSettingKind::Secret {
+            return self.get_extension_secret(&ext.manifest.id, key);
+        }
+        let stored = self.extension_settings_values(&ext.manifest.id);
+        Some(
+            stored
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| schema.default_value.clone()),
+        )
+    }
+
+    pub fn effective_view_placement(
+        &self,
+        extension_id: &str,
+        view: &ExtensionViewContribution,
+    ) -> ExtensionViewPlacement {
+        let state = self.load_state();
+        let composite = format!("{extension_id}:{}", view.id);
+        state
+            .view_placement_overrides
+            .get(&composite)
+            .copied()
+            .unwrap_or(view.placement)
+    }
+
+    pub fn set_view_placement_override(
+        &self,
+        extension_id: &str,
+        view_id: &str,
+        placement: ExtensionViewPlacement,
+    ) -> io::Result<()> {
+        let mut state = self.load_state();
+        state
+            .view_placement_overrides
+            .insert(format!("{extension_id}:{view_id}"), placement);
+        self.save_state(&state)?;
+        notify_extensions_changed();
+        Ok(())
+    }
+
+    fn resolve_setting_placeholders(
+        &self,
+        ext: &InstalledExtension,
+        values: &BTreeMap<String, String>,
+        raw: &str,
+    ) -> String {
+        if !raw.contains("{{setting:") {
+            return raw.to_string();
+        }
+        let mut out = raw.to_string();
+        for schema in &ext.manifest.contributes.settings {
+            let token = format!("{{{{setting:{}}}}}", schema.key);
+            if out.contains(&token) {
+                let effective = values
+                    .get(&schema.key)
+                    .filter(|v| !v.is_empty())
+                    .map(String::as_str)
+                    .unwrap_or(schema.default_value.as_str());
+                out = out.replace(&token, effective);
+            }
+        }
+        out
     }
 
     pub fn list_all(&self) -> Vec<InstalledExtension> {
@@ -531,6 +1081,254 @@ impl ExtensionRegistry {
         actions
     }
 
+    pub fn enabled_views(&self) -> Vec<(InstalledExtension, ExtensionViewContribution)> {
+        let state = self.load_state();
+        let mut views = Vec::new();
+        for ext in self.list_enabled() {
+            let values = state
+                .settings_values
+                .get(&ext.manifest.id)
+                .cloned()
+                .unwrap_or_default();
+            for view in &ext.manifest.contributes.views {
+                let mut resolved = view.clone();
+                resolved.title = self.resolve_setting_placeholders(&ext, &values, &view.title);
+                resolved.url = self.resolve_setting_placeholders(&ext, &values, &view.url);
+                let composite = format!("{}:{}", ext.manifest.id, view.id);
+                if let Some(override_placement) = state.view_placement_overrides.get(&composite) {
+                    resolved.placement = *override_placement;
+                }
+                views.push((ext.clone(), resolved));
+            }
+        }
+        views
+    }
+
+    pub fn enabled_stylesheets(&self, target: StylesheetTarget) -> String {
+        let mut combined = String::new();
+        for ext in self.list_enabled() {
+            for sheet in &ext.manifest.contributes.stylesheets {
+                if sheet.target != target {
+                    continue;
+                }
+                if !sheet.path.trim().is_empty() && !sheet.path.contains("..") {
+                    if let Some(root) = &ext.root_dir {
+                        let candidate = root.join(sheet.path.trim());
+                        if let Ok(content) = fs::read_to_string(&candidate) {
+                            if !content.trim().is_empty() {
+                                combined.push_str(&format!(
+                                    "\n/* Extension: {} ({}) */\n{}\n",
+                                    ext.manifest.id, sheet.path, content
+                                ));
+                            }
+                        }
+                    }
+                }
+                if !sheet.css.trim().is_empty() {
+                    combined.push_str(&format!(
+                        "\n/* Extension inline: {} */\n{}\n",
+                        ext.manifest.id, sheet.css
+                    ));
+                }
+            }
+        }
+        combined
+    }
+
+    pub fn enabled_app_css(&self) -> String {
+        self.enabled_stylesheets(StylesheetTarget::App)
+    }
+
+    pub fn enabled_mail_viewer_css(&self) -> String {
+        self.enabled_stylesheets(StylesheetTarget::MailViewer)
+    }
+
+    pub fn enabled_message_transformers(
+        &self,
+        target: TransformerTarget,
+    ) -> Vec<(InstalledExtension, ExtensionMessageTransformer)> {
+        let state = self.load_state();
+        let mut rules = Vec::new();
+        for ext in self.list_enabled() {
+            let values = state
+                .settings_values
+                .get(&ext.manifest.id)
+                .cloned()
+                .unwrap_or_default();
+            for rule in &ext.manifest.contributes.message_transformers {
+                if rule.target == target {
+                    let mut resolved = rule.clone();
+                    resolved.pattern =
+                        self.resolve_setting_placeholders(&ext, &values, &rule.pattern);
+                    resolved.replacement =
+                        self.resolve_setting_placeholders(&ext, &values, &rule.replacement);
+                    rules.push((ext.clone(), resolved));
+                }
+            }
+        }
+        rules
+    }
+
+    /// Apply enabled regex transformations targeting the email HTML body.
+    /// Replacements only run on text nodes outside `<...>` HTML tags so markup stays intact.
+    pub fn apply_message_html_transformers(&self, html: &str) -> String {
+        let rules = self.enabled_message_transformers(TransformerTarget::BodyHtml);
+        if rules.is_empty() {
+            return html.to_string();
+        }
+        let mut current = html.to_string();
+        for (_, rule) in rules {
+            let Ok(re) = Regex::new(&rule.pattern) else {
+                continue;
+            };
+            current = replace_outside_html_tags(&current, &re, &rule.replacement);
+        }
+        current
+    }
+
+    /// Apply enabled regex transformations targeting message subjects.
+    pub fn apply_message_subject_transformers(&self, subject: &str) -> String {
+        let rules = self.enabled_message_transformers(TransformerTarget::Subject);
+        if rules.is_empty() {
+            return subject.to_string();
+        }
+        let mut current = subject.to_string();
+        for (_, rule) in rules {
+            let Ok(re) = Regex::new(&rule.pattern) else {
+                continue;
+            };
+            current = re.replace_all(&current, rule.replacement.as_str()).into_owned();
+        }
+        current
+    }
+
+    /// Collect custom list badges `(label, optional_hex_color)` matched by `ListBadge` regex rules.
+    pub fn message_list_badges(&self, subject: &str, sender: &str) -> Vec<(String, String)> {
+        let rules = self.enabled_message_transformers(TransformerTarget::ListBadge);
+        if rules.is_empty() {
+            return Vec::new();
+        }
+        let haystack = format!("{subject}\n{sender}");
+        let mut badges = Vec::new();
+        for (_, rule) in rules {
+            let Ok(re) = Regex::new(&rule.pattern) else {
+                continue;
+            };
+            if let Some(caps) = re.captures(&haystack) {
+                let mut label = String::new();
+                caps.expand(&rule.replacement, &mut label);
+                let label = label.trim().to_string();
+                if !label.is_empty() {
+                    badges.push((label, rule.badge_color.trim().to_string()));
+                }
+            }
+        }
+        badges
+    }
+
+    pub fn enabled_attachment_renderers(
+        &self,
+    ) -> Vec<(InstalledExtension, ExtensionAttachmentRenderer)> {
+        let mut renderers = Vec::new();
+        for ext in self.list_enabled() {
+            for r in &ext.manifest.contributes.attachment_renderers {
+                renderers.push((ext.clone(), r.clone()));
+            }
+        }
+        renderers
+    }
+
+    /// Render an attachment inline as sanitized HTML if an enabled extension provides a matching renderer.
+    /// Returns `(renderer_title, sanitized_html_fragment)`.
+    pub fn render_inline_attachment(
+        &self,
+        filename: &str,
+        mime_type: &str,
+        content: &[u8],
+    ) -> Option<(String, String)> {
+        let lower_ext = Path::new(filename)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        let lower_mime = mime_type.trim().to_ascii_lowercase();
+
+        for (ext, renderer) in self.enabled_attachment_renderers() {
+            let ext_match = !lower_ext.is_empty()
+                && renderer
+                    .extensions
+                    .iter()
+                    .any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&lower_ext));
+            let mime_match = !lower_mime.is_empty()
+                && renderer
+                    .mime_types
+                    .iter()
+                    .any(|m| m.trim().eq_ignore_ascii_case(&lower_mime));
+            if !ext_match && !mime_match {
+                continue;
+            }
+            if let Some(builtin) = renderer.exec.strip_prefix("builtin:") {
+                if let Some(html) = render_builtin_attachment_html(builtin, filename, content) {
+                    return Some((renderer.title, html));
+                }
+            } else if !renderer.exec.trim().is_empty() && !renderer.exec.contains("..") {
+                if let Some(root_dir) = &ext.root_dir {
+                    if let Some(html) =
+                        run_external_attachment_renderer(root_dir, &renderer.exec, filename, mime_type, content)
+                    {
+                        return Some((renderer.title, html));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Collect active translation key->value overrides from enabled language-pack extensions
+    /// matching `active_locale` (e.g. `"de_DE"`, `"ja"`, or wildcard `"*"`).
+    pub fn active_locale_overrides(&self, active_locale: &str) -> HashMap<String, String> {
+        let mut overrides = HashMap::new();
+        let active_norm = active_locale
+            .split('.')
+            .next()
+            .unwrap_or(active_locale)
+            .replace('-', "_")
+            .to_ascii_lowercase();
+        let active_short = active_norm.split('_').next().unwrap_or(&active_norm);
+
+        for ext in self.list_enabled() {
+            let Some(root_dir) = &ext.root_dir else {
+                continue;
+            };
+            for loc in &ext.manifest.contributes.locales {
+                if loc.json_file.trim().is_empty() || loc.json_file.contains("..") {
+                    continue;
+                }
+                let code_norm = loc.code.trim().replace('-', "_").to_ascii_lowercase();
+                let matches = code_norm == "*"
+                    || (!active_norm.is_empty()
+                        && (code_norm == active_norm
+                            || code_norm == active_short
+                            || code_norm.split('_').next().unwrap_or("") == active_short));
+                if !matches {
+                    continue;
+                }
+                let path = root_dir.join(loc.json_file.trim());
+                let Ok(raw) = fs::read_to_string(&path) else {
+                    continue;
+                };
+                if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&raw) {
+                    for (k, v) in map {
+                        if !k.starts_with('_') && !v.is_empty() {
+                            overrides.insert(k, v);
+                        }
+                    }
+                }
+            }
+        }
+        overrides
+    }
+
     /// Install a user extension from a source folder containing `extension.json`.
     pub fn install_from_directory(&self, source_dir: &Path) -> Result<ExtensionManifest, String> {
         let manifest_file = source_dir.join("extension.json");
@@ -599,6 +1397,7 @@ impl ExtensionRegistry {
             description: "Custom Meridian extension created from starter template.".to_string(),
             icon_name: "application-x-addon-symbolic".to_string(),
             enabled_by_default: true,
+            permissions: vec!["shell".to_string(), "read_mail".to_string()],
             contributes: ExtensionContributions {
                 commands: vec![ExtensionCommandContribution {
                     id: format!("{ext_id}.run"),
@@ -615,13 +1414,12 @@ impl ExtensionRegistry {
                     tooltip: clean_name.to_string(),
                     surface: ExtensionSurface::Mail,
                 }],
-                sidebar_items: Vec::new(),
                 message_actions: vec![ExtensionMessageActionContribution {
                     id: format!("{ext_id}.msg"),
                     command: format!("{ext_id}.run"),
                     label: clean_name.to_string(),
                 }],
-                composer_hooks: Vec::new(),
+                ..ExtensionContributions::default()
             },
         };
 
@@ -654,6 +1452,7 @@ print(json.dumps(response))
         let mut state = self.load_state();
         state.enabled_overrides.insert(ext_id, true);
         let _ = self.save_state(&state);
+        let _ = ensure_extension_guide_written(&self.ext_dir);
         notify_extensions_changed();
         Ok(folder)
     }
@@ -852,7 +1651,833 @@ fn validate_manifest(manifest: &ExtensionManifest) -> Result<(), String> {
             return Err("Command executable path must not traverse parent directories".to_string());
         }
     }
+    for view in &manifest.contributes.views {
+        if view.html_file.contains("..") {
+            return Err("View html_file path must not traverse parent directories".to_string());
+        }
+    }
+    for sheet in &manifest.contributes.stylesheets {
+        if sheet.path.contains("..") {
+            return Err("Stylesheet path must not traverse parent directories".to_string());
+        }
+    }
+    for renderer in &manifest.contributes.attachment_renderers {
+        if renderer.exec.contains("..") {
+            return Err("Attachment renderer path must not traverse parent directories".to_string());
+        }
+    }
+    for locale in &manifest.contributes.locales {
+        if locale.json_file.contains("..") {
+            return Err("Locale JSON path must not traverse parent directories".to_string());
+        }
+    }
     Ok(())
+}
+
+/// Apply a regex replacement only to text outside HTML tags (`<...>`), avoiding corruption of attributes/URLs.
+fn replace_outside_html_tags(html: &str, re: &Regex, replacement: &str) -> String {
+    let mut out = String::with_capacity(html.len() + 64);
+    let mut in_tag = false;
+    let mut in_style_or_script = false;
+    let mut seg_start = 0usize;
+    let bytes = html.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if !in_tag && b == b'<' {
+            let text_seg = &html[seg_start..i];
+            if in_style_or_script || text_seg.is_empty() {
+                out.push_str(text_seg);
+            } else {
+                out.push_str(&re.replace_all(text_seg, replacement));
+            }
+            seg_start = i;
+            in_tag = true;
+        } else if in_tag && b == b'>' {
+            let tag_seg = &html[seg_start..=i];
+            let lower = tag_seg.to_ascii_lowercase();
+            if lower.starts_with("<style") || lower.starts_with("<script") {
+                in_style_or_script = true;
+            } else if lower.starts_with("</style") || lower.starts_with("</script") {
+                in_style_or_script = false;
+            }
+            out.push_str(tag_seg);
+            seg_start = i + 1;
+            in_tag = false;
+        }
+        i += 1;
+    }
+    if seg_start < html.len() {
+        let tail = &html[seg_start..];
+        if in_tag || in_style_or_script {
+            out.push_str(tail);
+        } else {
+            out.push_str(&re.replace_all(tail, replacement));
+        }
+    }
+    out
+}
+
+fn escape_html_inline(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn render_builtin_attachment_html(builtin: &str, filename: &str, content: &[u8]) -> Option<String> {
+    const MAX_PREVIEW_BYTES: usize = 128 * 1024;
+    let slice = if content.len() > MAX_PREVIEW_BYTES {
+        &content[..MAX_PREVIEW_BYTES]
+    } else {
+        content
+    };
+    let text = String::from_utf8_lossy(slice);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    match builtin {
+        "markdown" => {
+            let mut html = String::from("<div class=\"meridian-ext-md\">");
+            let mut in_code = false;
+            let mut in_list = false;
+            for line in trimmed.lines() {
+                if line.trim_start().starts_with("```") {
+                    if in_list {
+                        html.push_str("</ul>");
+                        in_list = false;
+                    }
+                    if in_code {
+                        html.push_str("</code></pre>");
+                        in_code = false;
+                    } else {
+                        html.push_str("<pre><code>");
+                        in_code = true;
+                    }
+                    continue;
+                }
+                if in_code {
+                    html.push_str(&escape_html_inline(line));
+                    html.push('\n');
+                    continue;
+                }
+                let t = line.trim();
+                if t.is_empty() {
+                    if in_list {
+                        html.push_str("</ul>");
+                        in_list = false;
+                    }
+                    continue;
+                }
+                if let Some(rest) = t.strip_prefix("### ") {
+                    if in_list {
+                        html.push_str("</ul>");
+                        in_list = false;
+                    }
+                    html.push_str(&format!("<h4>{}</h4>", format_inline_md(rest)));
+                } else if let Some(rest) = t.strip_prefix("## ") {
+                    if in_list {
+                        html.push_str("</ul>");
+                        in_list = false;
+                    }
+                    html.push_str(&format!("<h3>{}</h3>", format_inline_md(rest)));
+                } else if let Some(rest) = t.strip_prefix("# ") {
+                    if in_list {
+                        html.push_str("</ul>");
+                        in_list = false;
+                    }
+                    html.push_str(&format!("<h2>{}</h2>", format_inline_md(rest)));
+                } else if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+                    if !in_list {
+                        html.push_str("<ul>");
+                        in_list = true;
+                    }
+                    html.push_str(&format!("<li>{}</li>", format_inline_md(rest)));
+                } else if t == "---" || t == "***" {
+                    if in_list {
+                        html.push_str("</ul>");
+                        in_list = false;
+                    }
+                    html.push_str("<hr/>");
+                } else {
+                    if in_list {
+                        html.push_str("</ul>");
+                        in_list = false;
+                    }
+                    html.push_str(&format!("<p>{}</p>", format_inline_md(t)));
+                }
+            }
+            if in_list {
+                html.push_str("</ul>");
+            }
+            if in_code {
+                html.push_str("</code></pre>");
+            }
+            html.push_str("</div>");
+            Some(super::html_sanitizer::sanitize_html(&html))
+        }
+        "csv" => {
+            let first_line = trimmed.lines().next().unwrap_or("");
+            let sep = if first_line.matches(';').count() > first_line.matches(',').count() {
+                ';'
+            } else {
+                ','
+            };
+            let mut html = String::from(
+                "<div class=\"meridian-ext-csv\" style=\"overflow-x:auto;\"><table style=\"border-collapse:collapse;width:100%;font-size:0.9em;\">",
+            );
+            for (row_idx, line) in trimmed.lines().take(200).enumerate() {
+                let cells = split_csv_row(line, sep);
+                html.push_str("<tr>");
+                let cell_tag = if row_idx == 0 { "th" } else { "td" };
+                let style = if row_idx == 0 {
+                    "border:1px solid rgba(128,128,128,0.28);padding:4px 8px;text-align:left;background:rgba(128,128,128,0.12);"
+                } else {
+                    "border:1px solid rgba(128,128,128,0.22);padding:4px 8px;"
+                };
+                for cell in cells.into_iter().take(30) {
+                    html.push_str(&format!(
+                        "<{cell_tag} style=\"{style}\">{}</{cell_tag}>",
+                        escape_html_inline(cell.trim())
+                    ));
+                }
+                html.push_str("</tr>");
+            }
+            html.push_str("</table></div>");
+            Some(super::html_sanitizer::sanitize_html(&html))
+        }
+        "json" => {
+            let pretty = serde_json::from_str::<serde_json::Value>(trimmed)
+                .ok()
+                .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                .unwrap_or_else(|| trimmed.to_string());
+            let html = format!(
+                "<pre class=\"meridian-ext-json\" style=\"overflow-x:auto;padding:10px;border-radius:8px;background:rgba(128,128,128,0.1);font-size:0.86em;\"><code>{}</code></pre>",
+                escape_html_inline(&pretty)
+            );
+            Some(super::html_sanitizer::sanitize_html(&html))
+        }
+        "e-invoice" => {
+            let is_invoice = trimmed.contains("CrossIndustryInvoice")
+                || trimmed.contains("Invoice")
+                || trimmed.contains("PayableAmount")
+                || trimmed.contains("GrandTotalAmount");
+            if is_invoice {
+                let inv_id = extract_xml_tag_any_ns(trimmed, "ID").unwrap_or_else(|| filename.to_string());
+                let currency = extract_xml_tag_any_ns(trimmed, "InvoiceCurrencyCode")
+                    .or_else(|| extract_xml_tag_any_ns(trimmed, "DocumentCurrencyCode"))
+                    .unwrap_or_default();
+                let total = extract_xml_tag_any_ns(trimmed, "GrandTotalAmount")
+                    .or_else(|| extract_xml_tag_any_ns(trimmed, "DuePayableAmount"))
+                    .or_else(|| extract_xml_tag_any_ns(trimmed, "PayableAmount"))
+                    .unwrap_or_else(|| "—".to_string());
+                let issue_date = extract_xml_tag_any_ns(trimmed, "IssueDate")
+                    .or_else(|| extract_xml_tag_any_ns(trimmed, "DateTimeString"))
+                    .unwrap_or_else(|| "—".to_string());
+                let iban = extract_xml_tag_any_ns(trimmed, "IBANID").unwrap_or_default();
+                let mut rows = format!(
+                    "<tr><th style=\"text-align:left;padding:3px 10px 3px 0;opacity:0.75;\">Invoice</th><td>{}</td></tr>\
+                     <tr><th style=\"text-align:left;padding:3px 10px 3px 0;opacity:0.75;\">Date</th><td>{}</td></tr>\
+                     <tr><th style=\"text-align:left;padding:3px 10px 3px 0;opacity:0.75;\">Total</th><td><strong>{} {}</strong></td></tr>",
+                    escape_html_inline(&inv_id),
+                    escape_html_inline(&issue_date),
+                    escape_html_inline(&total),
+                    escape_html_inline(&currency),
+                );
+                if !iban.is_empty() {
+                    rows.push_str(&format!(
+                        "<tr><th style=\"text-align:left;padding:3px 10px 3px 0;opacity:0.75;\">IBAN</th><td><code>{}</code></td></tr>",
+                        escape_html_inline(&iban)
+                    ));
+                }
+                let html = format!(
+                    "<div class=\"meridian-ext-invoice\"><table style=\"font-size:0.92em;\">{rows}</table></div>"
+                );
+                Some(super::html_sanitizer::sanitize_html(&html))
+            } else {
+                let html = format!(
+                    "<pre class=\"meridian-ext-xml\" style=\"overflow-x:auto;padding:10px;border-radius:8px;background:rgba(128,128,128,0.1);font-size:0.84em;\"><code>{}</code></pre>",
+                    escape_html_inline(trimmed)
+                );
+                Some(super::html_sanitizer::sanitize_html(&html))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn format_inline_md(raw: &str) -> String {
+    let mut s = escape_html_inline(raw);
+    if let Ok(re_code) = Regex::new(r"`([^`]+)`") {
+        s = re_code.replace_all(&s, "<code>$1</code>").into_owned();
+    }
+    if let Ok(re_bold) = Regex::new(r"\*\*([^*]+)\*\*") {
+        s = re_bold.replace_all(&s, "<strong>$1</strong>").into_owned();
+    }
+    if let Ok(re_italic) = Regex::new(r"\*([^*]+)\*") {
+        s = re_italic.replace_all(&s, "<em>$1</em>").into_owned();
+    }
+    s
+}
+
+fn split_csv_row(line: &str, sep: char) -> Vec<String> {
+    let mut cols = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for ch in line.chars() {
+        if ch == '"' {
+            in_quotes = !in_quotes;
+        } else if ch == sep && !in_quotes {
+            cols.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(ch);
+        }
+    }
+    cols.push(cur);
+    cols
+}
+
+fn extract_xml_tag_any_ns(xml: &str, local_name: &str) -> Option<String> {
+    let pat = format!(r"<(?:[A-Za-z0-9_-]+:)?{local_name}\b[^>]*>([^<]+)</(?:[A-Za-z0-9_-]+:)?{local_name}>");
+    let re = Regex::new(&pat).ok()?;
+    let caps = re.captures(xml)?;
+    let val = caps.get(1)?.as_str().trim();
+    if val.is_empty() {
+        None
+    } else {
+        Some(decode_xml_entities(val))
+    }
+}
+
+fn run_external_attachment_renderer(
+    root_dir: &Path,
+    exec: &str,
+    filename: &str,
+    mime_type: &str,
+    content: &[u8],
+) -> Option<String> {
+    let candidate = root_dir.join(exec);
+    let program = if candidate.exists() {
+        candidate
+    } else {
+        PathBuf::from(exec)
+    };
+    let payload = serde_json::json!({
+        "filename": filename,
+        "mime_type": mime_type,
+        "content_utf8": String::from_utf8_lossy(&content[..content.len().min(128 * 1024)]),
+    });
+    let input_bytes = serde_json::to_vec(&payload).ok()?;
+    let mut child = Command::new(&program)
+        .current_dir(root_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&input_bytes);
+    }
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let mut out = Vec::new();
+                if let Some(mut stdout) = child.stdout.take() {
+                    let _ = (&mut stdout).take(256 * 1024).read_to_end(&mut out);
+                }
+                let html = String::from_utf8_lossy(&out).trim().to_string();
+                if html.is_empty() {
+                    return None;
+                }
+                return Some(super::html_sanitizer::sanitize_html(&html));
+            }
+            Ok(None) => {
+                if start.elapsed() >= Duration::from_secs(5) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+// ─── Extension Discover Catalog (VS Code / Obsidian-style Extension Browser) ───
+
+pub const DEFAULT_EXTENSION_REGISTRY_URL: &str =
+    "https://meridian.martingawron.com/extensions/registry.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogExtensionEntry {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    #[serde(default)]
+    pub category: String,
+    pub description: String,
+    #[serde(default = "default_extension_icon")]
+    pub icon_name: String,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub homepage_url: String,
+    #[serde(default)]
+    pub download_url: Option<String>,
+    #[serde(default)]
+    pub builtin_template: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RemoteCatalogPayload {
+    #[serde(default)]
+    extensions: Vec<CatalogExtensionEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtensionCatalogService {
+    registry_url: String,
+}
+
+impl Default for ExtensionCatalogService {
+    fn default() -> Self {
+        let url = std::env::var("MERIDIAN_EXTENSION_REGISTRY_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_EXTENSION_REGISTRY_URL.to_string());
+        Self { registry_url: url }
+    }
+}
+
+impl ExtensionCatalogService {
+    pub fn curated_entries() -> Vec<CatalogExtensionEntry> {
+        vec![
+            CatalogExtensionEntry {
+                id: "community.matrix-element-tab".to_string(),
+                name: "Matrix / Element Chat Tab".to_string(),
+                version: "1.0.0".to_string(),
+                author: "Meridian Community".to_string(),
+                category: "Communication".to_string(),
+                description: "Adds a Matrix / Element Web workspace tab next to Mail, Calendar, Contacts, and Tasks. Edit extension.json to point to your own homeserver or Cinny/Mattermost instance.".to_string(),
+                icon_name: "mail-message-new-symbolic".to_string(),
+                permissions: vec!["webview".to_string(), "network".to_string()],
+                homepage_url: "https://app.element.io".to_string(),
+                download_url: None,
+                builtin_template: Some("matrix-element-tab".to_string()),
+            },
+            CatalogExtensionEntry {
+                id: "community.web-browser-tab".to_string(),
+                name: "Integrated Web Browser Tab".to_string(),
+                version: "1.0.0".to_string(),
+                author: "Meridian Community".to_string(),
+                category: "Workspace".to_string(),
+                description: "Demonstrates full shell extensibility by adding a lightweight WebKit browser tab with Back, Forward, Reload, and an address bar right inside Meridian.".to_string(),
+                icon_name: "web-browser-symbolic".to_string(),
+                permissions: vec!["webview".to_string(), "network".to_string()],
+                homepage_url: "https://duckduckgo.com".to_string(),
+                download_url: None,
+                builtin_template: Some("web-browser-tab".to_string()),
+            },
+            CatalogExtensionEntry {
+                id: "community.inline-doc-preview".to_string(),
+                name: "Inline Document Renderer".to_string(),
+                version: "1.0.0".to_string(),
+                author: "Meridian Community".to_string(),
+                category: "Mail Viewer".to_string(),
+                description: "Renders Markdown (.md), CSV spreadsheets (.csv), JSON files (.json), and XRechnung / ZUGFeRD XML invoices directly inside the email preview.".to_string(),
+                icon_name: "x-office-document-symbolic".to_string(),
+                permissions: vec!["read_mail".to_string()],
+                homepage_url: String::new(),
+                download_url: None,
+                builtin_template: Some("inline-doc-preview".to_string()),
+            },
+            CatalogExtensionEntry {
+                id: "community.regex-mail-rules".to_string(),
+                name: "Regex Ticket Linkifier & Badges".to_string(),
+                version: "1.0.0".to_string(),
+                author: "Meridian Community".to_string(),
+                category: "Mail Viewer".to_string(),
+                description: "Highlights ticket IDs (like JIRA-123 or PROJ-42) inside emails and adds automatic list badges using editable regex rules in extension.json.".to_string(),
+                icon_name: "edit-find-replace-symbolic".to_string(),
+                permissions: vec!["read_mail".to_string(), "modify_mail".to_string()],
+                homepage_url: String::new(),
+                download_url: None,
+                builtin_template: Some("regex-mail-rules".to_string()),
+            },
+            CatalogExtensionEntry {
+                id: "community.compact-theme".to_string(),
+                name: "Compact Minimalist CSS Pack".to_string(),
+                version: "1.0.0".to_string(),
+                author: "Meridian Community".to_string(),
+                category: "Appearance".to_string(),
+                description: "Refines message list density and email typography using editable app.css and viewer.css stylesheets (Obsidian / GNOME Shell style).".to_string(),
+                icon_name: "applications-graphics-symbolic".to_string(),
+                permissions: vec!["ui_css".to_string()],
+                homepage_url: String::new(),
+                download_url: None,
+                builtin_template: Some("compact-theme".to_string()),
+            },
+            CatalogExtensionEntry {
+                id: "community.custom-locale-pack".to_string(),
+                name: "Custom Language Pack Template".to_string(),
+                version: "1.0.0".to_string(),
+                author: "Meridian Community".to_string(),
+                category: "Localization".to_string(),
+                description: "Installs an editable locale.json translation pack so communities or users can add new UI languages or customize labels without rebuilding Meridian.".to_string(),
+                icon_name: "preferences-desktop-locale-symbolic".to_string(),
+                permissions: vec!["ui_css".to_string()],
+                homepage_url: String::new(),
+                download_url: None,
+                builtin_template: Some("custom-locale-pack".to_string()),
+            },
+        ]
+    }
+
+    /// Fetch the catalog off the GTK main thread, merging optional remote registry entries
+    /// with Meridian's curated built-in extension catalog.
+    pub fn fetch_catalog_blocking(&self) -> Vec<CatalogExtensionEntry> {
+        let mut entries = Self::curated_entries();
+        let mut seen: HashSet<String> = entries.iter().map(|e| e.id.clone()).collect();
+
+        if self.registry_url.starts_with("http://") || self.registry_url.starts_with("https://") {
+            if let Ok(client) = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(4))
+                .user_agent("Meridian-ExtensionCatalog/1.0")
+                .build()
+            {
+                if let Ok(resp) = client.get(&self.registry_url).send() {
+                    if resp.status().is_success() {
+                        if let Ok(payload) = resp.json::<RemoteCatalogPayload>() {
+                            for entry in payload.extensions {
+                                if !entry.id.trim().is_empty() && seen.insert(entry.id.clone()) {
+                                    entries.push(entry);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        entries
+    }
+
+    /// Install a catalog entry into the user's extensions folder as real, editable files.
+    pub fn install_entry(
+        &self,
+        registry: &ExtensionRegistry,
+        entry: &CatalogExtensionEntry,
+    ) -> Result<ExtensionManifest, String> {
+        let safe_id = sanitize_extension_id(&entry.id);
+        let dest_dir = registry.extensions_directory().join(&safe_id);
+        fs::create_dir_all(&dest_dir)
+            .map_err(|e| format!("Could not create extension directory: {e}"))?;
+
+        if let Some(template) = entry.builtin_template.as_deref() {
+            let (manifest, extra_files) = build_catalog_template(template, entry)?;
+            validate_manifest(&manifest)?;
+            let manifest_json =
+                serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+            fs::write(dest_dir.join("extension.json"), manifest_json)
+                .map_err(|e| format!("Failed writing extension.json: {e}"))?;
+            for (rel_path, content) in extra_files {
+                let target = dest_dir.join(rel_path);
+                if let Some(parent) = target.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                fs::write(&target, content)
+                    .map_err(|e| format!("Failed writing extension asset: {e}"))?;
+            }
+            let mut state = registry.load_state();
+            state.enabled_overrides.insert(manifest.id.clone(), true);
+            let _ = registry.save_state(&state);
+            notify_extensions_changed();
+            return Ok(manifest);
+        }
+
+        if let Some(url) = entry.download_url.as_deref() {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(12))
+                .user_agent("Meridian-ExtensionCatalog/1.0")
+                .build()
+                .map_err(|e| e.to_string())?;
+            let resp = client
+                .get(url)
+                .send()
+                .map_err(|e| format!("Download failed: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!("Download returned HTTP {}", resp.status()));
+            }
+            let raw = resp.text().map_err(|e| e.to_string())?;
+            let manifest: ExtensionManifest = serde_json::from_str(&raw)
+                .map_err(|e| format!("Invalid remote extension.json: {e}"))?;
+            validate_manifest(&manifest)?;
+            fs::write(dest_dir.join("extension.json"), raw)
+                .map_err(|e| format!("Failed writing extension.json: {e}"))?;
+            let mut state = registry.load_state();
+            state.enabled_overrides.insert(manifest.id.clone(), true);
+            let _ = registry.save_state(&state);
+            notify_extensions_changed();
+            return Ok(manifest);
+        }
+
+        Err("Catalog entry has neither a built-in template nor a download URL".to_string())
+    }
+}
+
+fn build_catalog_template(
+    template: &str,
+    entry: &CatalogExtensionEntry,
+) -> Result<(ExtensionManifest, Vec<(String, String)>), String> {
+    match template {
+        "matrix-element-tab" => Ok((
+            ExtensionManifest {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                version: entry.version.clone(),
+                author: entry.author.clone(),
+                description: entry.description.clone(),
+                icon_name: entry.icon_name.clone(),
+                enabled_by_default: true,
+                permissions: entry.permissions.clone(),
+                contributes: ExtensionContributions {
+                    views: vec![ExtensionViewContribution {
+                        id: "matrix-chat".to_string(),
+                        title: "{{setting:tab_title}}".to_string(),
+                        icon_name: "mail-message-new-symbolic".to_string(),
+                        url: "{{setting:server_url}}".to_string(),
+                        html_file: String::new(),
+                        show_navigation_bar: false,
+                        allow_javascript: true,
+                        placement: ExtensionViewPlacement::Tab,
+                        surfaces: Vec::new(),
+                        default_width: None,
+                    }],
+                    settings: vec![
+                        ExtensionSettingSchema {
+                            key: "server_url".to_string(),
+                            title: "Web App URL".to_string(),
+                            description: "Element, Cinny, Mattermost, or Zulip URL to load in this tab.".to_string(),
+                            kind: ExtensionSettingKind::String,
+                            default_value: "https://app.element.io".to_string(),
+                        },
+                        ExtensionSettingSchema {
+                            key: "tab_title".to_string(),
+                            title: "Tab Title".to_string(),
+                            description: "Label shown in the top switcher bar.".to_string(),
+                            kind: ExtensionSettingKind::String,
+                            default_value: "Matrix".to_string(),
+                        },
+                    ],
+                    ..ExtensionContributions::default()
+                },
+            },
+            Vec::new(),
+        )),
+        "web-browser-tab" => Ok((
+            ExtensionManifest {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                version: entry.version.clone(),
+                author: entry.author.clone(),
+                description: entry.description.clone(),
+                icon_name: entry.icon_name.clone(),
+                enabled_by_default: true,
+                permissions: entry.permissions.clone(),
+                contributes: ExtensionContributions {
+                    views: vec![ExtensionViewContribution {
+                        id: "web-browser".to_string(),
+                        title: "Browser".to_string(),
+                        icon_name: "web-browser-symbolic".to_string(),
+                        url: "{{setting:home_url}}".to_string(),
+                        html_file: String::new(),
+                        show_navigation_bar: true,
+                        allow_javascript: true,
+                        placement: ExtensionViewPlacement::Tab,
+                        surfaces: Vec::new(),
+                        default_width: None,
+                    }],
+                    settings: vec![ExtensionSettingSchema {
+                        key: "home_url".to_string(),
+                        title: "Home Page URL".to_string(),
+                        description: "Initial page loaded when opening the Browser tab.".to_string(),
+                        kind: ExtensionSettingKind::String,
+                        default_value: "https://duckduckgo.com".to_string(),
+                    }],
+                    ..ExtensionContributions::default()
+                },
+            },
+            Vec::new(),
+        )),
+        "inline-doc-preview" => Ok((
+            ExtensionManifest {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                version: entry.version.clone(),
+                author: entry.author.clone(),
+                description: entry.description.clone(),
+                icon_name: entry.icon_name.clone(),
+                enabled_by_default: true,
+                permissions: entry.permissions.clone(),
+                contributes: ExtensionContributions {
+                    attachment_renderers: vec![
+                        ExtensionAttachmentRenderer {
+                            id: "inline-md".to_string(),
+                            title: "Markdown Preview".to_string(),
+                            extensions: vec!["md".to_string(), "markdown".to_string()],
+                            mime_types: vec!["text/markdown".to_string()],
+                            exec: "builtin:markdown".to_string(),
+                        },
+                        ExtensionAttachmentRenderer {
+                            id: "inline-csv".to_string(),
+                            title: "CSV Table Preview".to_string(),
+                            extensions: vec!["csv".to_string()],
+                            mime_types: vec!["text/csv".to_string()],
+                            exec: "builtin:csv".to_string(),
+                        },
+                        ExtensionAttachmentRenderer {
+                            id: "inline-json".to_string(),
+                            title: "JSON Preview".to_string(),
+                            extensions: vec!["json".to_string()],
+                            mime_types: vec!["application/json".to_string()],
+                            exec: "builtin:json".to_string(),
+                        },
+                        ExtensionAttachmentRenderer {
+                            id: "inline-einvoice".to_string(),
+                            title: "E-Invoice / XML Preview".to_string(),
+                            extensions: vec!["xml".to_string()],
+                            mime_types: vec!["application/xml".to_string(), "text/xml".to_string()],
+                            exec: "builtin:e-invoice".to_string(),
+                        },
+                    ],
+                    ..ExtensionContributions::default()
+                },
+            },
+            Vec::new(),
+        )),
+        "regex-mail-rules" => Ok((
+            ExtensionManifest {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                version: entry.version.clone(),
+                author: entry.author.clone(),
+                description: entry.description.clone(),
+                icon_name: entry.icon_name.clone(),
+                enabled_by_default: true,
+                permissions: entry.permissions.clone(),
+                contributes: ExtensionContributions {
+                    message_transformers: vec![
+                        ExtensionMessageTransformer {
+                            id: "ticket-chip".to_string(),
+                            target: TransformerTarget::BodyHtml,
+                            pattern: "{{setting:ticket_pattern}}".to_string(),
+                            replacement: r#"<span style="display:inline-block;padding:1px 6px;border-radius:6px;background:rgba(53,132,228,0.16);color:#3584e4;font-weight:600;font-size:0.9em;">$1</span>"#.to_string(),
+                            badge_color: String::new(),
+                        },
+                        ExtensionMessageTransformer {
+                            id: "urgent-badge".to_string(),
+                            target: TransformerTarget::ListBadge,
+                            pattern: "{{setting:badge_pattern}}".to_string(),
+                            replacement: "$1".to_string(),
+                            badge_color: "#e01b24".to_string(),
+                        },
+                    ],
+                    settings: vec![
+                        ExtensionSettingSchema {
+                            key: "ticket_pattern".to_string(),
+                            title: "Ticket Regex (Body Highlight)".to_string(),
+                            description: "Matches ticket IDs inside emails and highlights capture group $1.".to_string(),
+                            kind: ExtensionSettingKind::String,
+                            default_value: r"\b([A-Z]{2,8}-\d{1,6})\b".to_string(),
+                        },
+                        ExtensionSettingSchema {
+                            key: "badge_pattern".to_string(),
+                            title: "Mail List Badge Regex".to_string(),
+                            description: "Matches subjects/senders to display capture group $1 as a badge in the mail list.".to_string(),
+                            kind: ExtensionSettingKind::String,
+                            default_value: r"(?i)\[(URGENT|ACTION|INVOICE)\]".to_string(),
+                        },
+                    ],
+                    ..ExtensionContributions::default()
+                },
+            },
+            Vec::new(),
+        )),
+        "compact-theme" => Ok((
+            ExtensionManifest {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                version: entry.version.clone(),
+                author: entry.author.clone(),
+                description: entry.description.clone(),
+                icon_name: entry.icon_name.clone(),
+                enabled_by_default: true,
+                permissions: entry.permissions.clone(),
+                contributes: ExtensionContributions {
+                    stylesheets: vec![
+                        ExtensionStylesheetContribution {
+                            target: StylesheetTarget::App,
+                            path: "app.css".to_string(),
+                            css: String::new(),
+                        },
+                        ExtensionStylesheetContribution {
+                            target: StylesheetTarget::MailViewer,
+                            path: "viewer.css".to_string(),
+                            css: String::new(),
+                        },
+                    ],
+                    ..ExtensionContributions::default()
+                },
+            },
+            vec![
+                (
+                    "app.css".to_string(),
+                    "/* Compact Minimalist GTK4 overrides — edit freely */\n.mail-list-row { padding-top: 3px; padding-bottom: 3px; }\n".to_string(),
+                ),
+                (
+                    "viewer.css".to_string(),
+                    "/* Compact MailViewer overrides — edit freely */\nbody { line-height: 1.5; letter-spacing: 0.005em; }\nblockquote { border-left: 3px solid rgba(53,132,228,0.55); padding-left: 10px; opacity: 0.88; }\n".to_string(),
+                ),
+            ],
+        )),
+        "custom-locale-pack" => Ok((
+            ExtensionManifest {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                version: entry.version.clone(),
+                author: entry.author.clone(),
+                description: entry.description.clone(),
+                icon_name: entry.icon_name.clone(),
+                enabled_by_default: true,
+                permissions: entry.permissions.clone(),
+                contributes: ExtensionContributions {
+                    locales: vec![ExtensionLocaleContribution {
+                        code: "*".to_string(),
+                        name: "Custom UI Overrides".to_string(),
+                        json_file: "locale.json".to_string(),
+                    }],
+                    ..ExtensionContributions::default()
+                },
+            },
+            vec![(
+                "locale.json".to_string(),
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "_comment": "Map English Meridian UI strings to your preferred language. Set 'code' in extension.json to a language code like 'ja', 'ko', 'zh_CN', or '*' for always-active overrides.",
+                    "_example_New Mail": "Compose"
+                }))
+                .unwrap_or_else(|_| "{}".to_string()),
+            )],
+        )),
+        other => Err(format!("Unknown catalog template '{other}'")),
+    }
 }
 
 fn sanitize_extension_id(raw: &str) -> String {
@@ -1256,5 +2881,110 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "GTK 4 Release");
         assert_eq!(items[0].link, "https://gnome.org/gtk4");
+    }
+
+    #[test]
+    fn catalog_install_and_v2_contributions_work_end_to_end() {
+        let dir = std::env::temp_dir().join(format!("meridian-ext-v2-{}", uuid::Uuid::new_v4()));
+        let reg = ExtensionRegistry::new(dir.join("extensions"), dir.join("state.json"));
+        let catalog = ExtensionCatalogService::default();
+        let entries = ExtensionCatalogService::curated_entries();
+
+        // 1. Install Matrix tab + Web Browser tab
+        let matrix = entries
+            .iter()
+            .find(|e| e.id == "community.matrix-element-tab")
+            .unwrap();
+        catalog.install_entry(&reg, matrix).unwrap();
+        let views = reg.enabled_views();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].1.title, "Matrix");
+        assert_eq!(views[0].1.url, "https://app.element.io");
+
+        // 2. Install Regex rules and verify HTML tag attributes are preserved
+        let regex_ext = entries
+            .iter()
+            .find(|e| e.id == "community.regex-mail-rules")
+            .unwrap();
+        catalog.install_entry(&reg, regex_ext).unwrap();
+        let transformed = reg.apply_message_html_transformers(
+            r#"<p data-id="PROJ-99">See PROJ-123 for details</p>"#,
+        );
+        assert!(transformed.contains(r#"data-id="PROJ-99""#));
+        assert!(transformed.contains(">PROJ-123</span>"));
+        let badges = reg.message_list_badges("[URGENT] Server alert", "ops@example.org");
+        assert_eq!(badges.len(), 1);
+        assert_eq!(badges[0].0, "URGENT");
+
+        // 3. Install Inline Document Renderer and verify MD, CSV, JSON & E-Invoice XML
+        let doc_ext = entries
+            .iter()
+            .find(|e| e.id == "community.inline-doc-preview")
+            .unwrap();
+        catalog.install_entry(&reg, doc_ext).unwrap();
+        let (_, md_html) = reg
+            .render_inline_attachment("notes.md", "text/markdown", b"# Hello\n- **Item**")
+            .expect("markdown rendered");
+        assert!(md_html.contains("<h2>Hello</h2>"));
+        assert!(md_html.contains("<strong>Item</strong>"));
+
+        let (_, csv_html) = reg
+            .render_inline_attachment("report.csv", "text/csv", b"Name,Total\nAlice,42")
+            .expect("csv rendered");
+        assert!(csv_html.contains("<table"));
+        assert!(csv_html.contains("Alice"));
+
+        let (_, inv_html) = reg
+            .render_inline_attachment(
+                "invoice.xml",
+                "application/xml",
+                b"<rsm:CrossIndustryInvoice><ram:ID>INV-2026-01</ram:ID><ram:GrandTotalAmount>199.00</ram:GrandTotalAmount><ram:InvoiceCurrencyCode>EUR</ram:InvoiceCurrencyCode></rsm:CrossIndustryInvoice>",
+            )
+            .expect("invoice rendered");
+        assert!(inv_html.contains("INV-2026-01"));
+        assert!(inv_html.contains("199.00"));
+
+        // 4. Install Compact CSS Pack and verify both App and MailViewer CSS load
+        let css_ext = entries
+            .iter()
+            .find(|e| e.id == "community.compact-theme")
+            .unwrap();
+        catalog.install_entry(&reg, css_ext).unwrap();
+        assert!(reg.enabled_app_css().contains(".mail-list-row"));
+        assert!(reg.enabled_mail_viewer_css().contains("blockquote"));
+
+        // 5. Install Locale Pack and verify custom overrides resolve
+        let loc_ext = entries
+            .iter()
+            .find(|e| e.id == "community.custom-locale-pack")
+            .unwrap();
+        catalog.install_entry(&reg, loc_ext).unwrap();
+        let loc_file = reg
+            .extensions_directory()
+            .join("community.custom-locale-pack")
+            .join("locale.json");
+        fs::write(&loc_file, r#"{"New Mail": "Schreiben"}"#).unwrap();
+        let overrides = reg.active_locale_overrides("de_DE.UTF-8");
+        assert_eq!(overrides.get("New Mail").map(String::as_str), Some("Schreiben"));
+
+        // 6. Placement override (Tab -> GlobalSidebar -> PageSidebar) & permission check
+        reg.set_view_placement_override(
+            "community.matrix-element-tab",
+            "matrix-chat",
+            ExtensionViewPlacement::GlobalSidebar,
+        )
+        .unwrap();
+        let views_after = reg.enabled_views();
+        assert_eq!(views_after[0].1.placement, ExtensionViewPlacement::GlobalSidebar);
+        assert!(views_after[0].0.has_permission("webview"));
+        assert!(!views_after[0].0.has_permission("read_mail"));
+
+        // 7. Guide generation writes LLM-ready EXTENSION_GUIDE.md
+        let guide = ensure_extension_guide_written(reg.extensions_directory()).unwrap();
+        let guide_text = fs::read_to_string(&guide).unwrap();
+        assert!(guide_text.contains("window.meridian.getSelectedMail"));
+        assert!(guide_text.contains("\"secret\""));
+
+        let _ = fs::remove_dir_all(dir);
     }
 }
