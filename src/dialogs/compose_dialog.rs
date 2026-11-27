@@ -404,6 +404,7 @@ enum SendWorkerEvent {
     DraftSaved(DraftMessage),
     UndoCountdown(u32),
     TransportStarted,
+    MergeProgress(usize, usize),
     Cancelled,
     Finished(Result<SendCompletion, String>),
 }
@@ -441,6 +442,7 @@ const COMPOSER_ACTION_SHORTCUTS: &[(&str, &str)] = &[
 const COMPOSER_OPERATION_ACTIONS: &[&str] = &[
     "send",
     "schedule-send",
+    "mail-merge",
     "save-draft",
     "discard",
     "save-as-eml",
@@ -515,6 +517,17 @@ mod imp {
         pub(crate) smime_options_override: RefCell<Option<SmimeOptions>>,
         pub charset: RefCell<String>,
         pub attachments: RefCell<Vec<DraftAttachment>>,
+        pub original_attachments: RefCell<Vec<DraftAttachment>>,
+        pub original_attachments_bar: RefCell<Option<gtk::Box>>,
+        pub original_attachments_label: RefCell<Option<gtk::Label>>,
+        pub original_attachments_btn: RefCell<Option<gtk::Button>>,
+        pub mail_merge_recipients:
+            RefCell<Vec<crate::services::mail_merge_service::MailMergeRecipient>>,
+        pub mail_merge_bar: RefCell<Option<gtk::Box>>,
+        pub mail_merge_label: RefCell<Option<gtk::Label>>,
+        pub mail_merge_edit_btn: RefCell<Option<gtk::Button>>,
+        pub mail_merge_clear_btn: RefCell<Option<gtk::Button>>,
+        pub mail_merge_hint_dismissed: Cell<bool>,
         pub attachment_section_revealer: RefCell<Option<gtk::Revealer>>,
         pub attachment_section_box: RefCell<Option<gtk::Box>>,
         pub attachment_bar: RefCell<Option<gtk::Box>>,
@@ -1054,6 +1067,299 @@ impl ComposeDialog {
         *self.imp().requested_from.borrow_mut() = from;
     }
 
+    /// Supply user-facing attachments from the message being replied to or forwarded.
+    /// When `include_by_default` is `true` (forwarding), the attachments are added right
+    /// away into the attachment bar where individual files can still be removed.
+    /// When `include_by_default` is `false` (replying), a compact inline bar lets the user
+    /// choose whether to include any or all of the original attachments.
+    pub fn set_original_attachments(
+        &self,
+        attachments: Vec<DraftAttachment>,
+        include_by_default: bool,
+    ) {
+        if attachments.is_empty() {
+            return;
+        }
+        if include_by_default {
+            for att in attachments {
+                self.add_attachment(att);
+            }
+            self.mark_saved();
+            return;
+        }
+        let count = attachments.len();
+        let single_name = (count == 1).then(|| attachments[0].filename.clone());
+        *self.imp().original_attachments.borrow_mut() = attachments;
+        if let Some(lbl) = self.imp().original_attachments_label.borrow().as_ref() {
+            let text = if let Some(name) = single_name {
+                gettext("Original message has 1 attachment ({})").replace("{}", &name)
+            } else {
+                gettext("Original message has {} attachments").replace("{}", &count.to_string())
+            };
+            lbl.set_label(&text);
+        }
+        if let Some(btn) = self.imp().original_attachments_btn.borrow().as_ref() {
+            btn.set_label(&if count == 1 {
+                gettext("Include")
+            } else {
+                gettext("Choose…")
+            });
+        }
+        if let Some(bar) = self.imp().original_attachments_bar.borrow().as_ref() {
+            bar.set_visible(true);
+        }
+    }
+
+    fn show_include_original_attachments_picker(&self, anchor: &gtk::Button) {
+        let available = self.imp().original_attachments.borrow().clone();
+        if available.is_empty() {
+            return;
+        }
+        if available.len() == 1 {
+            self.add_attachment(available[0].clone());
+            self.imp().original_attachments.borrow_mut().clear();
+            if let Some(bar) = self.imp().original_attachments_bar.borrow().as_ref() {
+                bar.set_visible(false);
+            }
+            return;
+        }
+
+        let popover = gtk::Popover::new();
+        let vbox = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(10)
+            .margin_bottom(10)
+            .width_request(280)
+            .build();
+        let heading = gtk::Label::builder()
+            .label(gettext("Include Original Attachments"))
+            .xalign(0.0)
+            .css_classes(["heading"])
+            .build();
+        vbox.append(&heading);
+
+        let mut checks: Vec<(gtk::CheckButton, DraftAttachment)> = Vec::new();
+        for att in available {
+            let label = format!(
+                "{} ({})",
+                att.filename,
+                crate::services::mail_store_service::format_size(att.size as usize)
+            );
+            let check = gtk::CheckButton::builder()
+                .label(&label)
+                .active(true)
+                .build();
+            vbox.append(&check);
+            checks.push((check, att));
+        }
+
+        let actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::End)
+            .margin_top(4)
+            .build();
+        let btn_cancel = gtk::Button::builder()
+            .label(gettext("Cancel"))
+            .css_classes(["flat"])
+            .build();
+        let btn_apply = gtk::Button::builder()
+            .label(gettext("Include Selected"))
+            .css_classes(["suggested-action"])
+            .build();
+        actions.append(&btn_cancel);
+        actions.append(&btn_apply);
+        vbox.append(&actions);
+
+        popover.set_child(Some(&vbox));
+        popover.set_parent(anchor);
+
+        let pop_cancel = popover.clone();
+        btn_cancel.connect_clicked(move |_| pop_cancel.popdown());
+
+        let pop_apply = popover.clone();
+        let dialog_weak = self.downgrade();
+        btn_apply.connect_clicked(move |_| {
+            pop_apply.popdown();
+            let Some(dialog) = dialog_weak.upgrade() else {
+                return;
+            };
+            let mut remaining = Vec::new();
+            for (check, att) in &checks {
+                if check.is_active() {
+                    dialog.add_attachment(att.clone());
+                } else {
+                    remaining.push(att.clone());
+                }
+            }
+            *dialog.imp().original_attachments.borrow_mut() = remaining.clone();
+            if remaining.is_empty() {
+                if let Some(bar) = dialog.imp().original_attachments_bar.borrow().as_ref() {
+                    bar.set_visible(false);
+                }
+            } else if let Some(lbl) = dialog.imp().original_attachments_label.borrow().as_ref() {
+                let count = remaining.len();
+                let text = if count == 1 {
+                    gettext("Original message has 1 attachment ({})")
+                        .replace("{}", &remaining[0].filename)
+                } else {
+                    gettext("Original message has {} attachments").replace("{}", &count.to_string())
+                };
+                lbl.set_label(&text);
+            }
+        });
+
+        popover.connect_closed(|p| {
+            let p = p.clone();
+            glib::idle_add_local_once(move || p.unparent());
+        });
+        popover.popup();
+    }
+
+    pub fn present_mail_merge_sheet(&self) {
+        let existing = self.imp().mail_merge_recipients.borrow().clone();
+        let initial_recipients = if !existing.is_empty() {
+            existing
+        } else {
+            let to_text = self
+                .imp()
+                .entry_to
+                .borrow()
+                .as_ref()
+                .map(|e| e.text().to_string())
+                .unwrap_or_default();
+            crate::services::mail_merge_service::parse_recipients_from_to_header(&to_text)
+        };
+        let subject_tpl = self
+            .imp()
+            .entry_subject
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+        let dialog_weak = self.downgrade();
+        let Some(editor) = self.imp().html_editor.borrow().as_ref().cloned() else {
+            return;
+        };
+        editor.read_content(move |res| {
+            let Some(dialog) = dialog_weak.upgrade() else {
+                return;
+            };
+            let body_plain = match res {
+                Ok(c) if c.plain_text => c.body,
+                Ok(c) => crate::services::html_sanitizer::html_to_plain_text(&c.body),
+                Err(_) => String::new(),
+            };
+            let dlg_for_insert = dialog.downgrade();
+            let dlg_for_apply = dialog.downgrade();
+            crate::dialogs::present_mail_merge_dialog(
+                &dialog,
+                initial_recipients,
+                subject_tpl,
+                body_plain,
+                move |token| {
+                    if let Some(dlg) = dlg_for_insert.upgrade() {
+                        if let Some(ed) = dlg.imp().html_editor.borrow().as_ref() {
+                            ed.insert_html(token);
+                            dlg.mark_changed();
+                        }
+                    }
+                },
+                move |recipients| {
+                    if let Some(dlg) = dlg_for_apply.upgrade() {
+                        dlg.imp().mail_merge_hint_dismissed.set(false);
+                        *dlg.imp().mail_merge_recipients.borrow_mut() = recipients;
+                        dlg.refresh_mail_merge_ui(false);
+                        dlg.mark_changed();
+                    }
+                },
+            );
+        });
+    }
+
+    fn refresh_mail_merge_ui(&self, placeholders_present: bool) {
+        let count = self.imp().mail_merge_recipients.borrow().len();
+        if let Some(send_btn) = self.imp().send_button.borrow().as_ref() {
+            if count > 0 {
+                send_btn.set_label(&format!("{} ({})", gettext("Send"), count));
+                send_btn.set_tooltip_text(Some(
+                    &gettext("Send {} personalized emails (Ctrl+Enter)")
+                        .replace("{}", &count.to_string()),
+                ));
+            } else {
+                send_btn.set_label(&gettext("Send"));
+                send_btn.set_tooltip_text(Some(&gettext("Send email now (Ctrl+Enter)")));
+            }
+        }
+        let Some(bar) = self.imp().mail_merge_bar.borrow().clone() else {
+            return;
+        };
+        if count > 0 {
+            if let Some(lbl) = self.imp().mail_merge_label.borrow().as_ref() {
+                let text = if count == 1 {
+                    gettext("Mail Merge: 1 personalized recipient")
+                } else {
+                    gettext("Mail Merge: {} personalized recipients")
+                        .replace("{}", &count.to_string())
+                };
+                lbl.set_label(&text);
+            }
+            if let Some(btn) = self.imp().mail_merge_edit_btn.borrow().as_ref() {
+                btn.set_label(&gettext("Edit List…"));
+            }
+            if let Some(clear_btn) = self.imp().mail_merge_clear_btn.borrow().as_ref() {
+                clear_btn.set_tooltip_text(Some(&gettext("Clear recipient list")));
+            }
+            bar.set_visible(true);
+        } else if placeholders_present && !self.imp().mail_merge_hint_dismissed.get() {
+            if let Some(lbl) = self.imp().mail_merge_label.borrow().as_ref() {
+                lbl.set_label(&gettext(
+                    "Placeholders detected — add a recipient list to personalize each email",
+                ));
+            }
+            if let Some(btn) = self.imp().mail_merge_edit_btn.borrow().as_ref() {
+                btn.set_label(&gettext("Recipients…"));
+            }
+            if let Some(clear_btn) = self.imp().mail_merge_clear_btn.borrow().as_ref() {
+                clear_btn.set_tooltip_text(Some(&gettext("Dismiss")));
+            }
+            bar.set_visible(true);
+        } else {
+            bar.set_visible(false);
+        }
+    }
+
+    fn check_mail_merge_placeholders_hint(&self) {
+        let subject = self
+            .imp()
+            .entry_subject
+            .borrow()
+            .as_ref()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default();
+        if crate::services::mail_merge_service::has_placeholders(&subject, "") {
+            self.refresh_mail_merge_ui(true);
+            return;
+        }
+        let Some(editor) = self.imp().html_editor.borrow().as_ref().cloned() else {
+            self.refresh_mail_merge_ui(false);
+            return;
+        };
+        let dialog_weak = self.downgrade();
+        editor.read_content(move |res| {
+            let Some(dialog) = dialog_weak.upgrade() else {
+                return;
+            };
+            let has_body_ph = res
+                .ok()
+                .is_some_and(|c| crate::services::mail_merge_service::has_placeholders("", &c.body));
+            dialog.refresh_mail_merge_ui(has_body_ph);
+        });
+    }
+
     pub fn forward(subject: &str) -> Self {
         Self::forward_message(subject, "", "", "", "", "")
     }
@@ -1560,6 +1866,10 @@ impl ComposeDialog {
         let composer_menu = gio::Menu::new();
         let sec_send = gio::Menu::new();
         sec_send.append(Some(&gettext("Schedule Send…")), Some("compose.schedule-send"));
+        sec_send.append(
+            Some(&gettext("Mail Merge / Recipient List…")),
+            Some("compose.mail-merge"),
+        );
         sec_send.append(Some(&gettext("Save as Template…")), Some("compose.save-template"));
         composer_menu.append_section(None, &sec_send);
 
@@ -1579,10 +1889,6 @@ impl ComposeDialog {
             } else {
                 "compose.pgp-encrypt"
             }),
-        );
-        sec_opts.append(
-            Some(&gettext("High Priority")),
-            Some("compose.prioritize-message"),
         );
         sec_opts.append(
             Some(&gettext("Request Read Receipt")),
@@ -2324,6 +2630,14 @@ impl ComposeDialog {
                 if !is_nav_or_modifier {
                     dialog.imp().user_typed_in_editor.set(true);
                 }
+                if keyval == gdk::Key::braceright {
+                    let dlg_hint = dialog.downgrade();
+                    glib::idle_add_local_once(move || {
+                        if let Some(dlg) = dlg_hint.upgrade() {
+                            dlg.check_mail_merge_placeholders_hint();
+                        }
+                    });
+                }
                 dialog.mark_changed();
                 if dialog.imp().attachment_expanded.get() {
                     dialog.set_attachment_expanded(false);
@@ -3053,6 +3367,156 @@ impl ComposeDialog {
             });
         }
 
+        // Subtle inline bar for Reply/Reply-All when the original email had attachments
+        let original_attachments_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_bottom(6)
+            .visible(false)
+            .css_classes(["card", "composer-inline-hint-bar"])
+            .build();
+        let orig_att_icon = gtk::Image::builder()
+            .icon_name("mail-attachment-symbolic")
+            .pixel_size(16)
+            .margin_start(10)
+            .margin_top(6)
+            .margin_bottom(6)
+            .css_classes(["dim-label"])
+            .build();
+        let original_attachments_label = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .margin_top(6)
+            .margin_bottom(6)
+            .css_classes(["caption"])
+            .build();
+        let original_attachments_btn = gtk::Button::builder()
+            .label(gettext("Include…"))
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .margin_top(2)
+            .margin_bottom(2)
+            .build();
+        let orig_att_dismiss = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .tooltip_text(gettext("Dismiss"))
+            .css_classes(["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .margin_end(6)
+            .margin_top(2)
+            .margin_bottom(2)
+            .build();
+        original_attachments_bar.append(&orig_att_icon);
+        original_attachments_bar.append(&original_attachments_label);
+        original_attachments_bar.append(&original_attachments_btn);
+        original_attachments_bar.append(&orig_att_dismiss);
+        {
+            let bar_for_dismiss = original_attachments_bar.clone();
+            let dialog_for_dismiss = self.downgrade();
+            orig_att_dismiss.connect_clicked(move |_| {
+                bar_for_dismiss.set_visible(false);
+                if let Some(dialog) = dialog_for_dismiss.upgrade() {
+                    dialog.imp().original_attachments.borrow_mut().clear();
+                }
+            });
+            let dialog_for_include = self.downgrade();
+            let btn_for_include = original_attachments_btn.clone();
+            original_attachments_btn.connect_clicked(move |_| {
+                if let Some(dialog) = dialog_for_include.upgrade() {
+                    dialog.show_include_original_attachments_picker(&btn_for_include);
+                }
+            });
+        }
+        self.imp()
+            .original_attachments_bar
+            .replace(Some(original_attachments_bar.clone()));
+        self.imp()
+            .original_attachments_label
+            .replace(Some(original_attachments_label));
+        self.imp()
+            .original_attachments_btn
+            .replace(Some(original_attachments_btn));
+
+        // Subtle inline Mail Merge bar (appears automatically when {{placeholders}} or a recipient list is active)
+        let mail_merge_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_bottom(6)
+            .visible(false)
+            .css_classes(["card", "composer-inline-hint-bar"])
+            .build();
+        let merge_icon = gtk::Image::builder()
+            .icon_name("system-users-symbolic")
+            .pixel_size(16)
+            .margin_start(10)
+            .margin_top(6)
+            .margin_bottom(6)
+            .css_classes(["accent"])
+            .build();
+        let mail_merge_label = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .margin_top(6)
+            .margin_bottom(6)
+            .css_classes(["caption"])
+            .build();
+        let mail_merge_edit_btn = gtk::Button::builder()
+            .label(gettext("Recipients…"))
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .margin_top(2)
+            .margin_bottom(2)
+            .build();
+        let mail_merge_clear_btn = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .tooltip_text(gettext("Clear recipient list"))
+            .css_classes(["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .margin_end(6)
+            .margin_top(2)
+            .margin_bottom(2)
+            .build();
+        mail_merge_bar.append(&merge_icon);
+        mail_merge_bar.append(&mail_merge_label);
+        mail_merge_bar.append(&mail_merge_edit_btn);
+        mail_merge_bar.append(&mail_merge_clear_btn);
+        {
+            let dialog_for_merge_edit = self.downgrade();
+            mail_merge_edit_btn.connect_clicked(move |_| {
+                if let Some(dialog) = dialog_for_merge_edit.upgrade() {
+                    dialog.present_mail_merge_sheet();
+                }
+            });
+            let dialog_for_merge_clear = self.downgrade();
+            mail_merge_clear_btn.connect_clicked(move |_| {
+                if let Some(dialog) = dialog_for_merge_clear.upgrade() {
+                    let had_recipients = !dialog.imp().mail_merge_recipients.borrow().is_empty();
+                    if had_recipients {
+                        dialog.imp().mail_merge_recipients.borrow_mut().clear();
+                    } else {
+                        dialog.imp().mail_merge_hint_dismissed.set(true);
+                    }
+                    dialog.refresh_mail_merge_ui(false);
+                }
+            });
+        }
+        self.imp().mail_merge_bar.replace(Some(mail_merge_bar.clone()));
+        self.imp().mail_merge_label.replace(Some(mail_merge_label));
+        self.imp()
+            .mail_merge_edit_btn
+            .replace(Some(mail_merge_edit_btn));
+        self.imp()
+            .mail_merge_clear_btn
+            .replace(Some(mail_merge_clear_btn));
+
+        content_box.append(&mail_merge_bar);
+        content_box.append(&original_attachments_bar);
         content_box.append(&attachment_section_revealer);
         content_box.append(&html_editor);
 
@@ -3130,7 +3594,17 @@ impl ComposeDialog {
         self.imp().attachment_col_type.replace(Some(col_type.clone()));
         self.imp().attachment_col_mod.replace(Some(col_mod.clone()));
         self.imp().attachment_expanded.set(false);
-        self.imp().attachment_view_mode.set(AttachmentViewMode::Icons);
+        let initial_att_mode = AppSettings::try_new()
+            .map(|s| s.mail_attachment_view_mode())
+            .map(|m| {
+                if m == "list" {
+                    AttachmentViewMode::List
+                } else {
+                    AttachmentViewMode::Icons
+                }
+            })
+            .unwrap_or(AttachmentViewMode::Icons);
+        self.imp().attachment_view_mode.set(initial_att_mode);
 
         let bp_narrow = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 600sp").unwrap());
         bp_narrow.add_setter(&col_type, "visible", Some(&false.to_value()));
@@ -3281,6 +3755,14 @@ impl ComposeDialog {
             entry.connect_changed(move |_| {
                 if let Some(dialog) = dialog_weak.upgrade() {
                     dialog.mark_changed();
+                }
+            });
+        }
+        {
+            let dialog_weak_subj = self.downgrade();
+            entry_subject.connect_changed(move |_| {
+                if let Some(dialog) = dialog_weak_subj.upgrade() {
+                    dialog.check_mail_merge_placeholders_hint();
                 }
             });
         }
@@ -3575,6 +4057,7 @@ impl ComposeDialog {
                 let smime_options = dialog.smime_options_for_message();
                 let draft_id = dialog.imp().draft_id.borrow().clone();
                 let expected_draft = dialog.imp().persisted_draft.borrow().clone();
+                let configured_merge_recipients = dialog.imp().mail_merge_recipients.borrow().clone();
                 let dialog_weak = dialog.downgrade();
                 let cancel_for_worker = Arc::clone(&cancel);
 
@@ -3658,12 +4141,10 @@ impl ComposeDialog {
                     let undo_delay_secs = AppSettings::try_new()
                         .map(|s| s.composer_undo_send_seconds())
                         .unwrap_or(0);
-                    let mail_merge_enabled =
-                        crate::services::extension_service::ExtensionRegistry::default()
-                            .is_enabled("meridian.mail-merge");
                     let auto_collect_contacts = AppSettings::try_new()
                         .map(|s| s.contacts_auto_collect())
                         .unwrap_or(false);
+                    let configured_merge_recipients = configured_merge_recipients.clone();
 
                 let (sender, receiver) = async_channel::bounded(16);
                 std::thread::spawn(move || {
@@ -3707,36 +4188,56 @@ impl ComposeDialog {
                             }
                         }
                     }
-                    let raw_message = match mail_composer_service::build_rfc822(&outgoing) {
-                        Ok(raw_message) => raw_message,
-                        Err(first_error) => {
-                            if outgoing.pgp_encrypt {
-                                let mut imported_any = false;
-                                for field in [&outgoing.to, &outgoing.cc, &outgoing.bcc] {
-                                    for token in field.split(',') {
-                                        let email = extract_bare_email(token);
-                                        if email.contains('@')
-                                            && crate::services::crypto_service::discover_and_import_openpgp_key(&email).is_ok()
-                                        {
-                                            imported_any = true;
+
+                    let merge_targets: Vec<crate::services::mail_merge_service::MailMergeRecipient> =
+                        if !configured_merge_recipients.is_empty() {
+                            configured_merge_recipients
+                        } else if crate::services::mail_merge_service::has_placeholders(
+                            &outgoing.subject,
+                            &outgoing.html_body,
+                        ) {
+                            crate::services::mail_merge_service::parse_recipients_from_to_header(
+                                &outgoing.to,
+                            )
+                        } else {
+                            Vec::new()
+                        };
+                    let use_merge = !merge_targets.is_empty();
+
+                    let raw_message = if use_merge {
+                        Vec::new()
+                    } else {
+                        match mail_composer_service::build_rfc822(&outgoing) {
+                            Ok(raw_message) => raw_message,
+                            Err(first_error) => {
+                                if outgoing.pgp_encrypt {
+                                    let mut imported_any = false;
+                                    for field in [&outgoing.to, &outgoing.cc, &outgoing.bcc] {
+                                        for token in field.split(',') {
+                                            let email = extract_bare_email(token);
+                                            if email.contains('@')
+                                                && crate::services::crypto_service::discover_and_import_openpgp_key(&email).is_ok()
+                                            {
+                                                imported_any = true;
+                                            }
                                         }
                                     }
-                                }
-                                if imported_any {
-                                    match mail_composer_service::build_rfc822(&outgoing) {
-                                        Ok(retried) => retried,
-                                        Err(err2) => {
-                                            let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(err2)));
-                                            return;
+                                    if imported_any {
+                                        match mail_composer_service::build_rfc822(&outgoing) {
+                                            Ok(retried) => retried,
+                                            Err(err2) => {
+                                                let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(err2)));
+                                                return;
+                                            }
                                         }
+                                    } else {
+                                        let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(first_error)));
+                                        return;
                                     }
                                 } else {
                                     let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(first_error)));
                                     return;
                                 }
-                            } else {
-                                let _ = sender.send_blocking(SendWorkerEvent::Finished(Err(first_error)));
-                                return;
                             }
                         }
                     };
@@ -3749,41 +4250,51 @@ impl ComposeDialog {
                     }
                     let _ = sender.send_blocking(SendWorkerEvent::TransportStarted);
 
-                    let to_recipients: Vec<String> = outgoing
-                        .to
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(String::from)
-                        .collect();
-                    let use_merge = mail_merge_enabled
-                        && to_recipients.len() >= 1
-                        && (crate::services::extension_service::has_mail_merge_placeholders(&outgoing.html_body)
-                            || crate::services::extension_service::has_mail_merge_placeholders(&outgoing.subject));
-
                     let result = if use_merge {
+                        let total = merge_targets.len();
                         let mut all_saved = true;
+                        let mut sent_count = 0usize;
                         let mut merge_err: Option<String> = None;
-                        for rcpt in &to_recipients {
+                        for (idx, rcpt) in merge_targets.iter().enumerate() {
+                            let _ = sender.send_blocking(SendWorkerEvent::MergeProgress(
+                                idx + 1,
+                                total,
+                            ));
                             let mut per_rcpt = outgoing.clone();
-                            per_rcpt.to = rcpt.clone();
+                            per_rcpt.to = rcpt.formatted_to_header();
                             per_rcpt.cc.clear();
-                            per_rcpt.subject =
-                                crate::services::extension_service::expand_mail_merge_for_recipient(
+                            let rendered_subject =
+                                crate::services::mail_merge_service::render_template_for_recipient(
                                     &outgoing.subject,
                                     rcpt,
+                                    "",
                                 );
-                            per_rcpt.html_body =
-                                crate::services::extension_service::expand_mail_merge_for_recipient(
+                            per_rcpt.subject = rendered_subject.clone();
+                            per_rcpt.html_body = if outgoing.plain_text {
+                                crate::services::mail_merge_service::render_template_for_recipient(
                                     &outgoing.html_body,
                                     rcpt,
-                                );
-                            match mail_composer_service::build_rfc822(&per_rcpt)
-                                .and_then(|raw| camel_mail_service::send_message(&per_rcpt.source_uid, &raw))
-                            {
-                                Ok(saved_sent) => all_saved &= saved_sent,
+                                    &rendered_subject,
+                                )
+                            } else {
+                                crate::services::mail_merge_service::render_html_template_for_recipient(
+                                    &outgoing.html_body,
+                                    rcpt,
+                                    &rendered_subject,
+                                )
+                            };
+                            match mail_composer_service::build_rfc822(&per_rcpt).and_then(|raw| {
+                                camel_mail_service::send_message(&per_rcpt.source_uid, &raw)
+                            }) {
+                                Ok(saved_sent) => {
+                                    sent_count += 1;
+                                    all_saved &= saved_sent;
+                                }
                                 Err(err) => {
-                                    merge_err = Some(err);
+                                    merge_err = Some(format!(
+                                        "Sent {sent_count}/{total} before failure for {}: {err}",
+                                        rcpt.email
+                                    ));
                                     break;
                                 }
                             }
@@ -3813,7 +4324,16 @@ impl ComposeDialog {
                     };
 
                     if result.is_ok() && auto_collect_contacts {
-                        auto_collect_outgoing_recipients(&[&outgoing.to, &outgoing.cc]);
+                        if !merge_targets.is_empty() {
+                            let merged_header = merge_targets
+                                .iter()
+                                .map(|r| r.formatted_to_header())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            auto_collect_outgoing_recipients(&[&merged_header, &outgoing.cc]);
+                        } else {
+                            auto_collect_outgoing_recipients(&[&outgoing.to, &outgoing.cc]);
+                        }
                     }
                     let _ = sender.send_blocking(SendWorkerEvent::Finished(result));
                 });
@@ -3858,6 +4378,15 @@ impl ComposeDialog {
                             SendWorkerEvent::TransportStarted => {
                                 dialog.mark_transport_started(operation_id);
                             }
+                            SendWorkerEvent::MergeProgress(current, total) => {
+                                dialog.set_operation_status(
+                                    operation_id,
+                                    &gettext("Sending {} of {}…")
+                                        .replacen("{}", &current.to_string(), 1)
+                                        .replacen("{}", &total.to_string(), 1),
+                                    false,
+                                );
+                            }
                             SendWorkerEvent::Cancelled => {
                                 dialog.finish_operation(operation_id);
                                 dialog.show_toast(
@@ -3897,6 +4426,12 @@ impl ComposeDialog {
                                         }
                                         if let Some(entry) = dialog.imp().entry_bcc.borrow().as_ref() {
                                             recent_service.record_recipients_from_header(&entry.text());
+                                        }
+                                        for recipient in dialog.imp().mail_merge_recipients.borrow().iter() {
+                                            let header = recipient.formatted_to_header();
+                                            if !header.is_empty() {
+                                                recent_service.record_recipients_from_header(&header);
+                                            }
                                         }
                                         if let Some(callback) = dialog.imp().on_send_success.borrow().as_ref() {
                                             callback();
@@ -4502,6 +5037,15 @@ impl ComposeDialog {
             }
         });
         group.add_action(&action_schedule_send);
+
+        let action_mail_merge = gio::SimpleAction::new("mail-merge", None);
+        let dialog_for_merge = self.downgrade();
+        action_mail_merge.connect_activate(move |_, _| {
+            if let Some(dialog) = dialog_for_merge.upgrade() {
+                dialog.present_mail_merge_sheet();
+            }
+        });
+        group.add_action(&action_mail_merge);
 
         let action_save_draft = gio::SimpleAction::new("save-draft", None);
         let save_draft_button = btn_save_draft.clone();
@@ -5593,6 +6137,7 @@ impl ComposeDialog {
 
     pub fn expand_composer_variables(&self, raw_html: &str) -> String {
         let now = chrono::Local::now();
+        let has_merge_list = !self.imp().mail_merge_recipients.borrow().is_empty();
         let to_raw = self
             .imp()
             .entry_to
@@ -5600,9 +6145,7 @@ impl ComposeDialog {
             .as_ref()
             .map(|e| e.text().to_string())
             .unwrap_or_default();
-        let first_rcpt = to_raw.split(',').next().unwrap_or("").trim();
-        let to_email = extract_bare_email(first_rcpt);
-        let to_name = format_sender_display_name(first_rcpt);
+        let parsed_to = crate::services::mail_merge_service::parse_recipients_from_to_header(&to_raw);
         let subject = self
             .imp()
             .entry_subject
@@ -5611,15 +6154,33 @@ impl ComposeDialog {
             .map(|e| e.text().to_string())
             .unwrap_or_default();
 
-        raw_html
+        let mut expanded = raw_html
             .replace("{{date}}", &now.format("%Y-%m-%d").to_string())
             .replace("{{Date}}", &now.format("%Y-%m-%d").to_string())
             .replace("{{time}}", &now.format("%H:%M").to_string())
-            .replace("{{Time}}", &now.format("%H:%M").to_string())
-            .replace("{{to_name}}", &to_name)
-            .replace("{{FirstName}}", to_name.split_whitespace().next().unwrap_or(&to_name))
-            .replace("{{to_email}}", &to_email)
-            .replace("{{subject}}", &subject)
+            .replace("{{Time}}", &now.format("%H:%M").to_string());
+
+        // Preserve recipient placeholders when composing a Mail Merge or before a single
+        // recipient has been chosen, so templates with `{{FirstName}}` etc. stay usable
+        // with the Mail Merge sheet.
+        if !has_merge_list && parsed_to.len() == 1 {
+            let first_rcpt = to_raw.trim();
+            let to_email = extract_bare_email(first_rcpt);
+            let to_name = format_sender_display_name(first_rcpt);
+            if !to_email.is_empty() {
+                expanded = expanded
+                    .replace("{{to_name}}", &to_name)
+                    .replace(
+                        "{{FirstName}}",
+                        to_name.split_whitespace().next().unwrap_or(&to_name),
+                    )
+                    .replace("{{to_email}}", &to_email);
+            }
+        }
+        if !subject.trim().is_empty() {
+            expanded = expanded.replace("{{subject}}", &subject);
+        }
+        expanded
     }
 
     pub fn refresh_template_button(&self) {
@@ -5929,6 +6490,7 @@ impl ComposeDialog {
                     }
                     dialog.imp().user_typed_in_editor.set(true);
                     dialog.mark_changed();
+                    dialog.check_mail_merge_placeholders_hint();
                 }
                 if let Some(p) = popover_weak.upgrade() {
                     p.popdown();
@@ -6308,13 +6870,15 @@ impl ComposeDialog {
             .unwrap_or_default();
         let subject_empty = subject_text.trim().is_empty();
 
-        let to_empty = self
-            .imp()
-            .entry_to
-            .borrow()
-            .as_ref()
-            .map(|e| e.text().trim().is_empty())
-            .unwrap_or(true);
+        let has_merge_recipients = !self.imp().mail_merge_recipients.borrow().is_empty();
+        let to_empty = !has_merge_recipients
+            && self
+                .imp()
+                .entry_to
+                .borrow()
+                .as_ref()
+                .map(|e| e.text().trim().is_empty())
+                .unwrap_or(true);
         let cc_empty = self
             .imp()
             .entry_cc
@@ -6362,12 +6926,16 @@ impl ComposeDialog {
                 let Some(dlg) = dlg_w.upgrade() else {
                     return;
                 };
-                let body_plain = match res {
-                    Ok(c) if c.plain_text => c.body,
-                    Ok(c) => crate::services::html_sanitizer::html_to_plain_text(&c.body),
-                    Err(_) => String::new(),
+                let cue = match res {
+                    Ok(c) => detect_missing_attachment_cue_for_content(
+                        &subj,
+                        &c.body,
+                        c.plain_text,
+                        false,
+                    ),
+                    Err(_) => None,
                 };
-                if let Some(cue) = detect_missing_attachment_cue(&subj, &body_plain, false) {
+                if let Some(cue) = cue {
                     let msg = format!(
                         "{} \"{}\". {}",
                         gettext("Your message mentions"),
@@ -7574,6 +8142,12 @@ impl ComposeDialog {
     pub fn set_attachment_view_mode(&self, mode: AttachmentViewMode) {
         self.imp().attachment_view_mode.set(mode);
         self.imp().attachment_expanded.set(true);
+        if let Some(settings) = AppSettings::try_new() {
+            settings.set_mail_attachment_view_mode(match mode {
+                AttachmentViewMode::List => "list",
+                AttachmentViewMode::Icons => "icons",
+            });
+        }
         self.apply_attachment_view_state();
     }
 
@@ -10901,8 +11475,127 @@ fn close_request_decision(
     }
 }
 
-/// Detect whether the newly authored email text (ignoring quoted reply lines `>`
-/// and signatures after `-- `) mentions an attachment while none is attached.
+/// Remove HTML signature containers, Meridian quote attribution headers,
+/// nested `<blockquote>` blocks, and common Gmail/Outlook quote wrappers so
+/// only the user's newly authored HTML remains for pre-send inspection.
+fn strip_quoted_reply_html(html: &str) -> String {
+    let without_sig = strip_evolution_signature_html(html);
+    let lower = without_sig.to_ascii_lowercase();
+
+    // Everything from Meridian's own quote attribution paragraph or common
+    // reply/forward separator markers onward is quoted original message content.
+    let mut cutoff = without_sig.len();
+    for marker in [
+        "meridian-quote-attribution",
+        "class=\"gmail_quote\"",
+        "class='gmail_quote'",
+        "id=\"divrplyfwdmsg\"",
+        "id='divrplyfwdmsg'",
+        "id=\"appendonsend\"",
+        "class=\"outlookmessageheader\"",
+    ] {
+        if let Some(pos) = lower.find(marker) {
+            let tag_start = without_sig[..pos].rfind('<').unwrap_or(pos);
+            cutoff = cutoff.min(tag_start);
+        }
+    }
+    let slice = &without_sig[..cutoff];
+
+    // Strip any remaining <blockquote>...</blockquote> regions (including nested ones).
+    let mut result = String::with_capacity(slice.len());
+    let slice_lower = slice.to_ascii_lowercase();
+    let bytes = slice_lower.as_bytes();
+    let mut idx = 0usize;
+    let mut quote_depth = 0usize;
+    while idx < slice.len() {
+        if bytes[idx] == b'<' {
+            let rest = &slice_lower[idx..];
+            if rest.starts_with("<blockquote")
+                && rest
+                    .as_bytes()
+                    .get("<blockquote".len())
+                    .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>')
+            {
+                quote_depth += 1;
+                if let Some(end_rel) = rest.find('>') {
+                    idx += end_rel + 1;
+                    continue;
+                }
+                break;
+            }
+            if rest.starts_with("</blockquote") {
+                if let Some(end_rel) = rest.find('>') {
+                    quote_depth = quote_depth.saturating_sub(1);
+                    idx += end_rel + 1;
+                    continue;
+                }
+                break;
+            }
+        }
+        let ch = slice[idx..].chars().next().unwrap();
+        if quote_depth == 0 {
+            result.push(ch);
+        }
+        idx += ch.len_utf8();
+    }
+    result
+}
+
+fn is_reply_or_forward_subject(subject: &str) -> bool {
+    let lower = subject.trim_start().to_ascii_lowercase();
+    for prefix in ["re:", "aw:", "sv:", "antwort:", "fwd:", "fw:", "wg:"] {
+        if lower.starts_with(prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_plain_quote_boundary_line(trimmed: &str) -> bool {
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("-----original message-----")
+        || lower.starts_with("-----ursprüngliche nachricht-----")
+        || lower.starts_with("-------- forwarded message")
+        || lower.starts_with("-------- weitergeleitete nachricht")
+        || lower == "forwarded message:"
+        || lower == "weitergeleitete nachricht:"
+        || lower == "original message:"
+        || lower == "ursprüngliche nachricht:"
+    {
+        return true;
+    }
+    // "On Mon, ... wrote:" or "Am 26.11.2026 ... schrieb ...:"
+    if (lower.starts_with("on ") && lower.ends_with("wrote:"))
+        || (lower.starts_with("am ") && lower.contains("schrieb") && lower.ends_with(':'))
+    {
+        return true;
+    }
+    false
+}
+
+/// Detect whether newly authored content (HTML or plain text) mentions an attachment
+/// while none is attached. Quoted original emails and signatures are excluded first.
+fn detect_missing_attachment_cue_for_content(
+    subject: &str,
+    body: &str,
+    plain_text: bool,
+    has_attachments: bool,
+) -> Option<&'static str> {
+    if has_attachments {
+        return None;
+    }
+    let plain_body = if plain_text {
+        body.to_string()
+    } else {
+        let authored_html = strip_quoted_reply_html(body);
+        crate::services::html_sanitizer::html_to_plain_text(&authored_html)
+    };
+    detect_missing_attachment_cue(subject, &plain_body, has_attachments)
+}
+
+/// Detect whether the newly authored email text (ignoring quoted reply lines `>`,
+/// quoted original message blocks, and signatures after `-- `) mentions an
+/// attachment while none is attached.
 fn detect_missing_attachment_cue(
     subject: &str,
     plain_body: &str,
@@ -10912,14 +11605,37 @@ fn detect_missing_attachment_cue(
         return None;
     }
     let mut authored = String::with_capacity(subject.len() + plain_body.len() + 2);
-    authored.push_str(subject);
-    authored.push('\n');
-    for line in plain_body.lines() {
-        let trimmed = line.trim_start();
-        if trimmed == "--" || line == "-- " {
+    // Do not flag keywords inherited in a Re:/Aw:/Fwd: subject from the original mail.
+    if !is_reply_or_forward_subject(subject) {
+        authored.push_str(subject);
+        authored.push('\n');
+    }
+    let lines: Vec<&str> = plain_body.lines().collect();
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let trimmed_start = line.trim_start();
+        if trimmed_start == "--" || *line == "-- " {
             break;
         }
-        if trimmed.starts_with('>') {
+        if is_plain_quote_boundary_line(trimmed) {
+            break;
+        }
+        // Outlook-style inline quote header block ("From: ..." / "Von: ..." followed by Sent/Date/Gesendet/Datum)
+        let lower = trimmed.to_ascii_lowercase();
+        if (lower.starts_with("from:") || lower.starts_with("von:"))
+            && lines.get(idx + 1..=(idx + 2).min(lines.len().saturating_sub(1))).is_some_and(|next_lines| {
+                next_lines.iter().any(|nl| {
+                    let nl_low = nl.trim().to_ascii_lowercase();
+                    nl_low.starts_with("sent:")
+                        || nl_low.starts_with("date:")
+                        || nl_low.starts_with("gesendet:")
+                        || nl_low.starts_with("datum:")
+                })
+            })
+        {
+            break;
+        }
+        if trimmed_start.starts_with('>') {
             continue;
         }
         authored.push_str(line);
@@ -10987,6 +11703,36 @@ mod tests {
                 false
             ),
             None
+        );
+        // HTML blockquote & meridian-quote-attribution replies containing "anbei" must not trigger
+        assert_eq!(
+            detect_missing_attachment_cue_for_content(
+                "Re: Anbei die Rechnung",
+                "<p>Vielen Dank, passt!</p><p class=\"meridian-quote-attribution\">Am 26.11.2026 schrieb Max:</p><blockquote type=\"cite\"><p>Hallo, anbei sende ich die Anlage.</p></blockquote>",
+                false,
+                false
+            ),
+            None
+        );
+        // Standalone HTML blockquote without attribution class must also be ignored
+        assert_eq!(
+            detect_missing_attachment_cue_for_content(
+                "Re: Info",
+                "<p>Alles klar!</p><blockquote><div><p>Anbei das Dokument.</p></div></blockquote>",
+                false,
+                false
+            ),
+            None
+        );
+        // Real newly authored mention above a quoted reply must still trigger
+        assert_eq!(
+            detect_missing_attachment_cue_for_content(
+                "Re: Info",
+                "<p>Danke, anbei sende ich die korrigierte Version.</p><blockquote><p>Alt</p></blockquote>",
+                false,
+                false
+            ),
+            Some("anbei")
         );
     }
 
@@ -12098,6 +12844,12 @@ mod tests {
             return;
         };
 
+        let prev_att_mode = AppSettings::try_new().map(|s| {
+            let prev = s.mail_attachment_view_mode();
+            s.set_mail_attachment_view_mode("icons");
+            prev
+        });
+
         let dialog = ComposeDialog::new();
         while context.iteration(false) {}
 
@@ -12146,6 +12898,9 @@ mod tests {
         assert!(dialog.imp().attachment_expanded.get());
         if let Some(revealer) = dialog.imp().attachment_detail_revealer.borrow().as_ref() {
             assert!(revealer.reveals_child());
+        }
+        if let (Some(settings), Some(prev)) = (AppSettings::try_new(), prev_att_mode) {
+            settings.set_mail_attachment_view_mode(&prev);
         }
 
         dialog.toggle_attachment_expanded();

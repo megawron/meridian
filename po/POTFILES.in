@@ -23,6 +23,7 @@ src/dialogs/folder_sort_order_dialog.rs
 src/dialogs/folder_subscriptions_dialog.rs
 src/dialogs/global_search_dialog.rs
 src/dialogs/import_dialog.rs
+src/dialogs/mail_merge_dialog.rs
 src/dialogs/manage_groups_dialog.rs
 src/dialogs/mod.rs
 src/dialogs/name_selector_dialog.rs
@@ -39,6 +40,7 @@ src/i18n.rs
 src/models/source_selector.rs
 src/services/contact_export_service.rs
 src/services/eds_service.rs
+src/services/mail_merge_service.rs
 src/services/mail_notification_service.rs
 src/services/reminder_service.rs
 src/services/vcard_service.rs

@@ -28,6 +28,7 @@ pub mod folder_sort_order_dialog;
 pub mod folder_subscriptions_dialog;
 pub mod global_search_dialog;
 pub mod import_dialog;
+pub mod mail_merge_dialog;
 pub mod manage_groups_dialog;
 pub mod name_selector_dialog;
 pub mod oof_dialog;
@@ -59,6 +60,7 @@ pub use folder_sort_order_dialog::{
 pub use folder_subscriptions_dialog::FolderSubscriptionsDialog;
 pub use global_search_dialog::GlobalSearchDialog;
 pub use import_dialog::ImportDialog;
+pub use mail_merge_dialog::present_mail_merge_dialog;
 pub use manage_groups_dialog::ManageGroupsDialog;
 #[allow(unused_imports)]
 pub use name_selector_dialog::NameSelectorDialog;

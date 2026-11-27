@@ -30,6 +30,7 @@ pub mod itip_service;
 pub mod log_buffer;
 pub mod mail_composer_service;
 pub mod mail_filter_service;
+pub mod mail_merge_service;
 pub mod mail_metadata_service;
 pub mod mail_notification_service;
 pub mod mail_operations_service;
