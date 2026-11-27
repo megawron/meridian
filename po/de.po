@@ -17151,3 +17151,309 @@ msgstr "Geheimnis sicher im System-Schlüsselbund gespeichert"
 
 msgid "Task created"
 msgstr "Aufgabe erstellt"
+
+msgid "Add Recipients"
+msgstr "Empfänger hinzufügen"
+
+msgid "Add recipient row"
+msgstr "Empfängerzeile hinzufügen"
+
+msgid "Added {} recipients"
+msgstr "{} Empfänger hinzugefügt"
+
+msgid "Added {} recipients ({} skipped)"
+msgstr "{} Empfänger hinzugefügt ({} übersprungen)"
+
+msgid "Attached email (.eml)"
+msgstr "Angehängte E-Mail (.eml)"
+
+msgid "CSV / TSV files (*.csv, *.tsv, *.txt)"
+msgstr "CSV-/TSV-Dateien (*.csv, *.tsv, *.txt)"
+
+msgid "Choose…"
+msgstr "Auswählen…"
+
+msgid "Clear List"
+msgstr "Liste leeren"
+
+msgid "Clear recipient list"
+msgstr "Empfängerliste leeren"
+
+msgid "Click Add, Paste, or Import CSV to add recipients for Mail Merge."
+msgstr "Klicken Sie auf „Hinzufügen“, „Einfügen“ oder „CSV importieren“, um Empfänger für den Serienversand hinzuzufügen."
+
+msgid "Click a placeholder to insert it into your message. Extra CSV columns become custom placeholders automatically."
+msgstr "Klicken Sie auf einen Platzhalter, um ihn in Ihre Nachricht einzufügen. Zusätzliche CSV-Spalten werden automatisch als eigene Platzhalter verfügbar."
+
+msgid "Click to insert into message"
+msgstr "Zum Einfügen in die Nachricht klicken"
+
+msgid "Could not read file"
+msgstr "Datei konnte nicht gelesen werden"
+
+msgid "Each recipient receives an individual email with personalized placeholders."
+msgstr "Jeder Empfänger erhält eine eigene E-Mail mit personalisierten Platzhaltern."
+
+msgid "Edit List…"
+msgstr "Liste bearbeiten…"
+
+msgid "Find in message (Ctrl+F)"
+msgstr "In Nachricht suchen (Strg+F)"
+
+msgid "Find in message (Ctrl+Shift+F)"
+msgstr "In Nachricht suchen (Strg+Umschalt+F)"
+
+msgid "Follow-Up…"
+msgstr "Nachverfolgung…"
+
+msgid "Import CSV…"
+msgstr "CSV importieren…"
+
+msgid "Import Recipient List"
+msgstr "Empfängerliste importieren"
+
+msgid "Import recipients from a CSV or TSV file"
+msgstr "Empfänger aus einer CSV- oder TSV-Datei importieren"
+
+msgid "Imported {} recipients"
+msgstr "{} Empfänger importiert"
+
+msgid "Imported {} recipients ({} skipped)"
+msgstr "{} Empfänger importiert ({} übersprungen)"
+
+msgid "Include"
+msgstr "Übernehmen"
+
+msgid "Include Original Attachments"
+msgstr "Ursprüngliche Anhänge übernehmen"
+
+msgid "Include Selected"
+msgstr "Ausgewählte übernehmen"
+
+msgid "Include…"
+msgstr "Übernehmen…"
+
+msgid "Inserted {}"
+msgstr "{} eingefügt"
+
+msgid "Mail Merge"
+msgstr "Serienmail"
+
+msgid "Mail Merge / Recipient List…"
+msgstr "Serienmail / Empfängerliste…"
+
+msgid "Mail Merge: 1 personalized recipient"
+msgstr "Serienmail: 1 personalisierter Empfänger"
+
+msgid "Mail Merge: {} personalized recipients"
+msgstr "Serienmail: {} personalisierte Empfänger"
+
+msgid "Next recipient"
+msgstr "Nächster Empfänger"
+
+msgid "No recipients yet"
+msgstr "Noch keine Empfänger"
+
+msgid "No valid recipients yet"
+msgstr "Noch keine gültigen Empfänger"
+
+msgid "Original message has 1 attachment ({})"
+msgstr "Ursprüngliche Nachricht hat 1 Anhang ({})"
+
+msgid "Original message has {} attachments"
+msgstr "Ursprüngliche Nachricht hat {} Anhänge"
+
+msgid "Paste CSV, tab-separated spreadsheet rows, or one email per line (e.g. Name, Email):"
+msgstr "CSV, tabulatorgetrennte Tabellenzeilen oder eine E-Mail pro Zeile einfügen (z. B. Name, E-Mail):"
+
+msgid "Paste rows from a spreadsheet or email list"
+msgstr "Zeilen aus einer Tabelle oder E-Mail-Liste einfügen"
+
+msgid "Paste…"
+msgstr "Einfügen…"
+
+msgid "Placeholders"
+msgstr "Platzhalter"
+
+msgid "Placeholders detected — add a recipient list to personalize each email"
+msgstr "Platzhalter erkannt — Empfängerliste hinzufügen, um jede E-Mail zu personalisieren"
+
+msgid "Previous recipient"
+msgstr "Vorheriger Empfänger"
+
+msgid "Recipients…"
+msgstr "Empfänger…"
+
+msgid "Send {} personalized emails (Ctrl+Enter)"
+msgstr "{} personalisierte E-Mails senden (Strg+Eingabe)"
+
+msgid "Sending {} of {}…"
+msgstr "Sende {} von {}…"
+
+msgid "Unresolved placeholders for this recipient: {}"
+msgstr "Nicht aufgelöste Platzhalter für diesen Empfänger: {}"
+
+msgid "email@example.com"
+msgstr "name@beispiel.de"
+
+msgid "Group similar messages"
+msgstr "Ähnliche Nachrichten gruppieren"
+
+msgid "Same sender and subject"
+msgstr "Gleicher Absender und gleicher Betreff"
+
+msgid "cc"
+msgstr "cc"
+
+msgid "bcc"
+msgstr "bcc"
+
+msgid "Runs local scripts"
+msgstr "Führt lokale Skripte aus"
+
+msgid "Run local scripts"
+msgstr "Lokale Skripte ausführen"
+
+msgid "Can execute local programs or scripts on your computer"
+msgstr "Kann lokale Programme oder Skripte auf Ihrem Computer ausführen"
+
+msgid "Read email content"
+msgstr "E-Mail-Inhalte lesen"
+
+msgid "Can read the text and HTML body of opened emails"
+msgstr "Kann Text- und HTML-Inhalte geöffneter E-Mails lesen"
+
+msgid "Access email attachments"
+msgstr "Auf E-Mail-Anhänge zugreifen"
+
+msgid "Can read and preview files attached to emails"
+msgstr "Kann an E-Mails angehängte Dateien lesen und als Vorschau anzeigen"
+
+msgid "Read email headers"
+msgstr "E-Mail-Kopfzeilen lesen"
+
+msgid "Can read sender, recipients, subject, and dates"
+msgstr "Kann Absender, Empfänger, Betreff und Datum lesen"
+
+msgid "Modify email display"
+msgstr "E-Mail-Darstellung ändern"
+
+msgid "Can highlight text, rewrite subjects, or add list badges"
+msgstr "Kann Text hervorheben, Betreffs anpassen oder Listen-Badges hinzufügen"
+
+msgid "Compose & modify drafts"
+msgstr "Entwürfe verfassen & ändern"
+
+msgid "Can open reply drafts or run hooks while composing"
+msgstr "Kann Antwortentwürfe öffnen oder Hooks beim Verfassen ausführen"
+
+msgid "Create tasks"
+msgstr "Aufgaben erstellen"
+
+msgid "Can add tasks to your Meridian task list"
+msgstr "Kann Aufgaben zu Ihrer Meridian-Aufgabenliste hinzufügen"
+
+msgid "Internet & network access"
+msgstr "Internet- & Netzwerkzugriff"
+
+msgid "Can connect to external servers, load websites, or open links"
+msgstr "Kann Verbindungen zu externen Servern herstellen, Webseiten laden oder Links öffnen"
+
+msgid "Appearance & language"
+msgstr "Erscheinungsbild & Sprache"
+
+msgid "Can customize app styling, email CSS, or interface text"
+msgstr "Kann App-Design, E-Mail-CSS oder Oberflächentexte anpassen"
+
+msgid "No special permissions required"
+msgstr "Keine besonderen Berechtigungen erforderlich"
+
+msgid "Does not access your emails, attachments, or external servers"
+msgstr "Greift weder auf Ihre E-Mails noch auf Anhänge oder externe Server zu"
+
+msgid "High risk — runs local scripts"
+msgstr "Hohes Risiko — führt lokale Skripte aus"
+
+msgid "Only install or enable this extension if you trust its author"
+msgstr "Installieren oder aktivieren Sie diese Erweiterung nur, wenn Sie dem Autor vertrauen"
+
+msgid "Built into Meridian"
+msgstr "In Meridian integriert"
+
+msgid "Audited built-in feature with access to the capabilities below"
+msgstr "Geprüfte integrierte Funktion mit Zugriff auf die folgenden Berechtigungen"
+
+msgid "Accesses email or network data"
+msgstr "Greift auf E-Mail- oder Netzwerkdaten zu"
+
+msgid "Review the enforced capabilities below before trusting this extension"
+msgstr "Prüfen Sie die folgenden erzwungenen Berechtigungen, bevor Sie dieser Erweiterung vertrauen"
+
+msgid "Visual & layout access only"
+msgstr "Nur Design- & Layout-Zugriff"
+
+msgid "Does not read your emails, attachments, or run local scripts"
+msgstr "Liest keine E-Mails oder Anhänge und führt keine lokalen Skripte aus"
+
+msgid "High Risk"
+msgstr "Hohes Risiko"
+
+msgid "Blocked"
+msgstr "Blockiert"
+
+msgid "Not declared in extension.json — blocked at runtime"
+msgstr "Nicht in extension.json deklariert — zur Laufzeit blockiert"
+
+msgid "Permissions & Trust"
+msgstr "Berechtigungen & Vertrauen"
+
+msgid "Meridian strictly enforces these permissions at runtime."
+msgstr "Meridian setzt diese Berechtigungen zur Laufzeit strikt durch."
+
+msgid "Capabilities marked as Blocked are used by this extension but omitted from extension.json, so Meridian denies them at runtime."
+msgstr "Als „Blockiert“ markierte Funktionen werden von dieser Erweiterung genutzt, fehlen jedoch in extension.json und werden daher von Meridian zur Laufzeit verweigert."
+
+msgid "Install “{}”?"
+msgstr "„{}“ installieren?"
+
+msgid "Enable “{}”?"
+msgstr "„{}“ aktivieren?"
+
+msgid "Review what this extension by {} can access before continuing:"
+msgstr "Prüfen Sie vor dem Fortfahren, worauf diese Erweiterung von {} zugreifen kann:"
+
+msgid "Review what this extension can access before continuing:"
+msgstr "Prüfen Sie vor dem Fortfahren, worauf diese Erweiterung zugreifen kann:"
+
+msgid "Enable"
+msgstr "Aktivieren"
+
+msgid "Network Access Blocked"
+msgstr "Netzwerkzugriff blockiert"
+
+msgid "This extension attempted to open a remote webpage without declaring the network permission."
+msgstr "Diese Erweiterung hat versucht, eine externe Webseite zu öffnen, ohne die Netzwerkberechtigung anzugeben."
+
+msgid "Spreadsheet"
+msgstr "Tabelle"
+
+msgid "PDF"
+msgstr "PDF"
+
+msgid "Image"
+msgstr "Bild"
+
+msgid "Document"
+msgstr "Dokument"
+
+msgid "Media"
+msgstr "Medien"
+
+msgid "File"
+msgstr "Datei"
+
+msgid "Quick Preview"
+msgstr "Schnellvorschau"
+
+msgid "Show all attachments"
+msgstr "Alle Anhänge anzeigen"
