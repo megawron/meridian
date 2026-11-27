@@ -3614,6 +3614,42 @@ impl AppSettings {
         }
     }
 
+    pub fn mail_attachment_view_mode(&self) -> String {
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-attachment-view-mode"))
+            .unwrap_or(false);
+        let raw = if has_key {
+            self.settings
+                .string("mail-attachment-view-mode")
+                .to_string()
+        } else {
+            "icons".to_string()
+        };
+        if raw.trim().eq_ignore_ascii_case("list") {
+            "list".to_string()
+        } else {
+            "icons".to_string()
+        }
+    }
+
+    pub fn set_mail_attachment_view_mode(&self, mode: &str) {
+        let normalized = if mode.trim().eq_ignore_ascii_case("list") {
+            "list"
+        } else {
+            "icons"
+        };
+        let has_key = self
+            .settings
+            .settings_schema()
+            .map(|s| s.has_key("mail-attachment-view-mode"))
+            .unwrap_or(false);
+        if has_key {
+            self.set_string("mail-attachment-view-mode", normalized);
+        }
+    }
+
     pub fn mail_header_actions(&self) -> Vec<String> {
         let has_key = self
             .settings
@@ -4772,6 +4808,9 @@ impl AppSettings {
                 let style = normalized_mail_header_style(value);
                 self.set_mail_header_style(style);
             }
+            "mail-attachment-view-mode" => {
+                self.set_mail_attachment_view_mode(value);
+            }
             "mail-header-actions" => {
                 let (left, right) = parse_mail_header_action_groups(value);
                 self.set_mail_header_action_groups(&left, &right);
@@ -5264,6 +5303,7 @@ impl AppSettings {
             "mail-date-align",
             "mail-list-view-profile",
             "mail-header-style",
+            "mail-attachment-view-mode",
             "mail-header-actions",
             "mail-list-column-order",
             "color-scheme",

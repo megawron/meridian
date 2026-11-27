@@ -2920,6 +2920,31 @@ pub(crate) fn parse_rfc822_bytes(
     .then(|| raw.to_vec());
 
     let mut attachments = extracted.attachments;
+    // Mark any image part referenced via `cid:` inside the HTML body as inline even when
+    // Exchange/Teams/Outlook emitted `Content-Disposition: attachment` alongside `Content-ID`.
+    if !body_html.is_empty() && !attachments.is_empty() {
+        let html_lower = body_html.to_ascii_lowercase();
+        if html_lower.contains("cid:") {
+            for att in &mut attachments {
+                if !att.mime_type.to_ascii_lowercase().starts_with("image/") {
+                    continue;
+                }
+                let referenced_by_cid = att.content_id.as_deref().is_some_and(|cid| {
+                    let cid_lower = cid.trim().trim_matches(['<', '>']).to_ascii_lowercase();
+                    !cid_lower.is_empty() && html_lower.contains(&format!("cid:{cid_lower}"))
+                }) || {
+                    let fname_lower = att.filename.trim().to_ascii_lowercase();
+                    !fname_lower.is_empty() && html_lower.contains(&format!("cid:{fname_lower}"))
+                };
+                if referenced_by_cid {
+                    att.is_inline = true;
+                    if att.content_id.is_none() && !att.filename.trim().is_empty() {
+                        att.content_id = Some(att.filename.clone());
+                    }
+                }
+            }
+        }
+    }
     if attachments.is_empty() {
         let is_cal = has_cal_header
             || crate::services::evolution_summary_cache::is_calendar_invitation_subject_or_preview(&subject, &preview);
@@ -3853,7 +3878,7 @@ fn text_preview(value: &str) -> String {
     }
 }
 
-fn format_size(size: usize) -> String {
+pub(crate) fn format_size(size: usize) -> String {
     const KIB: usize = 1024;
     const MIB: usize = KIB * 1024;
 
@@ -6169,6 +6194,35 @@ JVBERi0xLjQK\r\n\
         );
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn cid_referenced_image_with_attachment_disposition_is_treated_as_inline() {
+        let raw = concat!(
+            "From: Teams <noreply@example.org>\r\n",
+            "To: Alice <alice@example.org>\r\n",
+            "Subject: Bob is trying to reach you in Teams\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/related; boundary=\"bnd-teams\"\r\n",
+            "\r\n",
+            "--bnd-teams\r\n",
+            "Content-Type: text/html; charset=utf-8\r\n",
+            "\r\n",
+            "<html><body><img src=\"cid:avatar123@example.org\"><p>Hello</p></body></html>\r\n",
+            "--bnd-teams\r\n",
+            "Content-Type: image/png; name=\"avatar.png\"\r\n",
+            "Content-Disposition: attachment; filename=\"avatar.png\"\r\n",
+            "Content-ID: <avatar123@example.org>\r\n",
+            "Content-Transfer-Encoding: base64\r\n",
+            "\r\n",
+            "iVBORw0KGgo=\r\n",
+            "--bnd-teams--\r\n"
+        );
+        let parsed = parse_rfc822_bytes("teams-1", "INBOX", raw.as_bytes(), true)
+            .expect("teams message should parse");
+        assert_eq!(parsed.attachments.len(), 1);
+        assert!(parsed.attachments[0].is_inline);
+        assert!(!parsed.attachments[0].is_user_attachment());
     }
 
     fn temporary_directory(label: &str) -> std::path::PathBuf {

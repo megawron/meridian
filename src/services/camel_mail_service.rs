@@ -1379,8 +1379,12 @@ fn resolve_shared_mailbox_target_with_profiles(
             shared_mailbox_container_prefixes(mailbox_email, &profile.display_name);
         let detected_prefix = cached_folder_names.iter().find_map(|fname| {
             for prefix in &candidate_prefixes {
-                if fname.starts_with(prefix) {
-                    return Some(format!("{prefix}/"));
+                if fname.len() >= prefix.len()
+                    && fname[..prefix.len()].eq_ignore_ascii_case(prefix)
+                    && (fname.len() == prefix.len()
+                        || fname.as_bytes().get(prefix.len()) == Some(&b'/'))
+                {
+                    return Some(format!("{}/", &fname[..prefix.len()]));
                 }
             }
             None
@@ -1388,34 +1392,75 @@ fn resolve_shared_mailbox_target_with_profiles(
         let mailbox_prefix = detected_prefix
             .unwrap_or_else(|| format!("Foreign Folders/Postfach — {mailbox_email}/"));
 
+        let cached_leaf_matching = |aliases: &[&str]| -> Option<String> {
+            cached_folder_names.iter().find_map(|fname| {
+                if fname.len() <= mailbox_prefix.len()
+                    || !fname[..mailbox_prefix.len()].eq_ignore_ascii_case(&mailbox_prefix)
+                {
+                    return None;
+                }
+                let leaf = &fname[mailbox_prefix.len()..];
+                if leaf.contains('/') {
+                    return None;
+                }
+                aliases
+                    .iter()
+                    .any(|alias| leaf.eq_ignore_ascii_case(alias))
+                    .then(|| leaf.to_string())
+            })
+        };
+
         let target_subfolder = if let Some((rel, is_container)) =
             strip_shared_mailbox_prefix(trimmed_folder, mailbox_email, &profile.display_name)
         {
             if is_container || rel.is_empty() {
-                "Posteingang".to_string()
+                cached_leaf_matching(&["Posteingang", "Inbox"])
+                    .unwrap_or_else(|| "Posteingang".to_string())
             } else {
                 rel.to_string()
             }
         } else if trimmed_folder.is_empty() || trimmed_folder.eq_ignore_ascii_case("inbox") {
-            "Posteingang".to_string()
+            cached_leaf_matching(&["Posteingang", "Inbox"])
+                .unwrap_or_else(|| "Posteingang".to_string())
         } else if trimmed_folder.eq_ignore_ascii_case("sent")
             || trimmed_folder.eq_ignore_ascii_case("sent items")
+            || trimmed_folder.eq_ignore_ascii_case("sent mail")
+            || trimmed_folder.eq_ignore_ascii_case("sent messages")
             || trimmed_folder.eq_ignore_ascii_case("gesendet")
+            || trimmed_folder.eq_ignore_ascii_case("gesendete elemente")
+            || trimmed_folder.eq_ignore_ascii_case("gesendete objekte")
+            || trimmed_folder.eq_ignore_ascii_case("gesendete nachrichten")
         {
-            "Gesendete Elemente".to_string()
+            cached_leaf_matching(&[
+                "Gesendete Elemente",
+                "Sent Items",
+                "Sent",
+                "Gesendet",
+                "Sent Mail",
+                "Sent Messages",
+                "Gesendete Objekte",
+                "Gesendete Nachrichten",
+            ])
+            .unwrap_or_else(|| "Gesendete Elemente".to_string())
         } else if trimmed_folder.eq_ignore_ascii_case("drafts")
             || trimmed_folder.eq_ignore_ascii_case("draft")
+            || trimmed_folder.eq_ignore_ascii_case("entwürfe")
         {
-            "Entwürfe".to_string()
+            cached_leaf_matching(&["Entwürfe", "Drafts", "Draft"])
+                .unwrap_or_else(|| "Entwürfe".to_string())
         } else if trimmed_folder.eq_ignore_ascii_case("trash")
             || trimmed_folder.eq_ignore_ascii_case("deleted items")
             || trimmed_folder.eq_ignore_ascii_case("papierkorb")
+            || trimmed_folder.eq_ignore_ascii_case("gelöschte elemente")
         {
-            "Gelöschte Elemente".to_string()
+            cached_leaf_matching(&["Gelöschte Elemente", "Deleted Items", "Trash", "Papierkorb"])
+                .unwrap_or_else(|| "Gelöschte Elemente".to_string())
         } else if trimmed_folder.eq_ignore_ascii_case("junk")
             || trimmed_folder.eq_ignore_ascii_case("spam")
+            || trimmed_folder.eq_ignore_ascii_case("junk-e-mail")
         {
-            "Junk-E-Mail".to_string()
+            cached_leaf_matching(&["Junk-E-Mail", "Junk Email", "Junk", "Spam"])
+                .unwrap_or_else(|| "Junk-E-Mail".to_string())
         } else {
             trimmed_folder.to_string()
         };
@@ -5550,15 +5595,54 @@ mod shared_mailbox_target_tests {
             &profiles,
             &[],
         );
-        assert_eq!(
-            uid2,
-            format!(
-                "{}-mail",
-                crate::services::account_config_service::eds_source_uid_for_email(
-                    "second@example.com"
-                )
+        assert_eq!(uid2, format!(
+            "{}-mail",
+            crate::services::account_config_service::eds_source_uid_for_email(
+                "second@example.com"
             )
-        );
+        ));
         assert_eq!(folder2, None);
+    }
+
+    #[test]
+    fn resolves_shared_mailbox_sent_folder_from_cached_english_folder_names() {
+        let eds_parent =
+            make_exchange_profile("eds:1710000000.1.0@host", "user@example.com", "User");
+        let mut shared_eds =
+            make_exchange_profile("account:dept@example.com", "dept@example.com", "Department");
+        shared_eds.is_shared_mailbox = true;
+        shared_eds.open_mailbox_other_user = true;
+        shared_eds.foreign_mailbox = "dept@example.com".to_string();
+        shared_eds.parent_account_id = Some(eds_parent.id.clone());
+
+        let profiles = vec![eds_parent, shared_eds];
+        let cached = vec![
+            "Foreign Folders/Mailbox — dept@example.com/Inbox".to_string(),
+            "Foreign Folders/Mailbox — dept@example.com/Sent Items".to_string(),
+            "Foreign Folders/Mailbox — dept@example.com/Drafts".to_string(),
+        ];
+
+        let (send_uid, send_folder, _) = resolve_eds_send_or_save_target_with_profiles(
+            "account:dept@example.com",
+            "Sent",
+            &profiles,
+            &cached,
+        );
+        assert_eq!(send_uid, "1710000000.1.0@host");
+        assert_eq!(
+            send_folder.as_deref(),
+            Some("Foreign Folders/Mailbox — dept@example.com/Sent Items")
+        );
+
+        let (_, draft_folder, _) = resolve_eds_send_or_save_target_with_profiles(
+            "account:dept@example.com",
+            "Drafts",
+            &profiles,
+            &cached,
+        );
+        assert_eq!(
+            draft_folder.as_deref(),
+            Some("Foreign Folders/Mailbox — dept@example.com/Drafts")
+        );
     }
 }

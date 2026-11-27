@@ -814,6 +814,11 @@
       <summary>Show conversation thread in viewer as an accordion</summary>
       <description>When enabled, previous messages in a conversation thread are displayed in an expandable accordion inside the preview pane.</description>
     </key>
+    <key name="mail-attachment-view-mode" type="s">
+      <default>'icons'</default>
+      <summary>Preferred attachment drawer view mode (icons or list)</summary>
+      <description>Remembers whether the expanded attachment drawer displays attachments as cards (icons) or a detailed list (list).</description>
+    </key>
     <key name="mail-folder-sort-order" type="s">
       <default>'{}'</default>
       <summary>Portable custom folder sibling sort order</summary>

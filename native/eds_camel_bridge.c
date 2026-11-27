@@ -5962,6 +5962,125 @@ ref_mail_account_source (ESourceRegistry *registry,
 }
 
 static gboolean
+leaf_matches_special_folder (const gchar *leaf,
+                             CamelFolderInfoFlags folder_type)
+{
+    if (!leaf || !*leaf)
+        return FALSE;
+
+    if (folder_type == CAMEL_FOLDER_TYPE_SENT) {
+        return g_ascii_strcasecmp (leaf, "Sent") == 0 ||
+            g_ascii_strcasecmp (leaf, "Sent Items") == 0 ||
+            g_ascii_strcasecmp (leaf, "Sent Mail") == 0 ||
+            g_ascii_strcasecmp (leaf, "Sent Messages") == 0 ||
+            g_ascii_strcasecmp (leaf, "Gesendet") == 0 ||
+            g_ascii_strcasecmp (leaf, "Gesendete Elemente") == 0 ||
+            g_ascii_strcasecmp (leaf, "Gesendete Objekte") == 0 ||
+            g_ascii_strcasecmp (leaf, "Gesendete Nachrichten") == 0;
+    }
+    if (folder_type == CAMEL_FOLDER_TYPE_DRAFTS) {
+        return g_ascii_strcasecmp (leaf, "Drafts") == 0 ||
+            g_ascii_strcasecmp (leaf, "Draft") == 0 ||
+            g_ascii_strcasecmp (leaf, "Entwürfe") == 0 ||
+            g_ascii_strcasecmp (leaf, "Entwuerfe") == 0;
+    }
+    return FALSE;
+}
+
+static const gchar *
+find_special_folder_under_prefix (CamelFolderInfo *folder_info,
+                                  const gchar *container_prefix,
+                                  CamelFolderInfoFlags folder_type)
+{
+    const CamelFolderInfo *cursor;
+    gsize prefix_len;
+
+    if (!folder_info || !container_prefix || !*container_prefix)
+        return NULL;
+
+    prefix_len = strlen (container_prefix);
+    for (cursor = folder_info; cursor != NULL; cursor = cursor->next) {
+        if (cursor->full_name &&
+            (cursor->flags & CAMEL_FOLDER_NOSELECT) == 0 &&
+            g_ascii_strncasecmp (cursor->full_name, container_prefix, prefix_len) == 0) {
+            const gchar *rest = cursor->full_name + prefix_len;
+            if (*rest == '/')
+                rest++;
+            if (*rest && strchr (rest, '/') == NULL) {
+                if ((cursor->flags & CAMEL_FOLDER_TYPE_MASK) == folder_type ||
+                    leaf_matches_special_folder (rest, folder_type)) {
+                    return cursor->full_name;
+                }
+            }
+        }
+        if (cursor->child) {
+            const gchar *child_match = find_special_folder_under_prefix (
+                cursor->child, container_prefix, folder_type);
+            if (child_match)
+                return child_match;
+        }
+    }
+    return NULL;
+}
+
+static CamelFolder *
+open_preferred_store_folder (CamelStore *store,
+                             const gchar *preferred_folder_name,
+                             CamelFolderInfoFlags folder_type,
+                             GCancellable *cancellable)
+{
+    CamelFolder *folder = NULL;
+    const gchar *last_slash;
+
+    if (!store || !preferred_folder_name || !*preferred_folder_name)
+        return NULL;
+
+    folder = open_matching_store_folder (
+        store, preferred_folder_name, cancellable, NULL);
+    if (folder)
+        return folder;
+
+    /* If the caller constructed a localized default leaf (for example
+     * "Foreign Folders/Postfach — shared@example.com/Gesendete Elemente")
+     * while the server actually uses English ("Sent Items") or vice versa,
+     * locate the matching Sent/Drafts folder directly under the same shared
+     * mailbox container prefix. */
+    last_slash = strrchr (preferred_folder_name, '/');
+    if (last_slash && last_slash > preferred_folder_name) {
+        gchar *container_prefix = g_strndup (
+            preferred_folder_name, (gsize) (last_slash - preferred_folder_name));
+        CamelFolderInfo *folder_info = camel_store_get_folder_info_sync (
+            store, NULL,
+            CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+            CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+            CAMEL_STORE_FOLDER_INFO_FAST,
+            cancellable, NULL);
+        const gchar *resolved = find_special_folder_under_prefix (
+            folder_info, container_prefix, folder_type);
+        if (!resolved) {
+            camel_folder_info_free (folder_info);
+            folder_info = camel_store_get_folder_info_sync (
+                store, NULL,
+                CAMEL_STORE_FOLDER_INFO_RECURSIVE |
+                CAMEL_STORE_FOLDER_INFO_NO_VIRTUAL |
+                CAMEL_STORE_FOLDER_INFO_REFRESH,
+                cancellable, NULL);
+            resolved = find_special_folder_under_prefix (
+                folder_info, container_prefix, folder_type);
+        }
+        if (resolved) {
+            folder = camel_store_get_folder_sync (
+                store, resolved, CAMEL_STORE_FOLDER_NONE,
+                cancellable, NULL);
+        }
+        camel_folder_info_free (folder_info);
+        g_free (container_prefix);
+    }
+
+    return folder;
+}
+
+static gboolean
 append_message_with_preferred_folder (CamelStore *store,
                                       ESourceRegistry *registry,
                                       ESource *identity_source,
@@ -5969,41 +6088,71 @@ append_message_with_preferred_folder (CamelStore *store,
                                       const gchar *preferred_folder_name,
                                       CamelFolderInfoFlags folder_type,
                                       gboolean drafts,
+                                      gboolean allow_default_fallback,
                                       CamelMimeMessage *message,
                                       GCancellable *cancellable,
                                       GError **error)
 {
     CamelFolder *folder = NULL;
+    CamelMessageInfo *message_info = NULL;
     gchar *appended_uid = NULL;
     gboolean appended = FALSE;
 
+    message_info = camel_message_info_new (NULL);
+    if (message_info && !drafts) {
+        camel_message_info_set_flags (
+            message_info, CAMEL_MESSAGE_SEEN, CAMEL_MESSAGE_SEEN);
+    }
+
     if (preferred_folder_name && *preferred_folder_name) {
         ensure_foreign_folders_for_ews_store (store, registry, cancellable);
-        folder = camel_store_get_folder_sync (
-            store, preferred_folder_name, CAMEL_STORE_FOLDER_NONE,
-            cancellable, NULL);
+        folder = open_preferred_store_folder (
+            store, preferred_folder_name, folder_type, cancellable);
         if (folder) {
+            GError *preferred_error = NULL;
             appended = camel_folder_append_message_sync (
-                folder, message, NULL, &appended_uid,
-                cancellable, NULL);
+                folder, message, message_info, &appended_uid,
+                cancellable, &preferred_error);
+            if (appended) {
+                camel_folder_synchronize_sync (folder, FALSE, cancellable, NULL);
+                camel_folder_refresh_info_sync (folder, cancellable, NULL);
+            } else if (preferred_error) {
+                if (!allow_default_fallback && error && !*error)
+                    g_propagate_error (error, preferred_error);
+                else
+                    g_clear_error (&preferred_error);
+            }
             g_clear_pointer (&appended_uid, g_free);
             g_clear_object (&folder);
-            if (appended)
+            if (appended) {
+                g_clear_object (&message_info);
                 return TRUE;
+            }
+        }
+        if (!allow_default_fallback) {
+            g_clear_object (&message_info);
+            return FALSE;
         }
     }
 
     folder = open_special_folder (
         store, identity_source, account_source,
         folder_type, drafts, cancellable, error);
-    if (!folder)
+    if (!folder) {
+        g_clear_object (&message_info);
         return FALSE;
+    }
 
     appended = camel_folder_append_message_sync (
-        folder, message, NULL, &appended_uid,
+        folder, message, message_info, &appended_uid,
         cancellable, error);
+    if (appended) {
+        camel_folder_synchronize_sync (folder, FALSE, cancellable, NULL);
+        camel_folder_refresh_info_sync (folder, cancellable, NULL);
+    }
     g_clear_pointer (&appended_uid, g_free);
     g_clear_object (&folder);
+    g_clear_object (&message_info);
     return appended;
 }
 
@@ -6094,7 +6243,7 @@ meridian_eds_camel_save_message (
     success = append_message_with_preferred_folder (
         store, registry, identity_source, source, preferred_folder_name,
         drafts ? CAMEL_FOLDER_TYPE_DRAFTS : CAMEL_FOLDER_TYPE_SENT,
-        drafts, message, cancellable, &error);
+        drafts, TRUE, message, cancellable, &error);
 
 finish:
     if (!success && out_error && error)
@@ -6463,28 +6612,38 @@ meridian_eds_camel_send_message (
         &sent_message_saved, cancellable, &error);
 
     /* Some Camel transports report a successful SMTP submission without
-     * storing a Sent copy.  Honor the EDS submission setting and append the
-     * exact transport-ready message when Camel did not do so itself.  A Sent
-     * copy failure must remain a visible status detail, not turn a message
-     * which was already accepted by SMTP into a false send failure. */
-    if (success && !sent_message_saved &&
-        (!submission_extension ||
-         e_source_mail_submission_get_use_sent_folder (submission_extension))) {
-        GError *sent_error = NULL;
+     * storing a Sent copy.  In addition, when sending from a shared/delegate
+     * mailbox via EWS, the transport sets sent_message_saved=TRUE after
+     * saving into the parent user's Sent Items rather than the shared
+     * mailbox's Sent folder.  Whenever preferred_sent_folder is set, also
+     * ensure the copy is appended to that exact shared mailbox Sent folder
+     * (without duplicating into the parent's default Sent folder). */
+    {
+        gboolean has_preferred_sent =
+            (preferred_sent_folder && *preferred_sent_folder);
+        if (success && (!sent_message_saved || has_preferred_sent) &&
+            (!submission_extension ||
+             e_source_mail_submission_get_use_sent_folder (submission_extension))) {
+            GError *sent_error = NULL;
+            gboolean allow_default_fallback = !sent_message_saved;
+            gboolean saved_now = FALSE;
 
-        sent_store = open_store_for_source (
-            session, source, cancellable, &sent_error);
-        if (sent_store) {
-            sent_message_saved = append_message_with_preferred_folder (
-                sent_store, registry, identity_source, source,
-                preferred_sent_folder, CAMEL_FOLDER_TYPE_SENT, FALSE,
-                message, cancellable, &sent_error);
+            sent_store = open_store_for_source (
+                session, source, cancellable, &sent_error);
+            if (sent_store) {
+                saved_now = append_message_with_preferred_folder (
+                    sent_store, registry, identity_source, source,
+                    preferred_sent_folder, CAMEL_FOLDER_TYPE_SENT, FALSE,
+                    allow_default_fallback, message, cancellable, &sent_error);
+            }
+            if (saved_now)
+                sent_message_saved = TRUE;
+            if (!saved_now && sent_error) {
+                g_warning ("EDS sent copy could not be saved: %s",
+                           sent_error->message);
+            }
+            g_clear_error (&sent_error);
         }
-        if (!sent_message_saved && sent_error) {
-            g_warning ("EDS sent copy could not be saved: %s",
-                       sent_error->message);
-        }
-        g_clear_error (&sent_error);
     }
 
 finish:

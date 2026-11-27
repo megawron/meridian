@@ -4,8 +4,96 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_longlong, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 static LIMIT_MEMORY_USAGE: AtomicBool = AtomicBool::new(false);
+static VERIFIED_ATTACHMENT_KINDS: OnceLock<Mutex<HashMap<String, MailAttachmentKind>>> =
+    OnceLock::new();
+
+fn verified_attachment_key(source_uid: &str, folder_name: &str, uid: &str) -> String {
+    format!("{source_uid}\x1f{folder_name}\x1f{uid}")
+}
+
+/// Record the true attachment kind confirmed after hydrating a full MIME message,
+/// so Evolution/Exchange `CAMEL_MESSAGE_ATTACHMENTS` false positives (e.g. inline-only
+/// Microsoft Teams notifications) do not reappear across folder refreshes.
+pub(crate) fn record_verified_attachment_kind(
+    source_uid: &str,
+    folder_name: &str,
+    uid: &str,
+    kind: MailAttachmentKind,
+) {
+    let map = VERIFIED_ATTACHMENT_KINDS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = map.lock() {
+        if guard.len() > 20_000 {
+            guard.clear();
+        }
+        guard.insert(verified_attachment_key(source_uid, folder_name, uid), kind);
+    }
+}
+
+pub(crate) fn verified_attachment_kind(
+    source_uid: &str,
+    folder_name: &str,
+    uid: &str,
+) -> Option<MailAttachmentKind> {
+    let map = VERIFIED_ATTACHMENT_KINDS.get()?;
+    map.lock()
+        .ok()
+        .and_then(|guard| guard.get(&verified_attachment_key(source_uid, folder_name, uid)).copied())
+}
+
+fn summary_placeholder_attachments(
+    source_uid: &str,
+    folder_name: &str,
+    uid: &str,
+    has_cal: bool,
+    has_attachments: bool,
+) -> Vec<AttachmentInfo> {
+    let kind = verified_attachment_kind(source_uid, folder_name, uid).unwrap_or(if has_cal {
+        MailAttachmentKind::Calendar
+    } else if has_attachments {
+        MailAttachmentKind::File
+    } else {
+        MailAttachmentKind::None
+    });
+
+    match kind {
+        MailAttachmentKind::None => Vec::new(),
+        MailAttachmentKind::Calendar => vec![AttachmentInfo {
+            filename: "invite.ics".to_string(),
+            size_formatted: String::new(),
+            mime_type: "text/calendar".to_string(),
+            content_id: None,
+            is_inline: false,
+            content: std::sync::Arc::from([]),
+        }],
+        MailAttachmentKind::Email => vec![AttachmentInfo {
+            filename: "message.eml".to_string(),
+            size_formatted: String::new(),
+            mime_type: "message/rfc822".to_string(),
+            content_id: None,
+            is_inline: false,
+            content: std::sync::Arc::from([]),
+        }],
+        MailAttachmentKind::Contact => vec![AttachmentInfo {
+            filename: "contact.vcf".to_string(),
+            size_formatted: String::new(),
+            mime_type: "text/vcard".to_string(),
+            content_id: None,
+            is_inline: false,
+            content: std::sync::Arc::from([]),
+        }],
+        MailAttachmentKind::File => vec![AttachmentInfo {
+            filename: "Attachment".to_string(),
+            size_formatted: String::new(),
+            mime_type: "application/octet-stream".to_string(),
+            content_id: None,
+            is_inline: false,
+            content: std::sync::Arc::from([]),
+        }],
+    }
+}
 
 pub fn set_limit_memory_usage(limit: bool) {
     LIMIT_MEMORY_USAGE.store(limit, Ordering::Relaxed);
@@ -25,7 +113,7 @@ pub fn effective_sqlite_folder_limit(page_limit: usize) -> usize {
     }
 }
 
-use crate::models::mail_message::AttachmentInfo;
+use crate::models::mail_message::{AttachmentInfo, MailAttachmentKind};
 use crate::services::mail_metadata_service::{MailFollowUpMetadata, MailFollowUpState};
 use crate::services::mail_store_service::{MailBackendLocation, ParsedMail};
 
@@ -1185,7 +1273,7 @@ pub fn load_folder_messages_page_from_sqlite(
     };
 
     let sql_str = format!(
-        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part \
+        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part, mail_cc \
          FROM {table_name}{where_clause} ORDER BY dreceived DESC, dsent DESC{limit_clause};"
     );
 
@@ -1335,27 +1423,13 @@ pub fn load_folder_messages_page_from_sqlite(
                 message_id: Some(id.clone()),
             });
 
-            let attachments = if has_cal {
-                vec![AttachmentInfo {
-                    filename: "invite.ics".to_string(),
-                    size_formatted: String::new(),
-                    mime_type: "text/calendar".to_string(),
-                    content_id: None,
-                    is_inline: false,
-                    content: std::sync::Arc::from([]),
-                }]
-            } else if has_attachments {
-                vec![AttachmentInfo {
-                    filename: "Attachment".to_string(),
-                    size_formatted: String::new(),
-                    mime_type: "application/octet-stream".to_string(),
-                    content_id: None,
-                    is_inline: false,
-                    content: std::sync::Arc::from([]),
-                }]
-            } else {
-                Vec::new()
-            };
+            let attachments = summary_placeholder_attachments(
+                &mapped_source_uid,
+                &mapped_folder_name,
+                &uid,
+                has_cal,
+                has_attachments,
+            );
 
             let part_ptr = sqlite3_column_text(stmt, 12);
             let (parsed_msg_id, in_reply_to, references) = if !part_ptr.is_null() {
@@ -1368,6 +1442,12 @@ pub fn load_folder_messages_page_from_sqlite(
             } else {
                 (None, Vec::new(), Vec::new())
             };
+            let mail_cc_ptr = sqlite3_column_text(stmt, 13);
+            let mail_cc = if !mail_cc_ptr.is_null() {
+                CStr::from_ptr(mail_cc_ptr).to_string_lossy().into_owned()
+            } else {
+                String::new()
+            };
 
             messages.push(ParsedMail {
                 id,
@@ -1377,7 +1457,7 @@ pub fn load_folder_messages_page_from_sqlite(
                 sender_name,
                 sender_email,
                 recipient_to: mail_to,
-                recipient_cc: String::new(),
+                recipient_cc: mail_cc,
                 recipient_bcc: String::new(),
                 reply_to: String::new(),
                 subject,
@@ -1475,7 +1555,7 @@ pub fn load_folder_messages_window_from_sqlite(
 
     let sql_str = if offset <= 65_536 {
         format!(
-            "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part \
+            "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part, mail_cc \
              FROM {table_name} \
              WHERE rowid IN ( \
                  SELECT rowid FROM {table_name}{active_filter} \
@@ -1513,7 +1593,7 @@ pub fn load_folder_messages_window_from_sqlite(
                 format!("{active_filter} AND (dreceived < {anchor_drec} OR (dreceived = {anchor_drec} AND dsent <= {anchor_dsen}))")
             };
             format!(
-                "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part \
+                "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part, mail_cc \
                  FROM {table_name} \
                  WHERE rowid IN ( \
                      SELECT rowid FROM {table_name}{cond} \
@@ -1524,7 +1604,7 @@ pub fn load_folder_messages_window_from_sqlite(
             )
         } else {
             format!(
-                "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part \
+                "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part, mail_cc \
                  FROM {table_name} \
                  WHERE rowid IN ( \
                      SELECT rowid FROM {table_name}{active_filter} \
@@ -1677,27 +1757,13 @@ pub fn load_folder_messages_window_from_sqlite(
                 message_id: Some(id.clone()),
             });
 
-            let attachments = if has_cal {
-                vec![AttachmentInfo {
-                    filename: "invite.ics".to_string(),
-                    size_formatted: String::new(),
-                    mime_type: "text/calendar".to_string(),
-                    content_id: None,
-                    is_inline: false,
-                    content: std::sync::Arc::from([]),
-                }]
-            } else if has_attachments {
-                vec![AttachmentInfo {
-                    filename: "Attachment".to_string(),
-                    size_formatted: String::new(),
-                    mime_type: "application/octet-stream".to_string(),
-                    content_id: None,
-                    is_inline: false,
-                    content: std::sync::Arc::from([]),
-                }]
-            } else {
-                Vec::new()
-            };
+            let attachments = summary_placeholder_attachments(
+                &mapped_source_uid,
+                &mapped_folder_name,
+                &uid,
+                has_cal,
+                has_attachments,
+            );
 
             let part_ptr = sqlite3_column_text(stmt, 12);
             let (parsed_msg_id, in_reply_to, references) = if !part_ptr.is_null() {
@@ -1710,6 +1776,12 @@ pub fn load_folder_messages_window_from_sqlite(
             } else {
                 (None, Vec::new(), Vec::new())
             };
+            let mail_cc_ptr = sqlite3_column_text(stmt, 13);
+            let mail_cc = if !mail_cc_ptr.is_null() {
+                CStr::from_ptr(mail_cc_ptr).to_string_lossy().into_owned()
+            } else {
+                String::new()
+            };
 
             messages.push(ParsedMail {
                 id,
@@ -1719,7 +1791,7 @@ pub fn load_folder_messages_window_from_sqlite(
                 sender_name,
                 sender_email,
                 recipient_to: mail_to,
-                recipient_cc: String::new(),
+                recipient_cc: mail_cc,
                 recipient_bcc: String::new(),
                 reply_to: String::new(),
                 subject,
@@ -1777,7 +1849,7 @@ pub fn load_folder_unread_or_flagged_from_sqlite(
     };
 
     let sql_str = format!(
-        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part \
+        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part, mail_cc \
          FROM {table_name} WHERE ((flags & 16) = 0 OR (flags & 8) != 0 OR labels LIKE '%$Flagged%') \
          ORDER BY dreceived DESC, dsent DESC{limit_clause};"
     );
@@ -1921,27 +1993,13 @@ pub fn load_folder_unread_or_flagged_from_sqlite(
                 message_id: Some(id.clone()),
             });
 
-            let attachments = if has_cal {
-                vec![AttachmentInfo {
-                    filename: "invite.ics".to_string(),
-                    size_formatted: String::new(),
-                    mime_type: "text/calendar".to_string(),
-                    content_id: None,
-                    is_inline: false,
-                    content: std::sync::Arc::from([]),
-                }]
-            } else if has_attachments {
-                vec![AttachmentInfo {
-                    filename: "Attachment".to_string(),
-                    size_formatted: String::new(),
-                    mime_type: "application/octet-stream".to_string(),
-                    content_id: None,
-                    is_inline: false,
-                    content: std::sync::Arc::from([]),
-                }]
-            } else {
-                Vec::new()
-            };
+            let attachments = summary_placeholder_attachments(
+                &mapped_source_uid,
+                &mapped_folder_name,
+                &uid,
+                has_cal,
+                has_attachments,
+            );
 
             let part_ptr = sqlite3_column_text(stmt, 12);
             let (parsed_msg_id, in_reply_to, references) = if !part_ptr.is_null() {
@@ -1954,6 +2012,12 @@ pub fn load_folder_unread_or_flagged_from_sqlite(
             } else {
                 (None, Vec::new(), Vec::new())
             };
+            let mail_cc_ptr = sqlite3_column_text(stmt, 13);
+            let mail_cc = if !mail_cc_ptr.is_null() {
+                CStr::from_ptr(mail_cc_ptr).to_string_lossy().into_owned()
+            } else {
+                String::new()
+            };
 
             messages.push(ParsedMail {
                 id,
@@ -1963,7 +2027,7 @@ pub fn load_folder_unread_or_flagged_from_sqlite(
                 sender_name,
                 sender_email,
                 recipient_to: mail_to,
-                recipient_cc: String::new(),
+                recipient_cc: mail_cc,
                 recipient_bcc: String::new(),
                 reply_to: String::new(),
                 subject,
@@ -2156,7 +2220,7 @@ pub fn load_folder_messages_since_from_sqlite(
     };
 
     let sql_str = format!(
-        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part \
+        "SELECT uid, flags, size, dsent, dreceived, subject, mail_from, mail_to, preview, labels, bdata, usertags, part, mail_cc \
          FROM {table_name} WHERE dreceived > {min_dreceived_exclusive} OR (dreceived <= 0 AND dsent > {min_dreceived_exclusive}) \
          ORDER BY dreceived DESC, dsent DESC{limit_clause};"
     );
@@ -2273,27 +2337,13 @@ pub fn load_folder_messages_since_from_sqlite(
                 message_id: Some(id.clone()),
             });
 
-            let attachments = if has_cal {
-                vec![AttachmentInfo {
-                    filename: "invite.ics".to_string(),
-                    size_formatted: String::new(),
-                    mime_type: "text/calendar".to_string(),
-                    content_id: None,
-                    is_inline: false,
-                    content: std::sync::Arc::from([]),
-                }]
-            } else if has_attachments {
-                vec![AttachmentInfo {
-                    filename: "Attachment".to_string(),
-                    size_formatted: String::new(),
-                    mime_type: "application/octet-stream".to_string(),
-                    content_id: None,
-                    is_inline: false,
-                    content: std::sync::Arc::from([]),
-                }]
-            } else {
-                Vec::new()
-            };
+            let attachments = summary_placeholder_attachments(
+                &mapped_source_uid,
+                &mapped_folder_name,
+                &uid,
+                has_cal,
+                has_attachments,
+            );
 
             let part_ptr = sqlite3_column_text(stmt, 12);
             let (parsed_msg_id, in_reply_to, references) = if !part_ptr.is_null() {
@@ -2306,6 +2356,12 @@ pub fn load_folder_messages_since_from_sqlite(
             } else {
                 (None, Vec::new(), Vec::new())
             };
+            let mail_cc_ptr = sqlite3_column_text(stmt, 13);
+            let mail_cc = if !mail_cc_ptr.is_null() {
+                CStr::from_ptr(mail_cc_ptr).to_string_lossy().into_owned()
+            } else {
+                String::new()
+            };
 
             messages.push(ParsedMail {
                 id,
@@ -2315,7 +2371,7 @@ pub fn load_folder_messages_since_from_sqlite(
                 sender_name,
                 sender_email,
                 recipient_to: mail_to,
-                recipient_cc: String::new(),
+                recipient_cc: mail_cc,
                 recipient_bcc: String::new(),
                 reply_to: String::new(),
                 subject,

@@ -258,13 +258,15 @@ pub fn group_messages_with_options(
         let r = roots[index];
         let count = comp_counts[r] as usize;
         if count == 1 {
-            // Fast path for single-message threads (no sorting or Vec allocation needed)
+            // Fast path for single-message threads (no sorting or Vec allocation needed).
+            // Always disambiguate subject-only fallback IDs by index so ungrouped
+            // messages sharing a subject never collide in UI maps keyed by `thread_id`.
             let thread_id = first_identifier[index].take().unwrap_or_else(|| {
                 let subject = normalized_subject(inputs[index].subject);
                 if subject.is_empty() {
                     format!("subject:(no subject):{index}")
                 } else {
-                    format!("subject:{subject}")
+                    format!("subject:{subject}:{index}")
                 }
             });
             memberships[index] = ThreadMembership {
@@ -280,7 +282,11 @@ pub fn group_messages_with_options(
         }
     }
 
-    for mut members in multi_components.into_values() {
+    let mut used_subject_thread_ids = HashMap::<String, usize>::new();
+    let mut ordered_components: Vec<Vec<usize>> = multi_components.into_values().collect();
+    ordered_components.sort_by_key(|members| members.first().copied().unwrap_or(usize::MAX));
+
+    for mut members in ordered_components {
         // Sort chronologically: oldest message first!
         members.sort_by(|&a, &b| {
             let ta = inputs[a].date_ts;
@@ -300,7 +306,15 @@ pub fn group_messages_with_options(
             if subject.is_empty() {
                 format!("subject:(no subject):{}", members[0])
             } else {
-                format!("subject:{subject}")
+                let base = format!("subject:{subject}");
+                let seen = used_subject_thread_ids.entry(base.clone()).or_insert(0);
+                let id = if *seen == 0 {
+                    base
+                } else {
+                    format!("subject:{subject}:{}", members[0])
+                };
+                *seen += 1;
+                id
             }
         });
 
@@ -509,5 +523,39 @@ mod tests {
         assert_eq!(memberships[0].size, 2);
         assert_ne!(memberships[0].thread_id, memberships[2].thread_id);
         assert_eq!(memberships[2].size, 1);
+    }
+
+    #[test]
+    fn disabling_group_similar_separates_same_sender_and_subject_even_without_message_ids() {
+        let inputs = vec![
+            ThreadIdentity {
+                message_id: None,
+                in_reply_to: &[],
+                references: &[],
+                subject: "Daily Export",
+                sender: "reports@example.org",
+                date_ts: 1_000,
+            },
+            ThreadIdentity {
+                message_id: None,
+                in_reply_to: &[],
+                references: &[],
+                subject: "Daily Export",
+                sender: "reports@example.org",
+                date_ts: 2_000,
+            },
+        ];
+
+        let grouped = group_messages_with_options(&inputs, true);
+        assert_eq!(grouped[0].thread_id, grouped[1].thread_id);
+        assert_eq!(grouped[0].size, 2);
+
+        let ungrouped = group_messages_with_options(&inputs, false);
+        assert_ne!(
+            ungrouped[0].thread_id, ungrouped[1].thread_id,
+            "ungrouped same-subject messages without Message-ID must have distinct thread_ids"
+        );
+        assert_eq!(ungrouped[0].size, 1);
+        assert_eq!(ungrouped[1].size, 1);
     }
 }

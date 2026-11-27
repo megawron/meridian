@@ -635,8 +635,12 @@ pub fn clean_mail_snippet(raw: &str) -> String {
         return String::new();
     }
 
+    // 0. Decode residual Quoted-Printable artifacts (e.g. `=3D=3D=3D...`, `=C3=A4`, `=\r\n`)
+    // that occasionally arrive undecoded from Evolution summary preview caches.
+    let decoded_qp = decode_residual_quoted_printable(raw);
+
     // 1. Strip zero-width characters and normalize NBSP
-    let cleaned_chars: String = raw
+    let cleaned_chars: String = decoded_qp
         .chars()
         .filter_map(|c| match c {
             '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' | '\u{2060}' | '\u{00AD}' => None,
@@ -666,7 +670,17 @@ pub fn clean_mail_snippet(raw: &str) -> String {
     // 8. Collapse whitespace into single spaces and normalize punctuation spacing
     let mut words = Vec::new();
     for word in without_decorations.split_whitespace() {
-        let trimmed = word.trim_matches(|c: char| c == '-' || c == '_' || c == '|' || c == '~');
+        if word.chars().all(|c| {
+            matches!(
+                c,
+                '-' | '_' | '|' | '~' | '=' | '*' | '#' | '+' | '─' | '━' | '═'
+            )
+        }) {
+            continue;
+        }
+        let trimmed = word.trim_matches(|c: char| {
+            matches!(c, '-' | '_' | '|' | '~' | '=' | '─' | '━' | '═')
+        });
         if !trimmed.is_empty() {
             words.push(trimmed);
         }
@@ -679,6 +693,83 @@ pub fn clean_mail_snippet(raw: &str) -> String {
 
     // 9. Truncate to clean word boundary around 130 characters with ellipsis
     truncate_to_word_boundary(&collapsed, 130)
+}
+
+fn decode_residual_quoted_printable(input: &str) -> String {
+    let bytes = input.as_bytes();
+    if !bytes.contains(&b'=') {
+        return input.to_string();
+    }
+
+    let hex_val = |b: u8| -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            _ => None,
+        }
+    };
+
+    // Only activate when the string genuinely contains QP patterns (soft line breaks,
+    // repeated `=3D` / `=20` / `=0A`, or UTF-8 high-byte sequences like `=C3=A4`).
+    let mut looks_like_qp = input.contains("=\r\n")
+        || input.contains("=\n")
+        || input.contains("=3D")
+        || input.contains("=3d")
+        || input.contains("=20")
+        || input.contains("=09")
+        || input.contains("=0A")
+        || input.contains("=0D");
+    if !looks_like_qp {
+        let mut i = 0;
+        while i + 5 < bytes.len() {
+            if bytes[i] == b'='
+                && let (Some(h1), Some(l1)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2]))
+                && bytes[i + 3] == b'='
+                && let (Some(h2), Some(l2)) = (hex_val(bytes[i + 4]), hex_val(bytes[i + 5]))
+            {
+                let b1 = (h1 << 4) | l1;
+                let b2 = (h2 << 4) | l2;
+                if b1 >= 0xC2 && (0x80..=0xBF).contains(&b2) {
+                    looks_like_qp = true;
+                    break;
+                }
+            }
+            i += 1;
+        }
+    }
+    if !looks_like_qp {
+        return input.to_string();
+    }
+
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'=' {
+            if i + 2 < bytes.len() && bytes[i + 1] == b'\r' && bytes[i + 2] == b'\n' {
+                i += 3;
+                continue;
+            }
+            if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                i += 2;
+                continue;
+            }
+            if i + 2 < bytes.len() {
+                if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                    out.push((hi << 4) | lo);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+
+    match String::from_utf8(out) {
+        Ok(decoded) => decoded,
+        Err(err) => err.into_bytes().into_iter().map(char::from).collect(),
+    }
 }
 
 /// Convert HTML mail markup into a clean, human-readable preview snippet without technical artifacts.
@@ -2858,6 +2949,24 @@ p.MsoNormal { margin: 0cm; font-size: 11.0pt; font-family: "Calibri", sans-serif
         assert!(
             sanitized.contains("font-family: &quot;Arial&quot;,sans-serif; color: black"),
             "Inline style with &quot; entities must not split on entity semicolon: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn clean_mail_snippet_decodes_quoted_printable_and_strips_separator_lines() {
+        assert_eq!(
+            clean_mail_snippet("=3D=3D=3D=3D=3D=3D=3D=3D=3D=3D=3D=3D=3D=3D=3D"),
+            ""
+        );
+        assert_eq!(
+            clean_mail_snippet(
+                "=3D=3D=3D=3D=3D=3D=3D=3D=3D=3D\r\nHello Alice, Bob mentioned you in Ticket #42."
+            ),
+            "Hello Alice, Bob mentioned you in Ticket #42."
+        );
+        assert_eq!(
+            clean_mail_snippet("Viele Gr=C3=BC=C3=9Fe=20=\r\naus dem B=C3=BCro"),
+            "Viele Grüße aus dem Büro"
         );
     }
 }

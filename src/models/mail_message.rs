@@ -18,7 +18,94 @@ pub enum MailAttachmentKind {
     None,
     File,
     Calendar,
+    Email,
     Contact,
+}
+
+impl MailAttachmentKind {
+    /// Resolve the highest-priority attachment kind for a message's attachments.
+    /// Priority order (strongest wins): File > Calendar > Email (.eml) > Contact (.vcf) > None.
+    pub fn from_attachments(attachments: &[AttachmentInfo]) -> Self {
+        let mut has_calendar = false;
+        let mut has_email = false;
+        let mut has_contact = false;
+
+        for att in attachments.iter().filter(|att| att.is_user_attachment()) {
+            let mime = att.effective_mime_type().to_ascii_lowercase();
+            let filename = att.filename.to_ascii_lowercase();
+            if mime.contains("calendar")
+                || filename.ends_with(".ics")
+                || filename.ends_with(".ical")
+                || filename.ends_with(".vcs")
+            {
+                has_calendar = true;
+            } else if mime.contains("rfc822") || filename.ends_with(".eml") {
+                has_email = true;
+            } else if mime.contains("vcard")
+                || mime.contains("x-vcard")
+                || filename.ends_with(".vcf")
+                || filename.ends_with(".vcard")
+            {
+                has_contact = true;
+            } else {
+                return Self::File;
+            }
+        }
+
+        if has_calendar {
+            Self::Calendar
+        } else if has_email {
+            Self::Email
+        } else if has_contact {
+            Self::Contact
+        } else {
+            Self::None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AttachmentVisualCategory {
+    Spreadsheet,
+    Pdf,
+    Image,
+    Email,
+    Calendar,
+    Archive,
+    Document,
+    Media,
+    Other,
+}
+
+impl AttachmentVisualCategory {
+    pub fn css_class(self) -> &'static str {
+        match self {
+            Self::Spreadsheet => "att-cat-spreadsheet",
+            Self::Pdf => "att-cat-pdf",
+            Self::Image => "att-cat-image",
+            Self::Email => "att-cat-email",
+            Self::Calendar => "att-cat-calendar",
+            Self::Archive => "att-cat-archive",
+            Self::Document => "att-cat-document",
+            Self::Media => "att-cat-media",
+            Self::Other => "att-cat-other",
+        }
+    }
+
+    pub fn short_label(self) -> String {
+        use crate::i18n::gettext;
+        match self {
+            Self::Spreadsheet => gettext("Spreadsheet"),
+            Self::Pdf => gettext("PDF"),
+            Self::Image => gettext("Image"),
+            Self::Email => gettext("Email"),
+            Self::Calendar => gettext("Calendar"),
+            Self::Archive => gettext("Archive"),
+            Self::Document => gettext("Document"),
+            Self::Media => gettext("Media"),
+            Self::Other => gettext("File"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,10 +256,12 @@ impl AttachmentInfo {
             )
         {
             "x-office-presentation-symbolic"
-        } else if effective.contains("calendar") || matches!(ext.as_str(), "ics" | "vcs") {
+        } else if effective.contains("calendar") || matches!(ext.as_str(), "ics" | "vcs" | "ical") {
             "x-office-calendar-symbolic"
-        } else if effective.contains("vcard") || ext == "vcf" {
-            "x-office-address-book-symbolic"
+        } else if effective.contains("rfc822") || ext == "eml" {
+            "mail-unread-symbolic"
+        } else if effective.contains("vcard") || matches!(ext.as_str(), "vcf" | "vcard") {
+            "avatar-default-symbolic"
         } else if effective.contains("pdf")
             || effective.contains("msword")
             || effective.contains("wordprocessing")
@@ -275,6 +364,136 @@ impl AttachmentInfo {
         } else {
             "File".to_string()
         }
+    }
+
+    /// Semantic file category used for color-coded icons, badges, and summary chips.
+    pub fn visual_category(&self) -> AttachmentVisualCategory {
+        let effective = self.effective_mime_type().to_ascii_lowercase();
+        let ext = std::path::Path::new(self.filename.trim())
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        if effective.contains("pdf") || ext == "pdf" {
+            AttachmentVisualCategory::Pdf
+        } else if effective.contains("spreadsheet")
+            || effective.contains("excel")
+            || effective == "text/csv"
+            || matches!(
+                ext.as_str(),
+                "xls" | "xlsx" | "xlsm" | "xlsb" | "xlt" | "xltx" | "ods" | "ots" | "csv" | "tsv"
+            )
+        {
+            AttachmentVisualCategory::Spreadsheet
+        } else if effective.starts_with("image/")
+            || matches!(
+                ext.as_str(),
+                "jpg" | "jpeg" | "jpe" | "jfif" | "png" | "gif" | "webp" | "svg" | "svgz" | "bmp"
+                    | "tif" | "tiff" | "ico" | "heic" | "heif" | "avif"
+            )
+        {
+            AttachmentVisualCategory::Image
+        } else if effective.contains("rfc822") || ext == "eml" {
+            AttachmentVisualCategory::Email
+        } else if effective.contains("calendar") || matches!(ext.as_str(), "ics" | "vcs" | "ical") {
+            AttachmentVisualCategory::Calendar
+        } else if effective.contains("zip")
+            || effective.contains("tar")
+            || effective.contains("compressed")
+            || effective.contains("archive")
+            || effective.contains("gzip")
+            || effective.contains("bzip")
+            || effective.contains("xz")
+            || effective.contains("rar")
+            || matches!(
+                ext.as_str(),
+                "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "bz2" | "tbz2" | "xz" | "txz"
+            )
+        {
+            AttachmentVisualCategory::Archive
+        } else if effective.starts_with("audio/")
+            || effective.starts_with("video/")
+            || matches!(
+                ext.as_str(),
+                "mp3" | "wav" | "ogg" | "oga" | "flac" | "m4a" | "aac" | "mp4" | "m4v" | "mkv"
+                    | "mov" | "avi" | "webm"
+            )
+        {
+            AttachmentVisualCategory::Media
+        } else if effective.contains("msword")
+            || effective.contains("wordprocessing")
+            || effective.contains("opendocument.text")
+            || effective.contains("presentation")
+            || effective.contains("powerpoint")
+            || effective.starts_with("text/")
+            || effective.contains("json")
+            || effective.contains("xml")
+            || effective == "application/rtf"
+            || matches!(
+                ext.as_str(),
+                "doc" | "docx" | "dot" | "dotx" | "docm" | "odt" | "ott" | "rtf" | "ppt" | "pptx"
+                    | "pptm" | "pps" | "ppsx" | "odp" | "txt" | "log" | "md" | "markdown" | "json"
+                    | "xml" | "html" | "htm" | "yaml" | "yml"
+            )
+        {
+            AttachmentVisualCategory::Document
+        } else {
+            AttachmentVisualCategory::Other
+        }
+    }
+
+    /// Short uppercase extension badge shown in compact list rows and icon tiles (e.g. `XLSX`, `PDF`, `EML`).
+    pub fn short_extension_badge(&self) -> String {
+        if let Some(ext) = std::path::Path::new(self.filename.trim())
+            .extension()
+            .and_then(|e| e.to_str())
+        {
+            let clean: String = ext
+                .trim()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .take(5)
+                .collect();
+            if !clean.is_empty() {
+                return clean.to_ascii_uppercase();
+            }
+        }
+        match self.visual_category() {
+            AttachmentVisualCategory::Pdf => "PDF".to_string(),
+            AttachmentVisualCategory::Spreadsheet => "XLS".to_string(),
+            AttachmentVisualCategory::Image => "IMG".to_string(),
+            AttachmentVisualCategory::Email => "EML".to_string(),
+            AttachmentVisualCategory::Calendar => "ICS".to_string(),
+            AttachmentVisualCategory::Archive => "ZIP".to_string(),
+            AttachmentVisualCategory::Document => "DOC".to_string(),
+            AttachmentVisualCategory::Media => "MEDIA".to_string(),
+            AttachmentVisualCategory::Other => "FILE".to_string(),
+        }
+    }
+
+    /// Compact category breakdown string for expanded attachment headers (e.g. `"2× Spreadsheet · 2× PDF · 1× Image"`).
+    pub fn summarize_type_breakdown(attachments: &[AttachmentInfo]) -> String {
+        let mut order: Vec<AttachmentVisualCategory> = Vec::new();
+        let mut counts: std::collections::HashMap<AttachmentVisualCategory, usize> =
+            std::collections::HashMap::new();
+        for att in attachments {
+            let cat = att.visual_category();
+            let entry = counts.entry(cat).or_insert(0);
+            if *entry == 0 {
+                order.push(cat);
+            }
+            *entry += 1;
+        }
+        order
+            .into_iter()
+            .take(4)
+            .map(|cat| {
+                let n = counts[&cat];
+                format!("{n}× {}", cat.short_label())
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 }
 
@@ -708,6 +927,27 @@ impl MailMessageObject {
         )
     }
 
+    pub(crate) fn update_hydrated_headers(
+        &self,
+        recipient_to: &str,
+        recipient_cc: &str,
+        recipient_bcc: &str,
+        reply_to: &str,
+    ) {
+        if !recipient_to.trim().is_empty() {
+            *self.imp().recipient_to.borrow_mut() = recipient_to.to_string();
+        }
+        if !recipient_cc.trim().is_empty() {
+            *self.imp().recipient_cc.borrow_mut() = recipient_cc.to_string();
+        }
+        if !recipient_bcc.trim().is_empty() {
+            *self.imp().recipient_bcc.borrow_mut() = recipient_bcc.to_string();
+        }
+        if !reply_to.trim().is_empty() {
+            *self.imp().reply_to.borrow_mut() = reply_to.to_string();
+        }
+    }
+
     pub(crate) fn replace_rendered_content(
         &self,
         html_body: String,
@@ -898,21 +1138,7 @@ impl MailMessageObject {
 
     pub fn attachment_kind(&self) -> MailAttachmentKind {
         let atts = self.imp().attachments.borrow();
-        let user_atts: Vec<_> = atts.iter().filter(|att| att.is_user_attachment()).collect();
-        if user_atts.is_empty() {
-            return MailAttachmentKind::None;
-        }
-        for att in user_atts {
-            let mime = att.mime_type.to_ascii_lowercase();
-            let filename = att.filename.to_ascii_lowercase();
-            if mime.contains("calendar") || filename.ends_with(".ics") || filename.ends_with(".ical") {
-                return MailAttachmentKind::Calendar;
-            }
-            if mime.contains("vcard") || mime.contains("x-vcard") || filename.ends_with(".vcf") {
-                return MailAttachmentKind::Contact;
-            }
-        }
-        MailAttachmentKind::File
+        MailAttachmentKind::from_attachments(&atts)
     }
 
     pub fn is_preview_only(&self) -> bool {
@@ -1207,6 +1433,62 @@ mod tests {
         assert_eq!(
             AttachmentInfo::icon_name_for("application/octet-stream", "Folien.pptx"),
             "x-office-presentation-symbolic"
+        );
+
+        // 5. Attached email (.eml) and contact card (.vcf)
+        assert_eq!(
+            AttachmentInfo::icon_name_for("message/rfc822", "forwarded.eml"),
+            "mail-unread-symbolic"
+        );
+        assert_eq!(
+            AttachmentInfo::icon_name_for("text/vcard", "contact.vcf"),
+            "avatar-default-symbolic"
+        );
+    }
+
+    #[test]
+    fn test_attachment_kind_priority_file_calendar_email_contact() {
+        use super::{AttachmentInfo, MailAttachmentKind};
+
+        let mk = |filename: &str, mime: &str| AttachmentInfo {
+            filename: filename.to_string(),
+            size_formatted: "1 KB".to_string(),
+            mime_type: mime.to_string(),
+            content_id: None,
+            is_inline: false,
+            content: Arc::from([]),
+        };
+
+        let contact = mk("alice.vcf", "text/vcard");
+        let email = mk("thread.eml", "message/rfc822");
+        let calendar = mk("invite.ics", "text/calendar");
+        let file = mk("report.pdf", "application/pdf");
+
+        assert_eq!(MailAttachmentKind::from_attachments(&[]), MailAttachmentKind::None);
+        assert_eq!(
+            MailAttachmentKind::from_attachments(&[contact.clone()]),
+            MailAttachmentKind::Contact
+        );
+        assert_eq!(
+            MailAttachmentKind::from_attachments(&[contact.clone(), email.clone()]),
+            MailAttachmentKind::Email
+        );
+        assert_eq!(
+            MailAttachmentKind::from_attachments(&[
+                contact.clone(),
+                email.clone(),
+                calendar.clone()
+            ]),
+            MailAttachmentKind::Calendar
+        );
+        assert_eq!(
+            MailAttachmentKind::from_attachments(&[
+                contact.clone(),
+                email.clone(),
+                calendar.clone(),
+                file.clone()
+            ]),
+            MailAttachmentKind::File
         );
     }
 }
