@@ -362,14 +362,13 @@ fi
 %{_datadir}/locale/*/LC_MESSAGES/meridian.mo
 
 %changelog
-* Mon Nov 23 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
-- Extension System v2: tabs, global/page right sidebars, CSS packs, regex rules, inline document renderers, language packs, keyring secrets, and JS host bridge
-- Redesigned Extensions dialog with Discover browser, detail pages, and LLM-ready EXTENSION_GUIDE.md
-- Native RSS & Atom feeds directly inside the Mail sidebar, list, and MailViewer
-- Auto-fit wide HTML emails, link tracking parameter stripping, and sender spoofing alerts
-- Forgotten-attachment reminder in Composer, attachment drag-out, and direct system viewer opening
-- Fixed autostart empty calendar loading and multi-select/collapsed conversation moves
-- Added CalDAV/CardDAV autodiscovery and Flatpak XDG Background Portal support
+* Fri Nov 27 2026 Martin Gawron <martin@martingawron.com> - ${PKG_VERSION}-1
+- Mail Merge and reply/forward original attachment support
+- Redesigned overlay attachment bar with clean file icons, snappy hover preview, and built-in .eml viewer
+- Clear, runtime-enforced extension permissions with pre-install and pre-enable review
+- Faster calendar startup, live Mail agenda sidebar sync, and native Exchange/CalDAV meeting RSVPs
+- Instant "Group similar messages" toggle, Libadwaita dark-mode view options, and shared mailbox fixes
+- Cleaner email snippets, accurate attachment indicators, and updated German translations
 EOF
 
     rpmbuild -bb --define "_topdir $work/rpmbuild" "$work/rpmbuild/SPECS/meridian.spec"

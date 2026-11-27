@@ -81,6 +81,19 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.7.0-beta.1" date="2026-11-27" type="development">
+      <description>
+        <p>What's new in Meridian 0.7.0-beta.1:</p>
+        <ul>
+          <li>Mail Merge and easy inclusion of original attachments when replying or forwarding</li>
+          <li>Redesigned attachment bar with overlay drawer, clean file icons, hover preview, and built-in .eml viewer</li>
+          <li>Clear, runtime-enforced extension permissions with review dialogs before installing or enabling</li>
+          <li>Faster calendar startup, live Mail agenda sidebar sync, and native Exchange/CalDAV meeting RSVPs</li>
+          <li>Instant "Group similar messages" toggle, native dark-mode view options, and shared mailbox fixes</li>
+          <li>Cleaner email snippets, accurate attachment indicators, and updated German translations</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.6.0-beta.1" date="2026-11-23" type="development">
       <description>
         <p>Meridian 0.6.0-beta.1 improvements and fixes:</p>
