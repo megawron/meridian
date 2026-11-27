@@ -205,6 +205,13 @@ pub(crate) struct ECalMutationResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ECalReceiveObjectsResult {
+    /// True when the EDS backend advertises `save-schedules` (such as Exchange EWS)
+    /// and transmits the iTIP RSVP message directly on the server.
+    pub(crate) server_handled_itip: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ECalChangeKind {
     Added,
     Modified,
@@ -667,6 +674,140 @@ impl ECalService {
         res
     }
 
+    /// Process an iTIP invitation or update against the selected calendar source.
+    /// On Linux EDS backends this calls `e_cal_client_receive_objects_sync`, matching
+    /// Evolution's `itip-view.c` workflow (required for Exchange EWS, CalDAV, and local
+    /// EDS calendars so invitations are created/updated/declined without hitting
+    /// "Cannot modify calendar object: Object not found").
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn receive_itip_object(
+        &self,
+        source_uid: &str,
+        component_type: ECalComponentType,
+        vcalendar: &str,
+        send_itip_message: bool,
+        is_decline: bool,
+        event_uid: &str,
+        fallback_vevent: &str,
+    ) -> Result<ECalReceiveObjectsResult, ECalMutationError> {
+        if source_uid == "local-calendar" || source_uid.starts_with("account-tasks-") {
+            if is_decline {
+                let _ = self.remove_component(source_uid, component_type, event_uid);
+                return Ok(ECalReceiveObjectsResult {
+                    server_handled_itip: false,
+                });
+            }
+            let local_exists = CalendarStoreService::new()
+                .load_snapshot()
+                .events
+                .iter()
+                .any(|ev| ev.uid == event_uid);
+            if local_exists {
+                self.modify_component(source_uid, component_type, event_uid, fallback_vevent)?;
+            } else {
+                self.create_component(source_uid, component_type, fallback_vevent)?;
+            }
+            return Ok(ECalReceiveObjectsResult {
+                server_handled_itip: false,
+            });
+        }
+
+        if graph_service_for_configured_account()
+            .is_some_and(|(configured_uid, _)| configured_uid == source_uid)
+        {
+            if is_decline {
+                let _ = self.remove_component(source_uid, component_type, event_uid);
+                return Ok(ECalReceiveObjectsResult {
+                    server_handled_itip: false,
+                });
+            }
+            match self.create_component(source_uid, component_type, fallback_vevent) {
+                Ok(_) => {
+                    return Ok(ECalReceiveObjectsResult {
+                        server_handled_itip: false,
+                    });
+                }
+                Err(create_err) => {
+                    return self
+                        .modify_component(source_uid, component_type, event_uid, fallback_vevent)
+                        .map(|_| ECalReceiveObjectsResult {
+                            server_handled_itip: false,
+                        })
+                        .map_err(|_| create_err);
+                }
+            }
+        }
+
+        #[cfg(all(target_os = "linux", eds_ecal_bridge))]
+        {
+            match self.receive_objects_native(
+                source_uid,
+                component_type,
+                vcalendar,
+                send_itip_message,
+            ) {
+                Ok(res) => return Ok(res),
+                Err(receive_err) => {
+                    let msg_lower = receive_err.to_string().to_ascii_lowercase();
+                    let unsupported = msg_lower.contains("not supported")
+                        || msg_lower.contains("unsupported")
+                        || msg_lower.contains("not implemented");
+                    if !unsupported {
+                        return Err(receive_err);
+                    }
+                    // Fallback only if a backend explicitly lacks receive_objects support.
+                    if is_decline {
+                        let _ = self.remove_component(source_uid, component_type, event_uid);
+                        return Ok(ECalReceiveObjectsResult {
+                            server_handled_itip: false,
+                        });
+                    }
+                    match self.create_component(source_uid, component_type, fallback_vevent) {
+                        Ok(_) => {
+                            return Ok(ECalReceiveObjectsResult {
+                                server_handled_itip: false,
+                            });
+                        }
+                        Err(create_err) => {
+                            let create_lower = create_err.to_string().to_ascii_lowercase();
+                            if create_lower.contains("already exists")
+                                || create_lower.contains("object id already exists")
+                            {
+                                return self
+                                    .modify_component(
+                                        source_uid,
+                                        component_type,
+                                        event_uid,
+                                        fallback_vevent,
+                                    )
+                                    .map(|_| ECalReceiveObjectsResult {
+                                        server_handled_itip: false,
+                                    });
+                            }
+                            return Err(create_err);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(all(target_os = "linux", eds_ecal_bridge)))]
+        {
+            let _ = (vcalendar, send_itip_message);
+            if is_decline {
+                let _ = self.remove_component(source_uid, component_type, event_uid);
+                Ok(ECalReceiveObjectsResult {
+                    server_handled_itip: false,
+                })
+            } else {
+                self.create_component(source_uid, component_type, fallback_vevent)
+                    .map(|_| ECalReceiveObjectsResult {
+                        server_handled_itip: false,
+                    })
+            }
+        }
+    }
+
     fn remove_component_raw(
         &self,
         source_uid: &str,
@@ -941,6 +1082,52 @@ impl ECalService {
                     "ECal mutation failed".to_string()
                 })))
             }
+        }
+    }
+
+    #[cfg(all(target_os = "linux", eds_ecal_bridge))]
+    fn receive_objects_native(
+        &self,
+        source_uid: &str,
+        component_type: ECalComponentType,
+        vcalendar: &str,
+        send_itip_message: bool,
+    ) -> Result<ECalReceiveObjectsResult, ECalMutationError> {
+        use std::ffi::CString;
+        use std::ptr;
+
+        let source_uid_key = source_uid.to_string();
+        let source_uid = CString::new(source_uid)
+            .map_err(|_| ECalMutationError::Backend("Source UID contains NUL".to_string()))?;
+        let vcalendar = CString::new(vcalendar)
+            .map_err(|_| ECalMutationError::Backend("iCalendar payload contains NUL".to_string()))?;
+        let source_mutex = ecal_source_lock(&source_uid_key);
+        let _source_guard = source_mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut server_handled_itip = 0;
+        let mut out_error = ptr::null_mut();
+        let result = unsafe {
+            ffi::meridian_eds_ecal_receive_objects(
+                source_uid.as_ptr(),
+                component_type as i32,
+                vcalendar.as_ptr(),
+                if send_itip_message { 1 } else { 0 },
+                &mut server_handled_itip,
+                &mut out_error,
+            )
+        };
+        let error = take_c_string(out_error);
+        match result {
+            1 => Ok(ECalReceiveObjectsResult {
+                server_handled_itip: server_handled_itip != 0,
+            }),
+            2 => Err(ECalMutationError::Conflict(error.unwrap_or_else(|| {
+                "Backend reported a conflict".to_string()
+            }))),
+            _ => Err(ECalMutationError::Backend(error.unwrap_or_else(|| {
+                "ECal iTIP receive_objects failed".to_string()
+            }))),
         }
     }
 
@@ -2910,6 +3097,15 @@ mod ffi {
             component_uid: *const c_char,
             out_uid: *mut *mut c_char,
             out_component: *mut *mut c_char,
+            out_error: *mut *mut c_char,
+        ) -> c_int;
+
+        pub(super) fn meridian_eds_ecal_receive_objects(
+            source_uid: *const c_char,
+            source_type: c_int,
+            vcalendar_string: *const c_char,
+            send_itip_message: c_int,
+            out_server_handled_itip: *mut c_int,
             out_error: *mut *mut c_char,
         ) -> c_int;
 

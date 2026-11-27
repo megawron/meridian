@@ -19,8 +19,8 @@ use webkit6::prelude::*;
 
 use crate::services::ecal_service::{ECalComponentType, ECalService};
 use crate::services::itip_service::{
-    find_user_status, format_recurrence_summary, update_attendee_partstat,
-    ItipInvitation, ItipMethod, ItipReplyStatus,
+    build_receive_objects_vcalendar, find_user_status, format_recurrence_summary,
+    resolve_attendee_email, update_attendee_partstat, ItipInvitation, ItipMethod, ItipReplyStatus,
 };
 use crate::services::settings_service::AppSettings;
 
@@ -3046,65 +3046,75 @@ impl ItipBanner {
         let status_label = status.as_str().to_string();
         let send_reply = self.chk_send_reply.is_active();
         let comment = self.comment_text();
+        let comment_for_thread = comment.clone();
         let show_free = self.chk_show_free.is_active();
+        let mut candidate_emails = self.last_user_emails.borrow().clone();
+        for profile in crate::services::account_config_service::AccountConfigStore::default().load() {
+            if profile.enabled && !profile.email.trim().is_empty() {
+                candidate_emails.push(profile.email);
+            }
+        }
 
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let service = ECalService::new();
-            let mut component = invitation_for_thread.event.component.clone();
-            // Update attendee status in the component
-            let user_email = invitation_for_thread.organizer.clone(); // fallback
-            component = update_attendee_partstat(&component, &user_email, status);
+            let attendee_email = resolve_attendee_email(&invitation_for_thread, &candidate_emails);
+            let vcalendar = build_receive_objects_vcalendar(
+                &invitation_for_thread,
+                attendee_email.as_deref(),
+                status,
+                show_free,
+                comment_for_thread.as_deref(),
+            );
+            let mut fallback_vevent = invitation_for_thread.event.component.clone();
+            if let Some(ref email) = attendee_email {
+                fallback_vevent = update_attendee_partstat(&fallback_vevent, email, status);
+            }
             if show_free {
-                component = set_component_transparency(&component, true);
+                fallback_vevent = set_component_transparency(&fallback_vevent, true);
             }
 
-            let res = if status == ItipReplyStatus::Declined {
-                // If declined, try to remove or modify
-                let _ = service.remove_component(&source_uid, ECalComponentType::Event, &invitation_for_thread.event.uid);
-                Ok(())
-            } else {
-                match service.create_component(&source_uid, ECalComponentType::Event, &component) {
-                    Ok(_) => Ok(()),
-                    Err(_) => {
-                        // If already exists, try modify
-                        service
-                            .modify_component(
-                                &source_uid,
-                                ECalComponentType::Event,
-                                &invitation_for_thread.event.uid,
-                                &component,
-                            )
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
-                    }
-                }
-            };
+            let res = service
+                .receive_itip_object(
+                    &source_uid,
+                    ECalComponentType::Event,
+                    &vcalendar,
+                    send_reply,
+                    status == ItipReplyStatus::Declined,
+                    &invitation_for_thread.event.uid,
+                    &fallback_vevent,
+                )
+                .map_err(|e| e.to_string());
             let _ = sender.send_blocking(res);
         });
 
         let this = self.clone();
         glib::spawn_future_local(async move {
             if let Ok(result) = receiver.recv().await {
+                this.btn_accept.set_sensitive(true);
+                this.btn_tentative.set_sensitive(true);
+                this.btn_decline.set_sensitive(true);
                 match result {
-                    Ok(()) => {
+                    Ok(receive_result) => {
                         this.update_status_badge(Some(status));
                         if let Some(toast) = this.on_action_toast.borrow().as_ref() {
                             let msg = if send_reply {
-                                format!("{}: {status_label}", gettext("Event updated and calendar refreshed"))
+                                format!(
+                                    "{}: {status_label}",
+                                    gettext("Event updated and calendar refreshed")
+                                )
                             } else {
                                 gettext("Calendar updated (no email reply sent)")
                             };
                             toast(msg);
                         }
-                        if let Some(draft_cb) = this.on_reply_draft_saved.borrow().as_ref() {
-                            draft_cb(&invitation, status, comment, send_reply);
+                        if send_reply && !receive_result.server_handled_itip {
+                            if let Some(draft_cb) = this.on_reply_draft_saved.borrow().as_ref() {
+                                draft_cb(&invitation, status, comment, send_reply);
+                            }
                         }
                     }
                     Err(err) => {
-                        this.btn_accept.set_sensitive(true);
-                        this.btn_tentative.set_sensitive(true);
-                        this.btn_decline.set_sensitive(true);
                         if let Some(toast) = this.on_action_toast.borrow().as_ref() {
                             toast(format!("{}: {err}", gettext("Error while updating")));
                         }
@@ -3195,11 +3205,23 @@ impl ItipBanner {
         self.btn_update.set_sensitive(false);
         let source_uid = self.selected_source_uid();
         let component = invitation.event.component.clone();
+        let raw_vcal = invitation.raw_component.clone();
         let uid = invitation.event.uid.clone();
 
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let res = ECalService::new().modify_component(&source_uid, ECalComponentType::Event, &uid, &component);
+            let res = ECalService::new()
+                .receive_itip_object(
+                    &source_uid,
+                    ECalComponentType::Event,
+                    &raw_vcal,
+                    false,
+                    false,
+                    &uid,
+                    &component,
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string());
             let _ = sender.send_blocking(res);
         });
 
@@ -3232,10 +3254,23 @@ impl ItipBanner {
         self.btn_import.set_sensitive(false);
         let source_uid = self.selected_source_uid();
         let component = invitation.event.component.clone();
+        let raw_vcal = invitation.raw_component.clone();
+        let uid = invitation.event.uid.clone();
 
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let res = ECalService::new().create_component(&source_uid, ECalComponentType::Event, &component);
+            let res = ECalService::new()
+                .receive_itip_object(
+                    &source_uid,
+                    ECalComponentType::Event,
+                    &raw_vcal,
+                    false,
+                    false,
+                    &uid,
+                    &component,
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string());
             let _ = sender.send_blocking(res);
         });
 

@@ -709,6 +709,185 @@ pub fn update_attendee_partstat(
     format!("{}\r\n", lines.join("\r\n"))
 }
 
+/// Resolve the user's attendee email address for an iTIP invitation from candidate
+/// account addresses. Matches an explicit ATTENDEE on the invitation first, then
+/// falls back to the first valid candidate address. Never falls back to the organizer.
+pub fn resolve_attendee_email(
+    invitation: &ItipInvitation,
+    candidate_emails: &[String],
+) -> Option<String> {
+    let valid_candidates: Vec<(String, String)> = candidate_emails
+        .iter()
+        .filter_map(|raw| {
+            let norm = normalize_attendee_address(raw)?;
+            let bare = strip_mailto_prefix(&norm).to_string();
+            Some((norm.to_ascii_lowercase(), bare))
+        })
+        .collect();
+
+    for (_, val) in top_level_properties(&invitation.raw_component, "ATTENDEE") {
+        if let Some(att_norm) = normalize_attendee_address(&unescape_ical_text(&val)) {
+            let att_lower = att_norm.to_ascii_lowercase();
+            if let Some((_, bare)) = valid_candidates.iter().find(|(norm, _)| *norm == att_lower) {
+                return Some(bare.clone());
+            }
+        }
+    }
+
+    valid_candidates.into_iter().next().map(|(_, bare)| bare)
+}
+
+/// Build a complete `VCALENDAR` payload suitable for `e_cal_client_receive_objects_sync`.
+/// Preserves `VTIMEZONE` components and top-level `VCALENDAR` metadata from the original
+/// invitation while updating the user's `ATTENDEE` `PARTSTAT`, optional transparency, and
+/// optional comment inside the `VEVENT`.
+pub fn build_receive_objects_vcalendar(
+    invitation: &ItipInvitation,
+    attendee_email: Option<&str>,
+    status: ItipReplyStatus,
+    show_free: bool,
+    comment: Option<&str>,
+) -> String {
+    let source = if invitation
+        .raw_component
+        .to_ascii_uppercase()
+        .contains("BEGIN:VCALENDAR")
+    {
+        invitation.raw_component.as_str()
+    } else {
+        invitation.event.component.as_str()
+    };
+
+    let target_attendee = attendee_email.and_then(normalize_attendee_address);
+    let clean_comment = comment
+        .map(|c| c.trim().replace("\r\n", " ").replace('\n', " "))
+        .filter(|c| !c.is_empty());
+
+    let mut out = Vec::new();
+    let mut has_vcalendar = false;
+    let mut has_method = false;
+    let mut in_vevent = false;
+    let mut nested_depth = 0usize;
+    let mut attendee_updated = false;
+    let mut transp_updated = false;
+
+    for line in unfold_lines(source) {
+        let Some((prop_with_params, val)) = line.split_once(':') else {
+            out.push(line);
+            continue;
+        };
+        let prop_name = prop_with_params
+            .split(';')
+            .next()
+            .unwrap_or(prop_with_params)
+            .trim();
+        let val_trimmed = val.trim();
+
+        if prop_name.eq_ignore_ascii_case("BEGIN") {
+            if val_trimmed.eq_ignore_ascii_case("VCALENDAR") {
+                has_vcalendar = true;
+            } else if val_trimmed.eq_ignore_ascii_case("VEVENT") {
+                if !has_vcalendar {
+                    out.push("BEGIN:VCALENDAR".to_string());
+                    out.push("VERSION:2.0".to_string());
+                    out.push("PRODID:-//Meridian//iTIP//EN".to_string());
+                    out.push(format!("METHOD:{}", invitation.method.as_str()));
+                    has_vcalendar = true;
+                    has_method = true;
+                } else if !has_method {
+                    let method_str = match invitation.method {
+                        ItipMethod::Unknown => "REQUEST",
+                        other => other.as_str(),
+                    };
+                    out.push(format!("METHOD:{method_str}"));
+                    has_method = true;
+                }
+                in_vevent = true;
+                nested_depth = 0;
+            } else if in_vevent {
+                nested_depth += 1;
+            }
+            out.push(line);
+            continue;
+        }
+
+        if prop_name.eq_ignore_ascii_case("END") {
+            if in_vevent && nested_depth > 0 {
+                nested_depth -= 1;
+                out.push(line);
+                continue;
+            }
+            if in_vevent && val_trimmed.eq_ignore_ascii_case("VEVENT") {
+                if let Some(ref target) = target_attendee {
+                    if !attendee_updated {
+                        out.push(format!("ATTENDEE;PARTSTAT={}:{target}", status.as_ical()));
+                        attendee_updated = true;
+                    }
+                }
+                if show_free && !transp_updated {
+                    out.push("TRANSP:TRANSPARENT".to_string());
+                    transp_updated = true;
+                }
+                if let Some(ref note) = clean_comment {
+                    out.push(format!("COMMENT:{note}"));
+                }
+                in_vevent = false;
+            }
+            out.push(line);
+            continue;
+        }
+
+        if !in_vevent && prop_name.eq_ignore_ascii_case("METHOD") {
+            has_method = true;
+            out.push(line);
+            continue;
+        }
+
+        if in_vevent && nested_depth == 0 {
+            if prop_name.eq_ignore_ascii_case("ATTENDEE") {
+                if let Some(ref target) = target_attendee {
+                    let norm_val = normalize_attendee_address(&unescape_ical_text(val));
+                    if norm_val
+                        .as_deref()
+                        .is_some_and(|v| v.eq_ignore_ascii_case(target))
+                    {
+                        let mut params = prop_with_params
+                            .split(';')
+                            .skip(1)
+                            .filter(|p| {
+                                !p.split_once('=')
+                                    .map(|(k, _)| k.trim().eq_ignore_ascii_case("PARTSTAT"))
+                                    .unwrap_or(false)
+                            })
+                            .map(|p| p.trim().to_string())
+                            .collect::<Vec<_>>();
+                        params.push(format!("PARTSTAT={}", status.as_ical()));
+                        out.push(format!("ATTENDEE;{}:{val}", params.join(";")));
+                        attendee_updated = true;
+                        continue;
+                    }
+                }
+            } else if show_free && prop_name.eq_ignore_ascii_case("TRANSP") {
+                out.push("TRANSP:TRANSPARENT".to_string());
+                transp_updated = true;
+                continue;
+            }
+        }
+
+        out.push(line);
+    }
+
+    if has_vcalendar
+        && !out
+            .iter()
+            .any(|l| l.trim().eq_ignore_ascii_case("END:VCALENDAR"))
+    {
+        out.push("END:VCALENDAR".to_string());
+    }
+
+    format!("{}\r\n", out.join("\r\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -758,6 +937,60 @@ mod tests {
             );
             assert!(parse_invitation(&raw).is_some(), "{method} should parse");
         }
+    }
+
+    #[test]
+    fn resolve_attendee_email_matches_attendee_and_never_uses_organizer() {
+        let raw = concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\n",
+            "BEGIN:VEVENT\r\nUID:meeting-rsvp\r\nSUMMARY:Sync\r\n",
+            "ORGANIZER:mailto:boss@example.test\r\n",
+            "ATTENDEE;CN=Alice:mailto:alice@example.test\r\n",
+            "ATTENDEE;CN=Bob:mailto:bob@example.test\r\n",
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let invitation = parse_invitation(raw).expect("invitation should parse");
+
+        // Picks the candidate email that actually appears in ATTENDEE
+        let resolved = resolve_attendee_email(
+            &invitation,
+            &[
+                "other@example.test".to_string(),
+                "Bob <BOB@example.test>".to_string(),
+            ],
+        );
+        assert_eq!(resolved.as_deref(), Some("BOB@example.test"));
+
+        // Never falls back to organizer when no candidates are available
+        assert_eq!(resolve_attendee_email(&invitation, &[]), None);
+    }
+
+    #[test]
+    fn build_receive_objects_vcalendar_preserves_vtimezone_and_updates_user_partstat() {
+        let raw = concat!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\n",
+            "BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\nEND:VTIMEZONE\r\n",
+            "BEGIN:VEVENT\r\nUID:meeting-tz\r\nSUMMARY:Sync\r\n",
+            "DTSTART;TZID=Europe/Berlin:20260810T120000\r\n",
+            "ORGANIZER:mailto:host@example.test\r\n",
+            "ATTENDEE;CN=Me;PARTSTAT=NEEDS-ACTION:mailto:me@example.test\r\n",
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let invitation = parse_invitation(raw).expect("invitation should parse");
+        let vcal = build_receive_objects_vcalendar(
+            &invitation,
+            Some("me@example.test"),
+            ItipReplyStatus::Accepted,
+            true,
+            Some("See you there"),
+        );
+        assert!(vcal.contains("BEGIN:VCALENDAR"));
+        assert!(vcal.contains("METHOD:REQUEST"));
+        assert!(vcal.contains("BEGIN:VTIMEZONE"));
+        assert!(vcal.contains("ATTENDEE;CN=Me;PARTSTAT=ACCEPTED:mailto:me@example.test"));
+        assert!(vcal.contains("TRANSP:TRANSPARENT"));
+        assert!(vcal.contains("COMMENT:See you there"));
+        assert!(!vcal.contains("PARTSTAT=ACCEPTED:mailto:host@example.test"));
     }
 
     #[test]

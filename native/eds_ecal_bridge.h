@@ -99,6 +99,18 @@ int meridian_eds_ecal_apply_operation(
     char **out_component,
     char **out_error);
 
+/* Deliver an iTIP VCALENDAR object via e_cal_client_receive_objects_sync(),
+ * matching Evolution's itip-view.c RSVP/Update/Import workflow.  Sets
+ * out_server_handled_itip to 1 when the backend advertises save-schedules
+ * (e.g. EWS) and therefore transmits the iTIP response itself. */
+int meridian_eds_ecal_receive_objects(
+    const char *source_uid,
+    MeridianEdsECalSourceType source_type,
+    const char *vcalendar_string,
+    int send_itip_message,
+    int *out_server_handled_itip,
+    char **out_error);
+
 /* Refresh one exact enabled EDS source.  Returns 1 after a confirmed refresh,
  * 2 when the connected client does not support refresh, and 0 on validation,
  * connection, authentication, cancellation, or backend failure. */

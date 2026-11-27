@@ -114,6 +114,16 @@ ecal_stop_cancellation_timer (GSource *source)
 }
 
 static void
+ecal_async_refresh_finished_cb (GObject *source_object,
+                                GAsyncResult *result,
+                                gpointer user_data)
+{
+    (void) user_data;
+    if (E_IS_CLIENT (source_object))
+        e_client_refresh_finish (E_CLIENT (source_object), result, NULL);
+}
+
+static void
 load_source (ECalLoadContext *context,
              ESource *source,
              MeridianEdsECalSourceType source_type)
@@ -169,7 +179,11 @@ load_source (ECalLoadContext *context,
         if (client) {
             client = ecal_cache_snapshot_client (source, source_type, client);
             if (e_client_check_refresh_supported (E_CLIENT (client))) {
-                e_client_refresh_sync (E_CLIENT (client), NULL, NULL);
+                /* Trigger an asynchronous server sync so locally cached EDS
+                 * events load immediately instead of stalling the global ECal
+                 * lock behind a slow/unresponsive remote calendar server. */
+                e_client_refresh (
+                    E_CLIENT (client), NULL, ecal_async_refresh_finished_cb, NULL);
             }
         }
     }
@@ -566,6 +580,109 @@ finish:
     g_free (created_uid);
     g_clear_object (&stored_component);
     g_clear_object (&component);
+    g_clear_object (&client);
+    g_clear_object (&source);
+    g_clear_object (&registry);
+    return result;
+}
+
+int
+meridian_eds_ecal_receive_objects (
+    const char *source_uid,
+    MeridianEdsECalSourceType source_type,
+    const char *vcalendar_string,
+    int send_itip_message,
+    int *out_server_handled_itip,
+    char **out_error)
+{
+    ESourceRegistry *registry = NULL;
+    ESource *source = NULL;
+    ECalClient *client = NULL;
+    ICalComponent *parsed = NULL;
+    ICalComponent *toplevel = NULL;
+    GError *error = NULL;
+    ECalOperationFlags opflags;
+    int result = 0;
+
+    if (out_server_handled_itip)
+        *out_server_handled_itip = 0;
+    if (out_error)
+        *out_error = NULL;
+
+    if (!source_uid || !*source_uid) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "ECal iTIP operation requires a source UID");
+        return return_operation_error (&error, out_error);
+    }
+    if (!vcalendar_string || !*vcalendar_string) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+            "ECal iTIP operation requires an iCalendar payload");
+        return return_operation_error (&error, out_error);
+    }
+
+    registry = ecal_get_source_registry_with_retry (NULL, &error);
+    if (!registry)
+        goto finish;
+
+    source = e_source_registry_ref_source (registry, source_uid);
+    if (!source) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+            "The ECal source no longer exists");
+        goto finish;
+    }
+    if (!e_source_get_enabled (source)) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_FAILED,
+            "The ECal source is disabled");
+        goto finish;
+    }
+
+    client = E_CAL_CLIENT (e_cal_client_connect_sync (
+        source, (ECalClientSourceType) source_type, 15, NULL, &error));
+    if (!client)
+        goto finish;
+
+    parsed = i_cal_component_new_from_string (vcalendar_string);
+    if (!parsed) {
+        g_set_error_literal (
+            &error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+            "Invalid iCalendar component");
+        goto finish;
+    }
+
+    if (i_cal_component_isa (parsed) == I_CAL_VCALENDAR_COMPONENT) {
+        toplevel = g_object_ref (parsed);
+    } else {
+        toplevel = e_cal_util_new_top_level ();
+        i_cal_component_set_method (toplevel, I_CAL_METHOD_REQUEST);
+        i_cal_component_take_component (toplevel, i_cal_component_clone (parsed));
+    }
+
+    if (out_server_handled_itip) {
+        gboolean save_schedules = e_client_check_capability (
+            E_CLIENT (client), E_CAL_STATIC_CAPABILITY_SAVE_SCHEDULES);
+        *out_server_handled_itip = save_schedules ? 1 : 0;
+    }
+
+    opflags = send_itip_message
+        ? E_CAL_OPERATION_FLAG_NONE
+        : E_CAL_OPERATION_FLAG_DISABLE_ITIP_MESSAGE;
+
+    if (!e_cal_client_receive_objects_sync (
+            client, toplevel, opflags, NULL, &error)) {
+        goto finish;
+    }
+
+    result = 1;
+
+finish:
+    if (result == 0)
+        result = return_operation_error (&error, out_error);
+    g_clear_object (&toplevel);
+    g_clear_object (&parsed);
     g_clear_object (&client);
     g_clear_object (&source);
     g_clear_object (&registry);
