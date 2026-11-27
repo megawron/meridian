@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use crate::i18n::gettext;
 use crate::services::extension_service::{
-    CatalogExtensionEntry, ExtensionCatalogService, ExtensionRegistry, ExtensionSettingKind,
-    ExtensionViewPlacement, InstalledExtension,
+    CatalogExtensionEntry, ExtensionCatalogService, ExtensionPermission, ExtensionRegistry,
+    ExtensionSettingKind, ExtensionViewPlacement, InstalledExtension, PermissionRiskLevel,
 };
 
 pub struct ExtensionsDialog {
@@ -201,6 +201,7 @@ impl ExtensionsDialog {
                         is_installed,
                         &nav_view_ref,
                         &toast_overlay_ref,
+                        &dialog_weak,
                         Rc::clone(&rebuild_self),
                         filter_query,
                     );
@@ -279,6 +280,7 @@ impl ExtensionsDialog {
                     .build();
                 let toast_inner = toast_c.clone();
                 let rebuild_inner = Rc::clone(&rebuild_c);
+                let dlg_inner = dialog_weak.clone();
                 file_dialog.select_folder(
                     win.as_ref(),
                     gio::Cancellable::NONE,
@@ -289,19 +291,44 @@ impl ExtensionsDialog {
                         let Some(path) = folder.path() else {
                             return;
                         };
-                        match ExtensionRegistry::default().install_from_directory(&path) {
-                            Ok(manifest) => {
-                                toast_inner.add_toast(adw::Toast::new(&format!(
-                                    "{}: {}",
-                                    gettext("Installed extension"),
-                                    manifest.name
-                                )));
-                                rebuild_inner("");
-                            }
+                        let manifest = match ExtensionRegistry::inspect_directory_manifest(&path) {
+                            Ok(m) => m,
                             Err(err) => {
                                 toast_inner.add_toast(adw::Toast::new(&err));
+                                return;
                             }
-                        }
+                        };
+                        let audited = manifest.audited_permissions();
+                        let undeclared = manifest.undeclared_capabilities();
+                        let Some(dlg) = dlg_inner.upgrade() else {
+                            return;
+                        };
+                        let toast_confirm = toast_inner.clone();
+                        let rebuild_confirm = Rc::clone(&rebuild_inner);
+                        present_permission_review_dialog(
+                            &dlg,
+                            PermissionReviewAction::Install,
+                            &manifest.name,
+                            &manifest.author,
+                            false,
+                            &audited,
+                            &undeclared,
+                            move || match ExtensionRegistry::default().install_from_directory(&path)
+                            {
+                                Ok(installed) => {
+                                    toast_confirm.add_toast(adw::Toast::new(&format!(
+                                        "{}: {}",
+                                        gettext("Installed extension"),
+                                        installed.name
+                                    )));
+                                    rebuild_confirm("");
+                                }
+                                Err(err) => {
+                                    toast_confirm.add_toast(adw::Toast::new(&err));
+                                }
+                            },
+                            || {},
+                        );
                     },
                 );
             });
@@ -472,19 +499,30 @@ fn build_compact_installed_row(
         .build();
     row.add_prefix(&icon);
 
+    let audited = ext.audited_permissions();
+    if !ext.is_bundled && ExtensionPermission::overall_risk(&audited) == PermissionRiskLevel::HighRisk
+    {
+        let risk_icon = gtk::Image::builder()
+            .icon_name("dialog-warning-symbolic")
+            .pixel_size(14)
+            .tooltip_text(gettext("Runs local scripts"))
+            .css_classes(["ext-trust-icon-danger"])
+            .valign(gtk::Align::Center)
+            .build();
+        row.add_suffix(&risk_icon);
+    }
+
     let toggle = gtk::Switch::builder()
         .active(ext.enabled)
         .valign(gtk::Align::Center)
         .build();
-    {
-        let ext_id = ext.manifest.id.clone();
-        let toast_c = toast_overlay.clone();
-        toggle.connect_active_notify(move |sw| {
-            if let Err(err) = ExtensionRegistry::default().set_enabled(&ext_id, sw.is_active()) {
-                toast_c.add_toast(adw::Toast::new(&err.to_string()));
-            }
-        });
-    }
+    wire_extension_enable_switch(
+        &toggle,
+        ext,
+        dialog_weak,
+        toast_overlay,
+        None,
+    );
     row.add_suffix(&toggle);
     row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
 
@@ -496,7 +534,7 @@ fn build_compact_installed_row(
     let toggle_ref = toggle.clone();
     row.connect_activated(move |_| {
         let mut live_ext = ext_owned.clone();
-        live_ext.enabled = toggle_ref.is_active();
+        live_ext.enabled = toggle_ref.state();
         let detail = build_installed_detail_page(
             &live_ext,
             &nav_c,
@@ -517,6 +555,7 @@ fn build_compact_discover_row(
     is_installed: bool,
     nav_view: &adw::NavigationView,
     toast_overlay: &adw::ToastOverlay,
+    dialog_weak: &glib::WeakRef<adw::Dialog>,
     rebuild_self: Rc<RefCell<Option<Rc<dyn Fn(&str)>>>>,
     filter_query: &str,
 ) -> adw::ActionRow {
@@ -539,6 +578,18 @@ fn build_compact_discover_row(
         .build();
     row.add_prefix(&icon);
 
+    let audited = entry.audited_permissions();
+    if ExtensionPermission::overall_risk(&audited) == PermissionRiskLevel::HighRisk {
+        let risk_icon = gtk::Image::builder()
+            .icon_name("dialog-warning-symbolic")
+            .pixel_size(14)
+            .tooltip_text(gettext("Runs local scripts"))
+            .css_classes(["ext-trust-icon-danger"])
+            .valign(gtk::Align::Center)
+            .build();
+        row.add_suffix(&risk_icon);
+    }
+
     if is_installed {
         let check = gtk::Image::builder()
             .icon_name("emblem-ok-symbolic")
@@ -553,6 +604,7 @@ fn build_compact_discover_row(
     let entry_owned = entry.clone();
     let nav_c = nav_view.clone();
     let toast_c = toast_overlay.clone();
+    let dlg_w = dialog_weak.clone();
     let filter_owned = filter_query.to_string();
     row.connect_activated(move |_| {
         let detail = build_discover_detail_page(
@@ -560,6 +612,7 @@ fn build_compact_discover_row(
             is_installed,
             &nav_c,
             &toast_c,
+            &dlg_w,
             Rc::clone(&rebuild_self),
             &filter_owned,
         );
@@ -568,63 +621,342 @@ fn build_compact_discover_row(
     row
 }
 
-fn format_permission_details(perm: &str) -> (&'static str, String, String) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionReviewAction {
+    Install,
+    Enable,
+}
+
+fn permission_display_info(perm: ExtensionPermission) -> (&'static str, String, String) {
     match perm {
-        "network" => (
-            "network-transmit-receive-symbolic",
-            gettext("Network access"),
-            gettext("Can connect to external servers or websites"),
-        ),
-        "webview" => (
-            "web-browser-symbolic",
-            gettext("Embedded web tab"),
-            gettext("Adds a web workspace tab inside Meridian"),
-        ),
-        "ui_css" => (
-            "applications-graphics-symbolic",
-            gettext("Appearance & UI customization"),
-            gettext("Can customize app styling, email CSS, or UI labels"),
-        ),
-        "read_mail" => (
-            "mail-read-symbolic",
-            gettext("Read email content & attachments"),
-            gettext("Can inspect opened messages and attachments"),
-        ),
-        "modify_mail" => (
-            "document-edit-symbolic",
-            gettext("Modify email display or drafts"),
-            gettext("Can transform email HTML, list badges, or drafts"),
-        ),
-        "shell" => (
+        ExtensionPermission::Shell => (
             "utilities-terminal-symbolic",
-            gettext("Run local extension scripts"),
-            gettext("Executes local scripts inside the extension folder"),
+            gettext("Run local scripts"),
+            gettext("Can execute local programs or scripts on your computer"),
         ),
-        other => (
-            "security-medium-symbolic",
-            other.to_string(),
-            String::new(),
+        ExtensionPermission::ReadMailBody => (
+            "mail-read-symbolic",
+            gettext("Read email content"),
+            gettext("Can read the text and HTML body of opened emails"),
+        ),
+        ExtensionPermission::ReadMailAttachments => (
+            "mail-attachment-symbolic",
+            gettext("Access email attachments"),
+            gettext("Can read and preview files attached to emails"),
+        ),
+        ExtensionPermission::ReadMailHeaders => (
+            "view-list-symbolic",
+            gettext("Read email headers"),
+            gettext("Can read sender, recipients, subject, and dates"),
+        ),
+        ExtensionPermission::ModifyMailDisplay => (
+            "document-edit-symbolic",
+            gettext("Modify email display"),
+            gettext("Can highlight text, rewrite subjects, or add list badges"),
+        ),
+        ExtensionPermission::ComposeMail => (
+            "mail-message-new-symbolic",
+            gettext("Compose & modify drafts"),
+            gettext("Can open reply drafts or run hooks while composing"),
+        ),
+        ExtensionPermission::WriteTasks => (
+            "checkbox-checked-symbolic",
+            gettext("Create tasks"),
+            gettext("Can add tasks to your Meridian task list"),
+        ),
+        ExtensionPermission::Network => (
+            "network-transmit-receive-symbolic",
+            gettext("Internet & network access"),
+            gettext("Can connect to external servers, load websites, or open links"),
+        ),
+        ExtensionPermission::UiCustomize => (
+            "applications-graphics-symbolic",
+            gettext("Appearance & language"),
+            gettext("Can customize app styling, email CSS, or interface text"),
         ),
     }
 }
 
-fn build_permission_row(perm: &str) -> adw::ActionRow {
-    let (icon_name, title, subtitle) = format_permission_details(perm);
-    let builder = adw::ActionRow::builder()
+fn trust_summary_info(
+    is_bundled: bool,
+    perms: &[ExtensionPermission],
+) -> (&'static str, &'static str, String, String) {
+    if perms.is_empty() {
+        return (
+            "security-high-symbolic",
+            "ext-trust-icon-safe",
+            gettext("No special permissions required"),
+            gettext("Does not access your emails, attachments, or external servers"),
+        );
+    }
+    match ExtensionPermission::overall_risk(perms) {
+        PermissionRiskLevel::HighRisk => (
+            "security-low-symbolic",
+            "ext-trust-icon-danger",
+            gettext("High risk — runs local scripts"),
+            gettext("Only install or enable this extension if you trust its author"),
+        ),
+        PermissionRiskLevel::Sensitive => {
+            if is_bundled {
+                (
+                    "security-high-symbolic",
+                    "ext-trust-icon-safe",
+                    gettext("Built into Meridian"),
+                    gettext("Audited built-in feature with access to the capabilities below"),
+                )
+            } else {
+                (
+                    "security-medium-symbolic",
+                    "ext-trust-icon-warn",
+                    gettext("Accesses email or network data"),
+                    gettext("Review the enforced capabilities below before trusting this extension"),
+                )
+            }
+        }
+        PermissionRiskLevel::Standard => (
+            "security-high-symbolic",
+            "ext-trust-icon-safe",
+            gettext("Visual & layout access only"),
+            gettext("Does not read your emails, attachments, or run local scripts"),
+        ),
+    }
+}
+
+fn build_trust_summary_row(
+    is_bundled: bool,
+    perms: &[ExtensionPermission],
+) -> adw::ActionRow {
+    let (icon_name, icon_css, title, subtitle) = trust_summary_info(is_bundled, perms);
+    let row = adw::ActionRow::builder()
         .title(&title)
-        .use_markup(false);
-    let row = if subtitle.is_empty() {
-        builder.build()
-    } else {
-        builder.subtitle(&subtitle).build()
+        .subtitle(&subtitle)
+        .use_markup(false)
+        .build();
+    let icon = gtk::Image::builder()
+        .icon_name(icon_name)
+        .pixel_size(18)
+        .css_classes([icon_css])
+        .build();
+    row.add_prefix(&icon);
+    row
+}
+
+fn build_permission_row(perm: ExtensionPermission, is_undeclared: bool) -> adw::ActionRow {
+    let (icon_name, title, subtitle) = permission_display_info(perm);
+    let row = adw::ActionRow::builder()
+        .title(&title)
+        .subtitle(&subtitle)
+        .use_markup(false)
+        .build();
+    let icon_class = match perm.risk_level() {
+        PermissionRiskLevel::HighRisk => "ext-trust-icon-danger",
+        PermissionRiskLevel::Sensitive => "ext-trust-icon-warn",
+        PermissionRiskLevel::Standard => "dim-label",
     };
     let icon = gtk::Image::builder()
         .icon_name(icon_name)
         .pixel_size(16)
-        .css_classes(["dim-label"])
+        .css_classes([icon_class])
         .build();
     row.add_prefix(&icon);
+
+    if is_undeclared {
+        let badge = gtk::Label::builder()
+            .label(gettext("Blocked"))
+            .tooltip_text(gettext("Not declared in extension.json — blocked at runtime"))
+            .css_classes(["ext-perm-badge", "blocked"])
+            .valign(gtk::Align::Center)
+            .build();
+        row.add_suffix(&badge);
+    } else if perm.risk_level() == PermissionRiskLevel::HighRisk {
+        let badge = gtk::Label::builder()
+            .label(gettext("High Risk"))
+            .css_classes(["ext-perm-badge", "high-risk"])
+            .valign(gtk::Align::Center)
+            .build();
+        row.add_suffix(&badge);
+    }
     row
+}
+
+fn build_permissions_group(
+    is_bundled: bool,
+    perms: &[ExtensionPermission],
+    undeclared: &[ExtensionPermission],
+) -> adw::PreferencesGroup {
+    let description = if undeclared.is_empty() {
+        gettext("Meridian strictly enforces these permissions at runtime.")
+    } else {
+        gettext("Capabilities marked as Blocked are used by this extension but omitted from extension.json, so Meridian denies them at runtime.")
+    };
+    let perm_group = adw::PreferencesGroup::builder()
+        .title(gettext("Permissions & Trust"))
+        .description(&description)
+        .build();
+    perm_group.add(&build_trust_summary_row(is_bundled, perms));
+    for &perm in perms {
+        perm_group.add(&build_permission_row(perm, undeclared.contains(&perm)));
+    }
+    perm_group
+}
+
+#[allow(clippy::too_many_arguments)]
+fn present_permission_review_dialog(
+    parent: &adw::Dialog,
+    action: PermissionReviewAction,
+    ext_name: &str,
+    author: &str,
+    is_bundled: bool,
+    perms: &[ExtensionPermission],
+    undeclared: &[ExtensionPermission],
+    on_confirm: impl FnOnce() + 'static,
+    on_cancel: impl FnOnce() + 'static,
+) {
+    let (heading, confirm_label) = match action {
+        PermissionReviewAction::Install => (
+            gettext("Install “{}”?").replace("{}", ext_name),
+            gettext("Install"),
+        ),
+        PermissionReviewAction::Enable => (
+            gettext("Enable “{}”?").replace("{}", ext_name),
+            gettext("Enable"),
+        ),
+    };
+    let clean_author = author.trim();
+    let body = if clean_author.is_empty() {
+        gettext("Review what this extension can access before continuing:")
+    } else {
+        gettext("Review what this extension by {} can access before continuing:")
+            .replace("{}", clean_author)
+    };
+
+    let alert = adw::AlertDialog::new(Some(&heading), Some(&body));
+    let cancel_label = gettext("Cancel");
+    alert.add_responses(&[("cancel", &cancel_label), ("confirm", &confirm_label)]);
+    alert.set_default_response(Some("cancel"));
+    alert.set_close_response("cancel");
+    let appearance = if ExtensionPermission::overall_risk(perms) == PermissionRiskLevel::HighRisk {
+        adw::ResponseAppearance::Destructive
+    } else {
+        adw::ResponseAppearance::Suggested
+    };
+    alert.set_response_appearance("confirm", appearance);
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(2)
+        .margin_end(2)
+        .build();
+    list.append(&build_trust_summary_row(is_bundled, perms));
+    for &perm in perms {
+        list.append(&build_permission_row(perm, undeclared.contains(&perm)));
+    }
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .max_content_height(300)
+        .child(&list)
+        .build();
+    alert.set_extra_child(Some(&scroll));
+
+    let confirm_slot: Rc<RefCell<Option<Box<dyn FnOnce()>>>> =
+        Rc::new(RefCell::new(Some(Box::new(on_confirm))));
+    let cancel_slot: Rc<RefCell<Option<Box<dyn FnOnce()>>>> =
+        Rc::new(RefCell::new(Some(Box::new(on_cancel))));
+
+    alert.connect_response(None, move |_, response| {
+        if response == "confirm" {
+            let _ = cancel_slot.borrow_mut().take();
+            if let Some(cb) = confirm_slot.borrow_mut().take() {
+                cb();
+            }
+        } else {
+            let _ = confirm_slot.borrow_mut().take();
+            if let Some(cb) = cancel_slot.borrow_mut().take() {
+                cb();
+            }
+        }
+    });
+    alert.present(Some(parent));
+}
+
+/// Wire a `gtk::Switch` so third-party extensions with sensitive or high-risk permissions
+/// show a clear permission review dialog before switching ON, reverting cleanly on cancel.
+fn wire_extension_enable_switch(
+    toggle: &gtk::Switch,
+    ext: &InstalledExtension,
+    dialog_weak: &glib::WeakRef<adw::Dialog>,
+    toast_overlay: &adw::ToastOverlay,
+    after_toggle: Option<Rc<dyn Fn()>>,
+) {
+    let ext_id = ext.manifest.id.clone();
+    let ext_name = ext.manifest.name.clone();
+    let ext_author = ext.manifest.author.clone();
+    let is_bundled = ext.is_bundled;
+    let audited = ext.audited_permissions();
+    let undeclared = ext.manifest.undeclared_capabilities();
+    let needs_review =
+        !is_bundled && ExtensionPermission::overall_risk(&audited) >= PermissionRiskLevel::Sensitive;
+    let dlg_w = dialog_weak.clone();
+    let toast_c = toast_overlay.clone();
+
+    toggle.connect_state_set(move |sw, requested_state| {
+        if sw.state() == requested_state {
+            return glib::Propagation::Proceed;
+        }
+        if !requested_state || !needs_review {
+            match ExtensionRegistry::default().set_enabled(&ext_id, requested_state) {
+                Ok(()) => {
+                    if let Some(cb) = after_toggle.as_ref() {
+                        cb();
+                    }
+                    glib::Propagation::Proceed
+                }
+                Err(err) => {
+                    toast_c.add_toast(adw::Toast::new(&err.to_string()));
+                    sw.set_active(sw.state());
+                    glib::Propagation::Stop
+                }
+            }
+        } else if let Some(dlg) = dlg_w.upgrade() {
+            let sw_confirm = sw.clone();
+            let sw_cancel = sw.clone();
+            let ext_id_confirm = ext_id.clone();
+            let toast_confirm = toast_c.clone();
+            let after_confirm = after_toggle.clone();
+            present_permission_review_dialog(
+                &dlg,
+                PermissionReviewAction::Enable,
+                &ext_name,
+                &ext_author,
+                false,
+                &audited,
+                &undeclared,
+                move || match ExtensionRegistry::default().set_enabled(&ext_id_confirm, true) {
+                    Ok(()) => {
+                        sw_confirm.set_state(true);
+                        if let Some(cb) = after_confirm.as_ref() {
+                            cb();
+                        }
+                    }
+                    Err(err) => {
+                        toast_confirm.add_toast(adw::Toast::new(&err.to_string()));
+                        sw_confirm.set_active(false);
+                    }
+                },
+                move || {
+                    sw_cancel.set_active(false);
+                },
+            );
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Stop
+        }
+    });
 }
 
 fn build_detail_hero(
@@ -682,6 +1014,7 @@ fn build_discover_detail_page(
     is_installed: bool,
     nav_view: &adw::NavigationView,
     toast_overlay: &adw::ToastOverlay,
+    dialog_weak: &glib::WeakRef<adw::Dialog>,
     rebuild_self: Rc<RefCell<Option<Rc<dyn Fn(&str)>>>>,
     filter_query: &str,
 ) -> adw::NavigationPage {
@@ -690,6 +1023,7 @@ fn build_discover_detail_page(
     tv.add_top_bar(&hb);
 
     let page = adw::PreferencesPage::new();
+    let audited_perms = entry.audited_permissions();
 
     let action_btn = if is_installed {
         gtk::Button::builder()
@@ -705,51 +1039,79 @@ fn build_discover_detail_page(
             .valign(gtk::Align::Center)
             .build();
         let entry_owned = entry.clone();
+        let perms_for_review = audited_perms.clone();
         let toast_c = toast_overlay.clone();
         let rebuild_c = Rc::clone(&rebuild_self);
         let filter_owned = filter_query.to_string();
         let nav_c = nav_view.clone();
+        let dlg_w = dialog_weak.clone();
         btn.connect_clicked(move |b| {
-            b.set_sensitive(false);
-            b.set_label(&gettext("Installing…"));
-            let btn_clone = b.clone();
-            let entry_bg = entry_owned.clone();
-            let toast_bg = toast_c.clone();
-            let rebuild_bg = Rc::clone(&rebuild_c);
-            let filter_bg = filter_owned.clone();
-            let nav_bg = nav_c.clone();
-            let (tx, rx) = async_channel::bounded(1);
-            std::thread::spawn(move || {
-                let res = ExtensionCatalogService::default()
-                    .install_entry(&ExtensionRegistry::default(), &entry_bg);
-                let _ = tx.send_blocking(res);
-            });
-            glib::spawn_future_local(async move {
-                match rx.recv().await {
-                    Ok(Ok(manifest)) => {
-                        btn_clone.set_label(&gettext("Installed"));
-                        btn_clone.remove_css_class("suggested-action");
-                        toast_bg.add_toast(adw::Toast::new(&format!(
-                            "{}: {}",
-                            gettext("Installed extension"),
-                            manifest.name
-                        )));
-                        if let Some(f) = rebuild_bg.borrow().as_ref() {
-                            f(&filter_bg);
+            let start_install = {
+                let btn_clone = b.clone();
+                let entry_bg = entry_owned.clone();
+                let toast_bg = toast_c.clone();
+                let rebuild_bg = Rc::clone(&rebuild_c);
+                let filter_bg = filter_owned.clone();
+                let nav_bg = nav_c.clone();
+                move || {
+                    btn_clone.set_sensitive(false);
+                    btn_clone.set_label(&gettext("Installing…"));
+                    let btn_done = btn_clone.clone();
+                    let entry_thread = entry_bg.clone();
+                    let toast_done = toast_bg.clone();
+                    let rebuild_done = Rc::clone(&rebuild_bg);
+                    let filter_done = filter_bg.clone();
+                    let nav_done = nav_bg.clone();
+                    let (tx, rx) = async_channel::bounded(1);
+                    std::thread::spawn(move || {
+                        let res = ExtensionCatalogService::default()
+                            .install_entry(&ExtensionRegistry::default(), &entry_thread);
+                        let _ = tx.send_blocking(res);
+                    });
+                    glib::spawn_future_local(async move {
+                        match rx.recv().await {
+                            Ok(Ok(manifest)) => {
+                                btn_done.set_label(&gettext("Installed"));
+                                btn_done.remove_css_class("suggested-action");
+                                toast_done.add_toast(adw::Toast::new(&format!(
+                                    "{}: {}",
+                                    gettext("Installed extension"),
+                                    manifest.name
+                                )));
+                                if let Some(f) = rebuild_done.borrow().as_ref() {
+                                    f(&filter_done);
+                                }
+                                nav_done.pop();
+                            }
+                            Ok(Err(err)) => {
+                                btn_done.set_label(&gettext("Install"));
+                                btn_done.set_sensitive(true);
+                                toast_done.add_toast(adw::Toast::new(&err));
+                            }
+                            Err(_) => {
+                                btn_done.set_label(&gettext("Install"));
+                                btn_done.set_sensitive(true);
+                            }
                         }
-                        nav_bg.pop();
-                    }
-                    Ok(Err(err)) => {
-                        btn_clone.set_label(&gettext("Install"));
-                        btn_clone.set_sensitive(true);
-                        toast_bg.add_toast(adw::Toast::new(&err));
-                    }
-                    Err(_) => {
-                        btn_clone.set_label(&gettext("Install"));
-                        btn_clone.set_sensitive(true);
-                    }
+                    });
                 }
-            });
+            };
+
+            if let Some(dlg) = dlg_w.upgrade() {
+                present_permission_review_dialog(
+                    &dlg,
+                    PermissionReviewAction::Install,
+                    &entry_owned.name,
+                    &entry_owned.author,
+                    false,
+                    &perms_for_review,
+                    &[],
+                    start_install,
+                    || {},
+                );
+            } else {
+                start_install();
+            }
         });
         btn
     };
@@ -776,15 +1138,7 @@ fn build_discover_detail_page(
     about_group.add(&desc_lbl);
     page.add(&about_group);
 
-    if !entry.permissions.is_empty() {
-        let perm_group = adw::PreferencesGroup::builder()
-            .title(gettext("Permissions"))
-            .build();
-        for perm in &entry.permissions {
-            perm_group.add(&build_permission_row(perm));
-        }
-        page.add(&perm_group);
-    }
+    page.add(&build_permissions_group(false, &audited_perms, &[]));
 
     tv.set_content(Some(&page));
     adw::NavigationPage::builder()
@@ -813,22 +1167,20 @@ fn build_installed_detail_page(
         .valign(gtk::Align::Center)
         .build();
     {
-        let ext_id = ext.manifest.id.clone();
-        let toast_c = toast_overlay.clone();
         let rebuild_c = Rc::clone(&rebuild_self);
         let filter_owned = filter_query.to_string();
-        enable_switch.connect_active_notify(move |sw| {
-            match ExtensionRegistry::default().set_enabled(&ext_id, sw.is_active()) {
-                Ok(()) => {
-                    if let Some(f) = rebuild_c.borrow().as_ref() {
-                        f(&filter_owned);
-                    }
-                }
-                Err(err) => {
-                    toast_c.add_toast(adw::Toast::new(&err.to_string()));
-                }
+        let after_toggle: Rc<dyn Fn()> = Rc::new(move || {
+            if let Some(f) = rebuild_c.borrow().as_ref() {
+                f(&filter_owned);
             }
         });
+        wire_extension_enable_switch(
+            &enable_switch,
+            ext,
+            dialog_weak,
+            toast_overlay,
+            Some(after_toggle),
+        );
     }
 
     let meta = if ext.is_bundled {
@@ -994,15 +1346,13 @@ fn build_installed_detail_page(
         page.add(&settings_group);
     }
 
-    if !ext.manifest.permissions.is_empty() {
-        let perm_group = adw::PreferencesGroup::builder()
-            .title(gettext("Permissions"))
-            .build();
-        for perm in &ext.manifest.permissions {
-            perm_group.add(&build_permission_row(perm));
-        }
-        page.add(&perm_group);
-    }
+    let audited_perms = ext.audited_permissions();
+    let undeclared_perms = ext.manifest.undeclared_capabilities();
+    page.add(&build_permissions_group(
+        ext.is_bundled,
+        &audited_perms,
+        &undeclared_perms,
+    ));
 
     if !ext.is_bundled {
         let manage_group = adw::PreferencesGroup::new();

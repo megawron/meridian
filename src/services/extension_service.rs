@@ -374,6 +374,190 @@ fn default_extension_icon() -> String {
     "application-x-addon-symbolic".to_string()
 }
 
+/// Risk tier of an extension permission, used to present clear Chrome / GNOME-Software-style
+/// trust indicators before installing or enabling an extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PermissionRiskLevel {
+    Standard,
+    Sensitive,
+    HighRisk,
+}
+
+/// Canonical, runtime-enforced capability scopes for Meridian extensions.
+/// Ordered from highest risk to lowest risk for clear user review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ExtensionPermission {
+    /// Execute local scripts or external programs on the host (`shell`).
+    Shell,
+    /// Read the body text / HTML of opened emails (`mail.body`).
+    ReadMailBody,
+    /// Read and inspect email attachments (`mail.attachments`).
+    ReadMailAttachments,
+    /// Read email headers: sender, recipients, subject, date (`mail.headers`).
+    ReadMailHeaders,
+    /// Modify displayed email HTML, subjects, or list badges (`mail.modify`).
+    ModifyMailDisplay,
+    /// Open/prefill reply drafts or run composer hooks (`mail.compose`).
+    ComposeMail,
+    /// Create or modify tasks in Meridian (`tasks.write`).
+    WriteTasks,
+    /// Connect to external servers, load remote web pages, or open links (`network`).
+    Network,
+    /// Customize application/email CSS stylesheets or UI translations (`ui.style`).
+    UiCustomize,
+}
+
+impl ExtensionPermission {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shell => "shell",
+            Self::ReadMailBody => "mail.body",
+            Self::ReadMailAttachments => "mail.attachments",
+            Self::ReadMailHeaders => "mail.headers",
+            Self::ModifyMailDisplay => "mail.modify",
+            Self::ComposeMail => "mail.compose",
+            Self::WriteTasks => "tasks.write",
+            Self::Network => "network",
+            Self::UiCustomize => "ui.style",
+        }
+    }
+
+    pub fn risk_level(self) -> PermissionRiskLevel {
+        match self {
+            Self::Shell => PermissionRiskLevel::HighRisk,
+            Self::ReadMailBody
+            | Self::ReadMailAttachments
+            | Self::ReadMailHeaders
+            | Self::ModifyMailDisplay
+            | Self::ComposeMail
+            | Self::WriteTasks
+            | Self::Network => PermissionRiskLevel::Sensitive,
+            Self::UiCustomize => PermissionRiskLevel::Standard,
+        }
+    }
+
+    /// Map a manifest permission string (granular v2 or legacy v1 alias) to canonical scopes.
+    pub fn from_manifest_token(raw: &str) -> Vec<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "shell" => vec![Self::Shell],
+            "mail.headers" => vec![Self::ReadMailHeaders],
+            "mail.body" => vec![Self::ReadMailBody],
+            "mail.attachments" => vec![Self::ReadMailAttachments],
+            "mail.modify" => vec![Self::ModifyMailDisplay],
+            "mail.compose" => vec![Self::ComposeMail],
+            "tasks.write" => vec![Self::WriteTasks],
+            "network" => vec![Self::Network],
+            "ui.style" | "ui_css" => vec![Self::UiCustomize],
+            // Legacy v1 coarse aliases expanded into their exact underlying capabilities:
+            "read_mail" => vec![
+                Self::ReadMailHeaders,
+                Self::ReadMailBody,
+                Self::ReadMailAttachments,
+            ],
+            "modify_mail" => vec![
+                Self::ModifyMailDisplay,
+                Self::ComposeMail,
+                Self::WriteTasks,
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Normalize, deduplicate, and sort raw manifest permission tokens by risk severity.
+    pub fn normalize_list(raw_tokens: &[String]) -> Vec<Self> {
+        let mut set = std::collections::BTreeSet::new();
+        for token in raw_tokens {
+            for perm in Self::from_manifest_token(token) {
+                set.insert(perm);
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    pub fn overall_risk(perms: &[Self]) -> PermissionRiskLevel {
+        perms
+            .iter()
+            .map(|p| p.risk_level())
+            .max()
+            .unwrap_or(PermissionRiskLevel::Standard)
+    }
+}
+
+impl ExtensionManifest {
+    /// Canonical permissions explicitly declared in `extension.json`.
+    pub fn declared_permissions(&self) -> Vec<ExtensionPermission> {
+        ExtensionPermission::normalize_list(&self.permissions)
+    }
+
+    /// Capabilities implied by the extension's actual `contributes` entries.
+    pub fn contributed_capabilities(&self) -> Vec<ExtensionPermission> {
+        let mut set = std::collections::BTreeSet::new();
+        let c = &self.contributes;
+
+        for cmd in &c.commands {
+            let exec = cmd.exec.trim();
+            if !exec.is_empty() && !exec.starts_with("builtin:") {
+                set.insert(ExtensionPermission::Shell);
+            }
+        }
+        if !c.attachment_renderers.is_empty() {
+            set.insert(ExtensionPermission::ReadMailAttachments);
+            for renderer in &c.attachment_renderers {
+                let exec = renderer.exec.trim();
+                if !exec.is_empty() && !exec.starts_with("builtin:") {
+                    set.insert(ExtensionPermission::Shell);
+                }
+            }
+        }
+        for rule in &c.message_transformers {
+            set.insert(ExtensionPermission::ModifyMailDisplay);
+            match rule.target {
+                TransformerTarget::BodyHtml => {
+                    set.insert(ExtensionPermission::ReadMailBody);
+                }
+                TransformerTarget::Subject | TransformerTarget::ListBadge => {
+                    set.insert(ExtensionPermission::ReadMailHeaders);
+                }
+            }
+        }
+        if !c.composer_hooks.is_empty() {
+            set.insert(ExtensionPermission::ComposeMail);
+        }
+        if !c.stylesheets.is_empty() || !c.locales.is_empty() {
+            set.insert(ExtensionPermission::UiCustomize);
+        }
+        for view in &c.views {
+            if !view.url.trim().is_empty() {
+                set.insert(ExtensionPermission::Network);
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    /// Complete audited permission set shown to users before installing or enabling:
+    /// union of explicitly declared permissions and capabilities actually required by `contributes`.
+    pub fn audited_permissions(&self) -> Vec<ExtensionPermission> {
+        let mut set = std::collections::BTreeSet::new();
+        for p in self.declared_permissions() {
+            set.insert(p);
+        }
+        for p in self.contributed_capabilities() {
+            set.insert(p);
+        }
+        set.into_iter().collect()
+    }
+
+    /// Capabilities used in `contributes` that were omitted from `permissions` (blocked at runtime).
+    pub fn undeclared_capabilities(&self) -> Vec<ExtensionPermission> {
+        let declared: HashSet<ExtensionPermission> =
+            self.declared_permissions().into_iter().collect();
+        self.contributed_capabilities()
+            .into_iter()
+            .filter(|p| !declared.contains(p))
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledExtension {
     pub manifest: ExtensionManifest,
@@ -383,12 +567,29 @@ pub struct InstalledExtension {
 }
 
 impl InstalledExtension {
-    /// Returns true if this extension explicitly declared `permission` in `extension.json`.
+    /// Returns true if this extension explicitly declared `permission` (supporting both
+    /// canonical granular scopes like `"mail.attachments"` and legacy aliases like `"read_mail"`).
     pub fn has_permission(&self, permission: &str) -> bool {
-        self.manifest
-            .permissions
-            .iter()
-            .any(|p| p.trim().eq_ignore_ascii_case(permission))
+        let required = ExtensionPermission::from_manifest_token(permission);
+        if required.is_empty() {
+            return self
+                .manifest
+                .permissions
+                .iter()
+                .any(|p| p.trim().eq_ignore_ascii_case(permission));
+        }
+        let declared = self.manifest.declared_permissions();
+        required.iter().all(|req| declared.contains(req))
+    }
+
+    /// Returns true if this extension explicitly declared the typed capability `permission`.
+    pub fn has_permission_kind(&self, permission: ExtensionPermission) -> bool {
+        self.manifest.declared_permissions().contains(&permission)
+    }
+
+    /// Full audited capability list (declared + implied by `contributes`) for user trust review.
+    pub fn audited_permissions(&self) -> Vec<ExtensionPermission> {
+        self.manifest.audited_permissions()
     }
 }
 
@@ -483,7 +684,7 @@ Meridian hot-reloads extensions when toggled, installed, or configured in **Menu
   "description": "Short explanation of what this extension does.",
   "icon_name": "application-x-addon-symbolic",
   "enabled_by_default": true,
-  "permissions": ["read_mail", "modify_mail"],
+  "permissions": ["mail.headers", "mail.body", "mail.modify"],
   "contributes": {
     "views": [],
     "stylesheets": [],
@@ -501,7 +702,16 @@ Meridian hot-reloads extensions when toggled, installed, or configured in **Menu
 ```
 
 - `id`: ASCII letters, digits, `.`, `-`, `_` only (1–128 chars).
-- `permissions`: optional informational badges: `"network"`, `"webview"`, `"ui_css"`, `"read_mail"`, `"modify_mail"`, `"shell"`.
+- `permissions` *(strictly enforced at runtime and reviewed by the user before install/enable)*:
+  - `"mail.headers"`: read sender, recipients, subject, and headers (required for `subject`/`list_badge` rules and header fields in `getSelectedMail` / command stdin)
+  - `"mail.body"`: read opened email body text/HTML (required for `body_html` rules and `body_text` in `getSelectedMail` / command stdin)
+  - `"mail.attachments"`: read & render email attachments (required for `attachment_renderers`)
+  - `"mail.modify"`: modify email display HTML, subjects, or list badges (required for `message_transformers`)
+  - `"mail.compose"`: open reply drafts & access composer fields (required for `openReplyDraft` and `composer_hooks`)
+  - `"tasks.write"`: create tasks via `createTask`
+  - `"network"`: connect to external servers, load remote WebView URLs, or call `openUrl`
+  - `"ui.style"`: load CSS stylesheets or language overrides
+  - `"shell"`: *(High Risk)* execute local scripts in `commands` or external `attachment_renderers`
 - Verified Adwaita symbolic icons: `application-x-addon-symbolic`, `mail-message-new-symbolic`, `web-browser-symbolic`, `x-office-document-symbolic`, `edit-find-replace-symbolic`, `applications-graphics-symbolic`, `preferences-desktop-locale-symbolic`, `utilities-terminal-symbolic`, `application-rss+xml-symbolic`, `system-users-symbolic`, `starred-symbolic`, `folder-symbolic`.
 
 ## 2. Contribution Points
@@ -533,10 +743,10 @@ Developers choose where the view mounts by default (`placement`), and users can 
 #### JavaScript Host Bridge (`window.meridian.*`) for Local `html_file` Views
 Local HTML/JS extension views automatically receive an async `window.meridian` API with **enforced permissions** (and strict `connect-src 'none'` CSP unless `"network"` is declared):
 - `await window.meridian.getContext()` → `{ active_view, extension_id, permissions }`
-- `await window.meridian.getSelectedMail()` *(requires `"read_mail"`)* → `{ id, subject, sender, recipients, body_text }` or `null`
+- `await window.meridian.getSelectedMail()` *(requires `"mail.headers"` or `"mail.body"`; `body_text` is only included with `"mail.body"`)* → `{ id, subject, sender, recipients, body_text }` or `null`
 - `await window.meridian.getSetting(key)` → reads any declared `string`, `bool`, or keyring-backed `secret` setting (e.g. an LLM API key)
-- `await window.meridian.openReplyDraft(html)` *(requires `"modify_mail"`)* → opens Meridian's Composer prefilled as a reply
-- `await window.meridian.createTask(title)` *(requires `"modify_mail"`)* → creates a task in the default task list
+- `await window.meridian.openReplyDraft(html)` *(requires `"mail.compose"`)* → opens Meridian's Composer prefilled as a reply
+- `await window.meridian.createTask(title)` *(requires `"tasks.write"`)* → creates a task in the default task list
 - `await window.meridian.openUrl(url)` *(requires `"network"`)* → opens an `https://` link in the system browser
 - `await window.meridian.showToast(message)` → displays a native toast notification
 
@@ -678,7 +888,7 @@ pub fn bundled_extensions() -> Vec<ExtensionManifest> {
             id: "meridian.rss-feeds".to_string(),
             name: "RSS & Atom Feeds".to_string(),
             version: "1.1.0".to_string(),
-            author: "Meridian Team".to_string(),
+            author: "Martin Gawron".to_string(),
             description: "Adds a Feeds section to the mail sidebar and renders RSS and Atom articles directly in the mail list and message preview.".to_string(),
             icon_name: "application-rss+xml-symbolic".to_string(),
             enabled_by_default: false,
@@ -706,11 +916,11 @@ pub fn bundled_extensions() -> Vec<ExtensionManifest> {
             id: "meridian.mail-merge".to_string(),
             name: "Mail Merge".to_string(),
             version: "1.0.0".to_string(),
-            author: "Meridian Team".to_string(),
+            author: "Martin Gawron".to_string(),
             description: "Personalizes outgoing messages per recipient using {{name}}, {{first_name}}, and {{email}} placeholders.".to_string(),
             icon_name: "system-users-symbolic".to_string(),
             enabled_by_default: false,
-            permissions: vec!["modify_mail".to_string()],
+            permissions: vec!["mail.compose".to_string()],
             contributes: ExtensionContributions {
                 commands: vec![ExtensionCommandContribution {
                     id: "mail-merge.insert-placeholder".to_string(),
@@ -734,7 +944,7 @@ pub fn bundled_extensions() -> Vec<ExtensionManifest> {
             id: "meridian.activity-monitor".to_string(),
             name: "Activity Monitor".to_string(),
             version: "1.0.0".to_string(),
-            author: "Meridian Team".to_string(),
+            author: "Martin Gawron".to_string(),
             description: "Adds a quick header button and activity log view to inspect background sync, filter, and transport operations.".to_string(),
             icon_name: "utilities-terminal-symbolic".to_string(),
             enabled_by_default: false,
@@ -1094,6 +1304,11 @@ impl ExtensionRegistry {
                 let mut resolved = view.clone();
                 resolved.title = self.resolve_setting_placeholders(&ext, &values, &view.title);
                 resolved.url = self.resolve_setting_placeholders(&ext, &values, &view.url);
+                if !resolved.url.trim().is_empty()
+                    && !ext.has_permission_kind(ExtensionPermission::Network)
+                {
+                    continue;
+                }
                 let composite = format!("{}:{}", ext.manifest.id, view.id);
                 if let Some(override_placement) = state.view_placement_overrides.get(&composite) {
                     resolved.placement = *override_placement;
@@ -1107,6 +1322,9 @@ impl ExtensionRegistry {
     pub fn enabled_stylesheets(&self, target: StylesheetTarget) -> String {
         let mut combined = String::new();
         for ext in self.list_enabled() {
+            if !ext.has_permission_kind(ExtensionPermission::UiCustomize) {
+                continue;
+            }
             for sheet in &ext.manifest.contributes.stylesheets {
                 if sheet.target != target {
                     continue;
@@ -1150,6 +1368,20 @@ impl ExtensionRegistry {
         let state = self.load_state();
         let mut rules = Vec::new();
         for ext in self.list_enabled() {
+            if !ext.has_permission_kind(ExtensionPermission::ModifyMailDisplay) {
+                continue;
+            }
+            let has_read = match target {
+                TransformerTarget::BodyHtml => {
+                    ext.has_permission_kind(ExtensionPermission::ReadMailBody)
+                }
+                TransformerTarget::Subject | TransformerTarget::ListBadge => {
+                    ext.has_permission_kind(ExtensionPermission::ReadMailHeaders)
+                }
+            };
+            if !has_read {
+                continue;
+            }
             let values = state
                 .settings_values
                 .get(&ext.manifest.id)
@@ -1231,7 +1463,17 @@ impl ExtensionRegistry {
     ) -> Vec<(InstalledExtension, ExtensionAttachmentRenderer)> {
         let mut renderers = Vec::new();
         for ext in self.list_enabled() {
+            if !ext.has_permission_kind(ExtensionPermission::ReadMailAttachments) {
+                continue;
+            }
             for r in &ext.manifest.contributes.attachment_renderers {
+                let exec = r.exec.trim();
+                if !exec.is_empty()
+                    && !exec.starts_with("builtin:")
+                    && !ext.has_permission_kind(ExtensionPermission::Shell)
+                {
+                    continue;
+                }
                 renderers.push((ext.clone(), r.clone()));
             }
         }
@@ -1297,6 +1539,9 @@ impl ExtensionRegistry {
         let active_short = active_norm.split('_').next().unwrap_or(&active_norm);
 
         for ext in self.list_enabled() {
+            if !ext.has_permission_kind(ExtensionPermission::UiCustomize) {
+                continue;
+            }
             let Some(root_dir) = &ext.root_dir else {
                 continue;
             };
@@ -1329,14 +1574,21 @@ impl ExtensionRegistry {
         overrides
     }
 
-    /// Install a user extension from a source folder containing `extension.json`.
-    pub fn install_from_directory(&self, source_dir: &Path) -> Result<ExtensionManifest, String> {
+    /// Parse and validate `extension.json` from a local folder without installing it yet,
+    /// so the UI can display all audited permissions for user review before copying files.
+    pub fn inspect_directory_manifest(source_dir: &Path) -> Result<ExtensionManifest, String> {
         let manifest_file = source_dir.join("extension.json");
         let raw = fs::read_to_string(&manifest_file)
             .map_err(|e| format!("Could not read extension.json: {e}"))?;
         let manifest: ExtensionManifest = serde_json::from_str(&raw)
             .map_err(|e| format!("Invalid extension.json format: {e}"))?;
         validate_manifest(&manifest)?;
+        Ok(manifest)
+    }
+
+    /// Install a user extension from a source folder containing `extension.json`.
+    pub fn install_from_directory(&self, source_dir: &Path) -> Result<ExtensionManifest, String> {
+        let manifest = Self::inspect_directory_manifest(source_dir)?;
 
         let safe_folder_name = sanitize_extension_id(&manifest.id);
         let dest_dir = self.ext_dir.join(&safe_folder_name);
@@ -1397,7 +1649,7 @@ impl ExtensionRegistry {
             description: "Custom Meridian extension created from starter template.".to_string(),
             icon_name: "application-x-addon-symbolic".to_string(),
             enabled_by_default: true,
-            permissions: vec!["shell".to_string(), "read_mail".to_string()],
+            permissions: vec!["shell".to_string(), "mail.headers".to_string()],
             contributes: ExtensionContributions {
                 commands: vec![ExtensionCommandContribution {
                     id: format!("{ext_id}.run"),
@@ -1475,11 +1727,18 @@ print(json.dumps(response))
             return execute_builtin_command(builtin, context);
         }
 
+        if !ext.has_permission_kind(ExtensionPermission::Shell) {
+            return Err(
+                "Permission denied: extension must declare 'shell' to run local scripts"
+                    .to_string(),
+            );
+        }
+
         if cmd.exec.trim().is_empty() {
             return Err("Command has no executable configured".to_string());
         }
 
-        let Some(root_dir) = ext.root_dir else {
+        let Some(root_dir) = ext.root_dir.clone() else {
             return Err("External command requires an extension directory".to_string());
         };
         let candidate = root_dir.join(&cmd.exec);
@@ -1489,7 +1748,10 @@ print(json.dumps(response))
             PathBuf::from(&cmd.exec)
         };
 
-        let input_bytes = serde_json::to_vec(context).map_err(|e| e.to_string())?;
+        // Strictly redact context fields according to the extension's declared permissions.
+        let scoped_context = redact_execution_context(&ext, context);
+
+        let input_bytes = serde_json::to_vec(&scoped_context).map_err(|e| e.to_string())?;
         let mut child = Command::new(&program)
             .args(&cmd.args)
             .current_dir(&root_dir)
@@ -1532,7 +1794,7 @@ print(json.dumps(response))
                         return Ok(ExtensionHostResponse::default());
                     }
                     if let Ok(parsed) = serde_json::from_str::<ExtensionHostResponse>(trimmed) {
-                        return Ok(parsed);
+                        return Ok(sanitize_host_response(&ext, parsed));
                     }
                     return Ok(ExtensionHostResponse {
                         toast: None,
@@ -1630,6 +1892,55 @@ fn split_recipient_display_and_email(raw: &str) -> (String, String) {
         }
     }
     (String::new(), trimmed.to_string())
+}
+
+/// Redact execution context fields according to an extension's declared permissions.
+pub fn redact_execution_context(
+    ext: &InstalledExtension,
+    context: &ExtensionExecutionContext,
+) -> ExtensionExecutionContext {
+    let mut scoped = context.clone();
+    let can_read_body = ext.has_permission_kind(ExtensionPermission::ReadMailBody);
+    let can_read_headers =
+        can_read_body || ext.has_permission_kind(ExtensionPermission::ReadMailHeaders);
+    if !can_read_body {
+        scoped.message_body_text = None;
+    }
+    if !can_read_headers {
+        scoped.message_id = None;
+        scoped.message_subject = None;
+        scoped.message_sender = None;
+        scoped.message_recipients = None;
+        scoped.message_date = None;
+    }
+    if !ext.has_permission_kind(ExtensionPermission::ComposeMail) {
+        scoped.composer_to = None;
+        scoped.composer_subject = None;
+        scoped.composer_body_html = None;
+    }
+    scoped
+}
+
+/// Strip unauthorized host mutations from an external command's JSON stdout response.
+pub fn sanitize_host_response(
+    ext: &InstalledExtension,
+    mut response: ExtensionHostResponse,
+) -> ExtensionHostResponse {
+    if !ext.has_permission_kind(ExtensionPermission::Network) {
+        response.open_url = None;
+    }
+    if !ext.has_permission_kind(ExtensionPermission::ComposeMail) {
+        response.insert_composer_html = None;
+        response.replace_composer_html = None;
+        response.replace_composer_subject = None;
+    }
+    if !ext.has_permission_kind(ExtensionPermission::WriteTasks) {
+        response.create_task_title = None;
+    }
+    if !ext.has_permission_kind(ExtensionPermission::ModifyMailDisplay) {
+        response.add_label = None;
+    }
+    response
 }
 
 fn validate_manifest(manifest: &ExtensionManifest) -> Result<(), String> {
@@ -2048,6 +2359,19 @@ pub struct ExtensionCatalogService {
     registry_url: String,
 }
 
+impl CatalogExtensionEntry {
+    /// Return audited canonical permissions for this catalog item (derived from its template
+    /// contributions when bundled, combined with its declared permissions).
+    pub fn audited_permissions(&self) -> Vec<ExtensionPermission> {
+        if let Some(tpl) = self.builtin_template.as_deref() {
+            if let Ok((manifest, _)) = build_catalog_template(tpl, self) {
+                return manifest.audited_permissions();
+            }
+        }
+        ExtensionPermission::normalize_list(&self.permissions)
+    }
+}
+
 impl Default for ExtensionCatalogService {
     fn default() -> Self {
         let url = std::env::var("MERIDIAN_EXTENSION_REGISTRY_URL")
@@ -2065,11 +2389,11 @@ impl ExtensionCatalogService {
                 id: "community.matrix-element-tab".to_string(),
                 name: "Matrix / Element Chat Tab".to_string(),
                 version: "1.0.0".to_string(),
-                author: "Meridian Community".to_string(),
+                author: "Martin Gawron".to_string(),
                 category: "Communication".to_string(),
                 description: "Adds a Matrix / Element Web workspace tab next to Mail, Calendar, Contacts, and Tasks. Edit extension.json to point to your own homeserver or Cinny/Mattermost instance.".to_string(),
                 icon_name: "mail-message-new-symbolic".to_string(),
-                permissions: vec!["webview".to_string(), "network".to_string()],
+                permissions: vec!["network".to_string()],
                 homepage_url: "https://app.element.io".to_string(),
                 download_url: None,
                 builtin_template: Some("matrix-element-tab".to_string()),
@@ -2078,11 +2402,11 @@ impl ExtensionCatalogService {
                 id: "community.web-browser-tab".to_string(),
                 name: "Integrated Web Browser Tab".to_string(),
                 version: "1.0.0".to_string(),
-                author: "Meridian Community".to_string(),
+                author: "Martin Gawron".to_string(),
                 category: "Workspace".to_string(),
                 description: "Demonstrates full shell extensibility by adding a lightweight WebKit browser tab with Back, Forward, Reload, and an address bar right inside Meridian.".to_string(),
                 icon_name: "web-browser-symbolic".to_string(),
-                permissions: vec!["webview".to_string(), "network".to_string()],
+                permissions: vec!["network".to_string()],
                 homepage_url: "https://duckduckgo.com".to_string(),
                 download_url: None,
                 builtin_template: Some("web-browser-tab".to_string()),
@@ -2091,11 +2415,11 @@ impl ExtensionCatalogService {
                 id: "community.inline-doc-preview".to_string(),
                 name: "Inline Document Renderer".to_string(),
                 version: "1.0.0".to_string(),
-                author: "Meridian Community".to_string(),
+                author: "Martin Gawron".to_string(),
                 category: "Mail Viewer".to_string(),
                 description: "Renders Markdown (.md), CSV spreadsheets (.csv), JSON files (.json), and XRechnung / ZUGFeRD XML invoices directly inside the email preview.".to_string(),
                 icon_name: "x-office-document-symbolic".to_string(),
-                permissions: vec!["read_mail".to_string()],
+                permissions: vec!["mail.attachments".to_string()],
                 homepage_url: String::new(),
                 download_url: None,
                 builtin_template: Some("inline-doc-preview".to_string()),
@@ -2104,11 +2428,15 @@ impl ExtensionCatalogService {
                 id: "community.regex-mail-rules".to_string(),
                 name: "Regex Ticket Linkifier & Badges".to_string(),
                 version: "1.0.0".to_string(),
-                author: "Meridian Community".to_string(),
+                author: "Martin Gawron".to_string(),
                 category: "Mail Viewer".to_string(),
                 description: "Highlights ticket IDs (like JIRA-123 or PROJ-42) inside emails and adds automatic list badges using editable regex rules in extension.json.".to_string(),
                 icon_name: "edit-find-replace-symbolic".to_string(),
-                permissions: vec!["read_mail".to_string(), "modify_mail".to_string()],
+                permissions: vec![
+                    "mail.headers".to_string(),
+                    "mail.body".to_string(),
+                    "mail.modify".to_string(),
+                ],
                 homepage_url: String::new(),
                 download_url: None,
                 builtin_template: Some("regex-mail-rules".to_string()),
@@ -2117,11 +2445,11 @@ impl ExtensionCatalogService {
                 id: "community.compact-theme".to_string(),
                 name: "Compact Minimalist CSS Pack".to_string(),
                 version: "1.0.0".to_string(),
-                author: "Meridian Community".to_string(),
+                author: "Martin Gawron".to_string(),
                 category: "Appearance".to_string(),
                 description: "Refines message list density and email typography using editable app.css and viewer.css stylesheets (Obsidian / GNOME Shell style).".to_string(),
                 icon_name: "applications-graphics-symbolic".to_string(),
-                permissions: vec!["ui_css".to_string()],
+                permissions: vec!["ui.style".to_string()],
                 homepage_url: String::new(),
                 download_url: None,
                 builtin_template: Some("compact-theme".to_string()),
@@ -2130,11 +2458,11 @@ impl ExtensionCatalogService {
                 id: "community.custom-locale-pack".to_string(),
                 name: "Custom Language Pack Template".to_string(),
                 version: "1.0.0".to_string(),
-                author: "Meridian Community".to_string(),
+                author: "Martin Gawron".to_string(),
                 category: "Localization".to_string(),
                 description: "Installs an editable locale.json translation pack so communities or users can add new UI languages or customize labels without rebuilding Meridian.".to_string(),
                 icon_name: "preferences-desktop-locale-symbolic".to_string(),
-                permissions: vec!["ui_css".to_string()],
+                permissions: vec!["ui.style".to_string()],
                 homepage_url: String::new(),
                 download_url: None,
                 builtin_template: Some("custom-locale-pack".to_string()),
@@ -2220,6 +2548,20 @@ impl ExtensionCatalogService {
             let manifest: ExtensionManifest = serde_json::from_str(&raw)
                 .map_err(|e| format!("Invalid remote extension.json: {e}"))?;
             validate_manifest(&manifest)?;
+            let reviewed_perms: HashSet<ExtensionPermission> =
+                entry.audited_permissions().into_iter().collect();
+            let unexpected: Vec<&'static str> = manifest
+                .audited_permissions()
+                .into_iter()
+                .filter(|p| !reviewed_perms.contains(p))
+                .map(ExtensionPermission::as_str)
+                .collect();
+            if !unexpected.is_empty() {
+                return Err(format!(
+                    "Downloaded extension requests unreviewed permissions: {}",
+                    unexpected.join(", ")
+                ));
+            }
             fs::write(dest_dir.join("extension.json"), raw)
                 .map_err(|e| format!("Failed writing extension.json: {e}"))?;
             let mut state = registry.load_state();
@@ -2976,7 +3318,7 @@ mod tests {
         .unwrap();
         let views_after = reg.enabled_views();
         assert_eq!(views_after[0].1.placement, ExtensionViewPlacement::GlobalSidebar);
-        assert!(views_after[0].0.has_permission("webview"));
+        assert!(views_after[0].0.has_permission("network"));
         assert!(!views_after[0].0.has_permission("read_mail"));
 
         // 7. Guide generation writes LLM-ready EXTENSION_GUIDE.md
@@ -2986,5 +3328,240 @@ mod tests {
         assert!(guide_text.contains("\"secret\""));
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn permission_auditing_catches_undeclared_capabilities_and_legacy_aliases() {
+        let sneaky = ExtensionManifest {
+            id: "test.sneaky".to_string(),
+            name: "Sneaky Helper".to_string(),
+            version: "1.0.0".to_string(),
+            author: "Unknown".to_string(),
+            description: String::new(),
+            icon_name: default_extension_icon(),
+            enabled_by_default: false,
+            permissions: Vec::new(), // Claims zero permissions!
+            contributes: ExtensionContributions {
+                commands: vec![ExtensionCommandContribution {
+                    id: "test.sneaky.run".to_string(),
+                    title: "Run".to_string(),
+                    category: String::new(),
+                    shortcut: String::new(),
+                    exec: "script.sh".to_string(),
+                    args: Vec::new(),
+                }],
+                attachment_renderers: vec![ExtensionAttachmentRenderer {
+                    id: "r1".to_string(),
+                    title: "MD".to_string(),
+                    extensions: vec!["md".to_string()],
+                    mime_types: Vec::new(),
+                    exec: "builtin:markdown".to_string(),
+                }],
+                views: vec![ExtensionViewContribution {
+                    id: "v1".to_string(),
+                    title: "Web".to_string(),
+                    icon_name: default_extension_icon(),
+                    url: "https://example.org".to_string(),
+                    html_file: String::new(),
+                    show_navigation_bar: false,
+                    allow_javascript: true,
+                    placement: ExtensionViewPlacement::Tab,
+                    surfaces: Vec::new(),
+                    default_width: None,
+                }],
+                ..ExtensionContributions::default()
+            },
+        };
+
+        let audited = sneaky.audited_permissions();
+        assert!(audited.contains(&ExtensionPermission::Shell));
+        assert!(audited.contains(&ExtensionPermission::ReadMailAttachments));
+        assert!(audited.contains(&ExtensionPermission::Network));
+        assert_eq!(
+            ExtensionPermission::overall_risk(&audited),
+            PermissionRiskLevel::HighRisk
+        );
+        assert_eq!(sneaky.undeclared_capabilities(), audited);
+
+        // Legacy coarse aliases expand into granular permissions cleanly
+        let legacy = InstalledExtension {
+            manifest: ExtensionManifest {
+                permissions: vec!["read_mail".to_string(), "modify_mail".to_string()],
+                ..sneaky
+            },
+            root_dir: None,
+            is_bundled: false,
+            enabled: true,
+        };
+        assert!(legacy.has_permission_kind(ExtensionPermission::ReadMailHeaders));
+        assert!(legacy.has_permission_kind(ExtensionPermission::ReadMailBody));
+        assert!(legacy.has_permission_kind(ExtensionPermission::ReadMailAttachments));
+        assert!(legacy.has_permission_kind(ExtensionPermission::ModifyMailDisplay));
+        assert!(legacy.has_permission_kind(ExtensionPermission::ComposeMail));
+        assert!(legacy.has_permission_kind(ExtensionPermission::WriteTasks));
+        assert!(!legacy.has_permission_kind(ExtensionPermission::Shell));
+    }
+
+    #[test]
+    fn runtime_enforces_permissions_across_commands_transformers_renderers_styles_and_views() {
+        let dir =
+            std::env::temp_dir().join(format!("meridian-ext-enforce-{}", uuid::Uuid::new_v4()));
+        let reg = ExtensionRegistry::new(dir.join("extensions"), dir.join("state.json"));
+        let src = dir.join("src_unprivileged");
+        fs::create_dir_all(&src).unwrap();
+
+        let manifest = ExtensionManifest {
+            id: "test.unprivileged".to_string(),
+            name: "Unprivileged".to_string(),
+            version: "1.0.0".to_string(),
+            author: "Tester".to_string(),
+            description: String::new(),
+            icon_name: default_extension_icon(),
+            enabled_by_default: true,
+            permissions: Vec::new(),
+            contributes: ExtensionContributions {
+                commands: vec![ExtensionCommandContribution {
+                    id: "test.unprivileged.cmd".to_string(),
+                    title: "Run".to_string(),
+                    category: String::new(),
+                    shortcut: String::new(),
+                    exec: "run.sh".to_string(),
+                    args: Vec::new(),
+                }],
+                views: vec![ExtensionViewContribution {
+                    id: "v1".to_string(),
+                    title: "Tab".to_string(),
+                    icon_name: default_extension_icon(),
+                    url: "https://example.org".to_string(),
+                    html_file: String::new(),
+                    show_navigation_bar: false,
+                    allow_javascript: true,
+                    placement: ExtensionViewPlacement::Tab,
+                    surfaces: Vec::new(),
+                    default_width: None,
+                }],
+                stylesheets: vec![ExtensionStylesheetContribution {
+                    target: StylesheetTarget::App,
+                    path: String::new(),
+                    css: "window { color: red; }".to_string(),
+                }],
+                message_transformers: vec![
+                    ExtensionMessageTransformer {
+                        id: "t-body".to_string(),
+                        target: TransformerTarget::BodyHtml,
+                        pattern: "SECRET".to_string(),
+                        replacement: "REPLACED".to_string(),
+                        badge_color: String::new(),
+                    },
+                    ExtensionMessageTransformer {
+                        id: "t-badge".to_string(),
+                        target: TransformerTarget::ListBadge,
+                        pattern: "URGENT".to_string(),
+                        replacement: "URGENT".to_string(),
+                        badge_color: String::new(),
+                    },
+                ],
+                attachment_renderers: vec![ExtensionAttachmentRenderer {
+                    id: "r-md".to_string(),
+                    title: "MD".to_string(),
+                    extensions: vec!["md".to_string()],
+                    mime_types: vec!["text/markdown".to_string()],
+                    exec: "builtin:markdown".to_string(),
+                }],
+                ..ExtensionContributions::default()
+            },
+        };
+        fs::write(
+            src.join("extension.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::write(src.join("run.sh"), "#!/bin/sh\necho '{\"toast\":\"ran\"}'\n").unwrap();
+
+        let inspected = ExtensionRegistry::inspect_directory_manifest(&src).unwrap();
+        assert!(!inspected.undeclared_capabilities().is_empty());
+
+        reg.install_from_directory(&src).unwrap();
+
+        // Every single contribution must be blocked at runtime because permissions are omitted
+        assert!(reg.enabled_views().is_empty());
+        assert!(reg.enabled_app_css().is_empty());
+        assert_eq!(
+            reg.apply_message_html_transformers("<p>SECRET</p>"),
+            "<p>SECRET</p>"
+        );
+        assert!(reg.message_list_badges("URGENT", "a@example.org").is_empty());
+        assert!(reg
+            .render_inline_attachment("note.md", "text/markdown", b"# Hi")
+            .is_none());
+
+        let cmd_err = reg
+            .execute_command("test.unprivileged.cmd", &ExtensionExecutionContext::default())
+            .unwrap_err();
+        assert!(cmd_err.contains("Permission denied"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn execution_context_and_host_response_are_redacted_by_permissions() {
+        let headers_only = InstalledExtension {
+            manifest: ExtensionManifest {
+                id: "test.headers".to_string(),
+                name: "Headers Only".to_string(),
+                version: "1.0.0".to_string(),
+                author: "Tester".to_string(),
+                description: String::new(),
+                icon_name: default_extension_icon(),
+                enabled_by_default: true,
+                permissions: vec!["shell".to_string(), "mail.headers".to_string()],
+                contributes: ExtensionContributions::default(),
+            },
+            root_dir: None,
+            is_bundled: false,
+            enabled: true,
+        };
+
+        let ctx = ExtensionExecutionContext {
+            command_id: "c1".to_string(),
+            active_surface: "mail".to_string(),
+            message_id: Some("m1".to_string()),
+            message_subject: Some("Quarterly Plan".to_string()),
+            message_sender: Some("alex@example.org".to_string()),
+            message_recipients: Some("team@example.org".to_string()),
+            message_date: Some("2026-11-26".to_string()),
+            message_body_text: Some("Confidential body text".to_string()),
+            composer_to: Some("draft@example.org".to_string()),
+            composer_subject: Some("Draft Subject".to_string()),
+            composer_body_html: Some("<p>Draft</p>".to_string()),
+        };
+
+        let redacted = redact_execution_context(&headers_only, &ctx);
+        assert_eq!(redacted.message_subject.as_deref(), Some("Quarterly Plan"));
+        assert_eq!(redacted.message_sender.as_deref(), Some("alex@example.org"));
+        assert!(redacted.message_body_text.is_none());
+        assert!(redacted.composer_to.is_none());
+        assert!(redacted.composer_body_html.is_none());
+
+        let resp = ExtensionHostResponse {
+            toast: Some("Done".to_string()),
+            open_url: Some("https://evil.example".to_string()),
+            insert_composer_html: Some("<p>Injected</p>".to_string()),
+            replace_composer_html: Some("<p>Replaced</p>".to_string()),
+            replace_composer_subject: Some("Hijacked".to_string()),
+            add_label: Some("VIP".to_string()),
+            create_task_title: Some("Sneaky task".to_string()),
+            output_title: Some("Result".to_string()),
+            output_body: Some("OK".to_string()),
+        };
+        let sanitized = sanitize_host_response(&headers_only, resp);
+        assert_eq!(sanitized.toast.as_deref(), Some("Done"));
+        assert_eq!(sanitized.output_body.as_deref(), Some("OK"));
+        assert!(sanitized.open_url.is_none());
+        assert!(sanitized.insert_composer_html.is_none());
+        assert!(sanitized.replace_composer_html.is_none());
+        assert!(sanitized.replace_composer_subject.is_none());
+        assert!(sanitized.add_label.is_none());
+        assert!(sanitized.create_task_title.is_none());
     }
 }
