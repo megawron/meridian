@@ -73,6 +73,7 @@ mod imp {
         pub attachment_title_box: RefCell<Option<gtk::Box>>,
         pub attachment_summary_box: RefCell<Option<gtk::Box>>,
         pub attachment_summary_label: RefCell<Option<gtk::Label>>,
+        pub attachment_type_summary_label: RefCell<Option<gtk::Label>>,
         pub attachment_chip_box: RefCell<Option<gtk::Box>>,
         pub attachment_chevron: RefCell<Option<gtk::Image>>,
         pub attachment_btn_collapse: RefCell<Option<gtk::Button>>,
@@ -158,6 +159,10 @@ impl MailViewerWindow {
             window.set_application(Some(app));
         }
 
+        if adw::StyleManager::default().is_dark() {
+            window.add_css_class("dark");
+        }
+
         let key = message_source_window_key(message);
         *window.imp().window_key.borrow_mut() = key;
         *window.imp().message.borrow_mut() = Some(message.clone());
@@ -170,6 +175,42 @@ impl MailViewerWindow {
         window.render_message();
 
         window
+    }
+
+    /// Parse raw RFC822 `.eml` bytes and open them inside Meridian's built-in
+    /// message viewer instead of delegating to an external browser.
+    pub fn open_eml_attachment(
+        filename: &str,
+        raw_bytes: &[u8],
+        parent_window: Option<&gtk::Window>,
+    ) -> Result<(), String> {
+        if raw_bytes.is_empty() {
+            return Err("Attached email is empty".to_string());
+        }
+        let id = format!("eml-attachment-{}", uuid::Uuid::new_v4());
+        let Some(mut parsed) = crate::services::mail_store_service::parse_rfc822_bytes(
+            &id,
+            "attachment",
+            raw_bytes,
+            false,
+        ) else {
+            return Err("Could not parse attached email".to_string());
+        };
+        if parsed.subject.trim().is_empty() {
+            parsed.subject = std::path::Path::new(filename)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(filename)
+                .to_string();
+        }
+        let message = parsed.into_object();
+        let app = gio::Application::default().and_downcast::<gtk::Application>();
+        let window = Self::new(app.as_ref(), &message, None);
+        if let Some(parent) = parent_window {
+            window.set_transient_for(Some(parent));
+        }
+        window.present();
+        Ok(())
     }
 
     pub fn message(&self) -> Option<MailMessageObject> {
@@ -339,6 +380,14 @@ impl MailViewerWindow {
             .build();
         set_accessible_label(&menu_button, &gettext("Main menu"));
 
+        let btn_find = gtk::Button::builder()
+            .icon_name("edit-find-symbolic")
+            .tooltip_text(gettext("Find in message (Ctrl+F)"))
+            .action_name("win.find-in-message")
+            .css_classes(["flat"])
+            .build();
+        set_accessible_label(&btn_find, &gettext("Find in message"));
+
         let btn_print = gtk::Button::builder()
             .icon_name("document-print-symbolic")
             .tooltip_text(gettext("Print (Ctrl+P)"))
@@ -347,11 +396,16 @@ impl MailViewerWindow {
             .build();
         set_accessible_label(&btn_print, &gettext("Print"));
 
+        let is_embedded_attachment = self
+            .message()
+            .is_some_and(|m| m.folder_id() == "attachment" && m.backend_location().is_none());
+
         let btn_mark_read_unread = gtk::Button::builder()
             .icon_name("mail-read-symbolic")
             .tooltip_text(gettext("Mark as read/unread"))
             .action_name("win.toggle-read-unread")
             .css_classes(["flat"])
+            .visible(!is_embedded_attachment)
             .build();
         set_accessible_label(&btn_mark_read_unread, &gettext("Mark as read or unread"));
         self.imp().btn_mark_read_unread.replace(Some(btn_mark_read_unread.clone()));
@@ -361,6 +415,7 @@ impl MailViewerWindow {
             .tooltip_text(gettext("Mark as junk (Ctrl+J)"))
             .action_name("win.mark-junk")
             .css_classes(["flat"])
+            .visible(!is_embedded_attachment)
             .build();
         set_accessible_label(&btn_junk, &gettext("Mark as junk"));
 
@@ -369,12 +424,14 @@ impl MailViewerWindow {
             .tooltip_text(gettext("Delete message (Del)"))
             .action_name("win.delete")
             .css_classes(["flat", "destructive-action"])
+            .visible(!is_embedded_attachment)
             .build();
         set_accessible_label(&btn_delete, &gettext("Delete message"));
 
-        // Pack end in reverse order: Delete, Junk, Mark, Print, Menu
+        // Pack end in reverse order: Delete, Junk, Mark, Find, Print, Menu
         header_bar.pack_end(&menu_button);
         header_bar.pack_end(&btn_print);
+        header_bar.pack_end(&btn_find);
         header_bar.pack_end(&btn_mark_read_unread);
         header_bar.pack_end(&btn_junk);
         header_bar.pack_end(&btn_delete);
@@ -543,28 +600,44 @@ impl MailViewerWindow {
         });
         self.imp().itip_banner.replace(Some(itip_banner.clone()));
 
-        // MailViewer
+        // MailViewer — standalone window fills edge-to-edge without adaptive card shrinking
         let mail_viewer = MailViewer::new();
+        mail_viewer.set_adaptive_card_height_enabled(false);
+        mail_viewer.add_css_class("mail-viewer-flush");
         mail_viewer.set_vexpand(true);
-        mail_viewer.set_margin_start(8);
-        mail_viewer.set_margin_end(8);
-        mail_viewer.set_margin_top(8);
-        mail_viewer.set_margin_bottom(8);
+        mail_viewer.set_margin_start(0);
+        mail_viewer.set_margin_end(0);
+        mail_viewer.set_margin_top(6);
+        mail_viewer.set_margin_bottom(0);
         self.imp().mail_viewer.replace(Some(mail_viewer.clone()));
 
-        // Attachment section container
+        // Attachment section container (overlaid at bottom so expanding never shrinks the email)
         let attachment_section = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(0)
-            .valign(gtk::Align::Start)
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::End)
             .vexpand(false)
             .css_classes(["attachment-section-container"])
             .visible(false)
             .build();
+        let attachment_bottom_spacer = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .height_request(44)
+            .vexpand(false)
+            .valign(gtk::Align::End)
+            .can_target(false)
+            .focusable(false)
+            .visible(false)
+            .build();
+        let spacer_for_sec = attachment_bottom_spacer.clone();
+        attachment_section.connect_notify_local(Some("visible"), move |sec, _| {
+            spacer_for_sec.set_visible(sec.is_visible());
+        });
         let att_sec_for_vexpand = attachment_section.clone();
         mail_viewer.connect_notify_local(Some("vexpand"), move |viewer, _| {
             att_sec_for_vexpand.set_vexpand(false);
-            att_sec_for_vexpand.set_valign(gtk::Align::Start);
+            att_sec_for_vexpand.set_valign(gtk::Align::End);
             if !viewer.vexpands() {
                 att_sec_for_vexpand.add_css_class("is-floating-card");
                 att_sec_for_vexpand.set_margin_start(8);
@@ -644,19 +717,29 @@ impl MailViewerWindow {
             .css_classes(["attachment-summary-label"])
             .build();
         summary_box.append(&summary_label);
+
+        let type_summary_label = gtk::Label::builder()
+            .valign(gtk::Align::Center)
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["attachment-type-summary-pill"])
+            .visible(false)
+            .build();
+        summary_box.append(&type_summary_label);
         attachment_header.append(&summary_box);
 
         let chip_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(6)
             .valign(gtk::Align::Center)
-            .hexpand(false)
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
             .css_classes(["attachment-bar-chip-container"])
             .visible(true)
             .build();
         attachment_header.append(&chip_box);
 
-        let header_spacer = gtk::Box::builder().hexpand(true).valign(gtk::Align::Fill).build();
+        let header_spacer = gtk::Box::builder().hexpand(false).valign(gtk::Align::Fill).build();
         header_spacer.set_cursor_from_name(Some("pointer"));
         attachment_header.append(&header_spacer);
 
@@ -712,13 +795,13 @@ impl MailViewerWindow {
 
         let attachment_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideDown)
-            .transition_duration(200)
+            .transition_duration(110)
             .reveal_child(false)
             .build();
 
         let attachment_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
-            .transition_duration(150)
+            .transition_duration(90)
             .hhomogeneous(false)
             .vhomogeneous(false)
             .css_classes(["attachment-drawer-stack"])
@@ -742,7 +825,7 @@ impl MailViewerWindow {
             .propagate_natural_height(true)
             .min_content_width(0)
             .min_content_height(0)
-            .max_content_height(168)
+            .max_content_height(248)
             .child(&attachment_bar)
             .visible(true)
             .build();
@@ -810,7 +893,7 @@ impl MailViewerWindow {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_height(true)
             .min_content_height(0)
-            .max_content_height(160)
+            .max_content_height(236)
             .child(&attachment_listbox)
             .build();
         list_container.append(&list_scrolled);
@@ -820,10 +903,41 @@ impl MailViewerWindow {
         attachment_revealer.set_child(Some(&attachment_stack));
         attachment_section.append(&attachment_revealer);
 
+        let win_weak_hover = self.downgrade();
+        let set_expanded_for_hover: std::rc::Rc<dyn Fn(bool)> = std::rc::Rc::new(move |expanded| {
+            if let Some(win) = win_weak_hover.upgrade() {
+                win.set_attachment_expanded(expanded);
+            }
+        });
+        let cancel_hover_timers = MailPage::install_attachment_hover_expand(
+            &attachment_section,
+            &attachment_revealer,
+            &title_box,
+            &btn_collapse,
+            &summary_box,
+            set_expanded_for_hover,
+        );
+
         let win_weak_toggle = self.downgrade();
+        let section_for_toggle = attachment_section.clone();
+        let cancel_hover_for_toggle = cancel_hover_timers.clone();
         let toggle_action = std::rc::Rc::new(move || {
+            cancel_hover_for_toggle();
             if let Some(win) = win_weak_toggle.upgrade() {
-                win.toggle_attachment_expanded();
+                let will_expand = !win
+                    .imp()
+                    .attachment_revealer
+                    .borrow()
+                    .as_ref()
+                    .map(|r| r.reveals_child())
+                    .unwrap_or(false);
+                section_for_toggle.remove_css_class("attachment-hover-expanded");
+                if will_expand {
+                    section_for_toggle.remove_css_class("attachment-hover-suppressed");
+                } else {
+                    section_for_toggle.add_css_class("attachment-hover-suppressed");
+                }
+                win.set_attachment_expanded(will_expand);
             }
         });
 
@@ -898,6 +1012,9 @@ impl MailViewerWindow {
             stack_for_icons.set_visible_child_name("icons");
             btn_icons_for_icons.add_css_class("active");
             btn_list_for_icons.remove_css_class("active");
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_attachment_view_mode("icons");
+            }
             if let Some(win) = win_for_icons.upgrade() {
                 if !win.imp().attachment_expanded.get() {
                     win.set_attachment_expanded(true);
@@ -913,6 +1030,9 @@ impl MailViewerWindow {
             stack_for_list.set_visible_child_name("list");
             btn_list_for_list.add_css_class("active");
             btn_icons_for_list.remove_css_class("active");
+            if let Some(settings) = AppSettings::try_new() {
+                settings.set_mail_attachment_view_mode("list");
+            }
             if let Some(win) = win_for_list.upgrade() {
                 if !win.imp().attachment_expanded.get() {
                     win.set_attachment_expanded(true);
@@ -924,6 +1044,7 @@ impl MailViewerWindow {
         self.imp().attachment_title_box.replace(Some(title_box));
         self.imp().attachment_summary_box.replace(Some(summary_box));
         self.imp().attachment_summary_label.replace(Some(summary_label));
+        self.imp().attachment_type_summary_label.replace(Some(type_summary_label));
         self.imp().attachment_chip_box.replace(Some(chip_box));
         self.imp().attachment_chevron.replace(Some(chevron_icon));
         self.imp().attachment_btn_collapse.replace(Some(btn_collapse));
@@ -1020,15 +1141,32 @@ impl MailViewerWindow {
         });
         message_find_entry.add_controller(esc_controller);
 
+        let viewer_slot = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .hexpand(true)
+            .vexpand(true)
+            .valign(gtk::Align::Fill)
+            .build();
+        viewer_slot.append(&mail_viewer);
+        viewer_slot.append(&attachment_bottom_spacer);
+
+        let viewer_attachment_overlay = gtk::Overlay::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .valign(gtk::Align::Fill)
+            .child(&viewer_slot)
+            .build();
+        if let Some(sec) = self.imp().attachment_section.borrow().as_ref() {
+            viewer_attachment_overlay.add_overlay(sec);
+        }
+
         // Pack main box
         main_box.append(&header_box);
         main_box.append(&header_separator);
         main_box.append(&message_find_revealer);
         main_box.append(itip_banner.widget());
-        main_box.append(&mail_viewer);
-        if let Some(sec) = self.imp().attachment_section.borrow().as_ref() {
-            main_box.append(sec);
-        }
+        main_box.append(&viewer_attachment_overlay);
         main_box.append(&print_status_area);
 
         self.imp().toast_overlay.set_child(Some(&main_box));
@@ -1233,10 +1371,12 @@ impl MailViewerWindow {
             self,
             move |_, _| {
                 if let Some(rev) = win.imp().message_find_revealer.borrow().as_ref() {
+                    rev.set_visible(true);
                     rev.set_reveal_child(true);
                 }
                 if let Some(entry) = win.imp().message_find_entry.borrow().as_ref() {
                     entry.grab_focus();
+                    entry.select_region(0, -1);
                 }
             }
         ));
@@ -1301,6 +1441,45 @@ impl MailViewerWindow {
             move |_, _| win.close()
         ));
         self.add_action(&action_close);
+
+        // Local keyboard shortcuts for Ctrl+F (find in message), Ctrl+W, and Escape (close when find bar is hidden)
+        let key_ctrl = gtk::EventControllerKey::new();
+        let win_weak = self.downgrade();
+        key_ctrl.connect_key_pressed(move |_, key, _, state| {
+            let Some(win) = win_weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let is_ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+            if is_ctrl && (key == gdk::Key::f || key == gdk::Key::F) {
+                if let Some(rev) = win.imp().message_find_revealer.borrow().as_ref() {
+                    rev.set_visible(true);
+                    rev.set_reveal_child(true);
+                }
+                if let Some(entry) = win.imp().message_find_entry.borrow().as_ref() {
+                    entry.grab_focus();
+                    entry.select_region(0, -1);
+                }
+                return glib::Propagation::Stop;
+            }
+            if is_ctrl && (key == gdk::Key::w || key == gdk::Key::W) {
+                win.close();
+                return glib::Propagation::Stop;
+            }
+            if key == gdk::Key::Escape {
+                let find_open = win
+                    .imp()
+                    .message_find_revealer
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|r| r.reveals_child());
+                if !find_open {
+                    win.close();
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        self.add_controller(key_ctrl);
     }
 
     fn render_message(&self) {
@@ -1376,6 +1555,13 @@ impl MailViewerWindow {
 
     pub fn set_attachment_expanded(&self, expanded: bool) {
         self.imp().attachment_expanded.set(expanded);
+        if let Some(sec) = self.imp().attachment_section.borrow().as_ref() {
+            if expanded {
+                sec.add_css_class("attachment-drawer-elevated");
+            } else {
+                sec.remove_css_class("attachment-drawer-elevated");
+            }
+        }
         if let Some(rev) = self.imp().attachment_revealer.borrow().as_ref() {
             rev.set_reveal_child(expanded);
         }
@@ -1500,6 +1686,9 @@ impl MailViewerWindow {
         }
 
         section.set_visible(true);
+        section.remove_css_class("attachment-hover-expanded");
+        section.remove_css_class("attachment-hover-suppressed");
+        section.remove_css_class("attachment-has-overflow");
 
         let total_size: u64 = attachments.iter().map(|att| att.content.len() as u64).sum();
         let count = attachments.len();
@@ -1517,51 +1706,95 @@ impl MailViewerWindow {
                 glib::markup_escape_text(&size_str)
             ));
         }
-
-        let win_w = self.width().max(self.default_width());
-        let max_chips = if win_w < 550 {
-            1
-        } else if win_w < 750 {
-            2
-        } else if win_w < 1000 {
-            3
-        } else {
-            4
-        };
-
-        let is_short_mail = {
-            let (len, lines) = if let Some(searchable) = message.searchable_body_text() {
-                let trimmed = searchable.trim();
-                (trimmed.len(), trimmed.lines().count())
+        if let Some(type_lbl) = self.imp().attachment_type_summary_label.borrow().as_ref() {
+            if count > 1 {
+                let breakdown =
+                    crate::models::mail_message::AttachmentInfo::summarize_type_breakdown(
+                        &attachments,
+                    );
+                type_lbl.set_label(&breakdown);
+                type_lbl.set_visible(!breakdown.is_empty());
             } else {
-                let html = message.html_body();
-                if html.trim().is_empty() {
-                    (0, 0)
-                } else {
-                    let plain = crate::services::html_sanitizer::html_to_plain_text(&html);
-                    let trimmed = plain.trim();
-                    (trimmed.len(), trimmed.lines().count())
-                }
-            };
-            len < 800 && lines <= 16
-        };
-
-        if let Some(chip_box) = self.imp().attachment_chip_box.borrow().as_ref() {
-            if count <= max_chips {
-                let max_chip_name_chars = if count == 1 { 50 } else { 26 };
-                for att in &attachments {
-                    let chip = self.create_attachment_bar_chip(att, max_chip_name_chars);
-                    chip_box.append(&chip);
-                }
-            } else if let Some(summary_box) = self.imp().attachment_summary_box.borrow().as_ref() {
-                let tip = format!("{} ({}) – {}", count_str, size_str, gettext("Click to expand"));
-                summary_box.set_tooltip_text(Some(&tip));
+                type_lbl.set_visible(false);
             }
         }
 
-        // Always default to collapsed state so the attachment bar stays compact and unobtrusive.
-        let _ = is_short_mail;
-        self.set_attachment_expanded(false);
+        let viewer_w = self
+            .imp()
+            .mail_viewer
+            .borrow()
+            .as_ref()
+            .map(|v| v.width())
+            .unwrap_or(0);
+        let available_w = if viewer_w > 120 {
+            viewer_w
+        } else {
+            self.width().max(self.default_width())
+        };
+        let visible_chip_count =
+            crate::views::MailPage::visible_collapsed_chip_count(count, available_w);
+        let hidden_count = count.saturating_sub(visible_chip_count);
+
+        if let Some(chip_box) = self.imp().attachment_chip_box.borrow().as_ref() {
+            let max_chip_name_chars = if visible_chip_count == 1 {
+                56
+            } else if visible_chip_count == 2 {
+                40
+            } else {
+                30
+            };
+            for att in attachments.iter().take(visible_chip_count) {
+                let chip = self.create_attachment_bar_chip(att, max_chip_name_chars);
+                chip_box.append(&chip);
+            }
+            if hidden_count > 0 {
+                section.add_css_class("attachment-has-overflow");
+                let hidden_tip = attachments
+                    .iter()
+                    .skip(visible_chip_count)
+                    .map(|a| format!("{} ({})", a.filename, a.size_formatted))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let overflow_btn = gtk::Button::builder()
+                    .label(format!("+{hidden_count}"))
+                    .tooltip_text(&hidden_tip)
+                    .css_classes(["flat", "attachment-overflow-count-btn"])
+                    .valign(gtk::Align::Center)
+                    .build();
+                set_accessible_label(&overflow_btn, &gettext("Show all attachments"));
+                let btn_collapse_opt = self.imp().attachment_btn_collapse.borrow().clone();
+                overflow_btn.connect_clicked(move |_| {
+                    if let Some(ref btn) = btn_collapse_opt {
+                        btn.emit_clicked();
+                    }
+                });
+                chip_box.append(&overflow_btn);
+            }
+        }
+
+        let initial_expanded =
+            crate::views::MailPage::is_short_email_for_attachment_auto_expand(message);
+        self.set_attachment_expanded(initial_expanded);
+
+        let preferred_view = AppSettings::try_new()
+            .map(|s| s.mail_attachment_view_mode())
+            .unwrap_or_else(|| "icons".to_string());
+        let is_list = preferred_view == "list";
+        if let Some(stack) = self.imp().attachment_stack.borrow().as_ref() {
+            stack.set_visible_child_name(if is_list { "list" } else { "icons" });
+        }
+        if let (Some(btn_icons), Some(btn_list)) = (
+            self.imp().attachment_btn_icons.borrow().as_ref(),
+            self.imp().attachment_btn_list.borrow().as_ref(),
+        ) {
+            if is_list {
+                btn_list.add_css_class("active");
+                btn_icons.remove_css_class("active");
+            } else {
+                btn_icons.add_css_class("active");
+                btn_list.remove_css_class("active");
+            }
+        }
 
         if count > 1 {
             let btn_save_all = self.create_save_all_button(&attachments);
@@ -1574,10 +1807,10 @@ impl MailViewerWindow {
             let fb = gtk::FlowBox::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .selection_mode(gtk::SelectionMode::None)
-                .homogeneous(false)
+                .homogeneous(true)
                 .row_spacing(6)
-                .column_spacing(8)
-                .min_children_per_line(1)
+                .column_spacing(6)
+                .min_children_per_line(2)
                 .max_children_per_line(6)
                 .valign(gtk::Align::Start)
                 .halign(gtk::Align::Fill)
@@ -1605,31 +1838,39 @@ impl MailViewerWindow {
 
             // Also add list view row if listbox exists
             if let Some(listbox) = self.imp().attachment_listbox.borrow().as_ref() {
+                let cat_class = att.visual_category().css_class();
                 let row = gtk::ListBoxRow::new();
                 row.set_css_classes(&["attachment-list-row"]);
 
                 let row_box = gtk::Box::builder()
                     .orientation(gtk::Orientation::Horizontal)
-                    .spacing(12)
+                    .spacing(10)
                     .margin_start(8)
                     .margin_end(8)
                     .margin_top(2)
                     .margin_bottom(2)
                     .focusable(true)
-                    .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
+                    .tooltip_text(&format!(
+                        "{} ({} · {})",
+                        att.filename,
+                        att.size_formatted,
+                        att.type_description()
+                    ))
                     .build();
                 row_box.set_cursor_from_name(Some("pointer"));
 
                 let icon_name = att.icon_name();
                 let list_icon = gtk::Image::new();
                 list_icon.add_css_class("attachment-type-icon");
+                list_icon.add_css_class(cat_class);
                 set_image_icon_with_fallback(&list_icon, icon_name, "mail-attachment-symbolic");
-                list_icon.set_pixel_size(18);
+                list_icon.set_pixel_size(16);
                 row_box.append(&list_icon);
 
                 let lbl_name = gtk::Label::builder()
                     .label(&att.filename)
                     .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .width_chars(1)
                     .css_classes(["attachment-list-label"])
                     .hexpand(true)
                     .xalign(0.0)
@@ -1637,21 +1878,19 @@ impl MailViewerWindow {
                     .build();
                 row_box.append(&lbl_name);
 
-                let type_desc = att.type_description();
-                let lbl_type = gtk::Label::builder()
-                    .label(&type_desc)
-                    .ellipsize(gtk::pango::EllipsizeMode::End)
-                    .css_classes(["dim-label", "caption", "attachment-col-type"])
-                    .width_request(140)
-                    .xalign(0.0)
+                let ext_badge = gtk::Label::builder()
+                    .label(&att.short_extension_badge())
+                    .tooltip_text(&att.type_description())
+                    .css_classes(["attachment-ext-badge", cat_class])
+                    .xalign(0.5)
                     .valign(gtk::Align::Center)
                     .build();
-                row_box.append(&lbl_type);
+                row_box.append(&ext_badge);
 
                 let lbl_size = gtk::Label::builder()
                     .label(&att.size_formatted)
                     .css_classes(["dim-label", "caption", "attachment-col-size"])
-                    .width_request(85)
+                    .width_request(62)
                     .xalign(1.0)
                     .valign(gtk::Align::Center)
                     .build();
@@ -1659,7 +1898,7 @@ impl MailViewerWindow {
 
                 let actions_box = gtk::Box::builder()
                     .orientation(gtk::Orientation::Horizontal)
-                    .spacing(4)
+                    .spacing(2)
                     .valign(gtk::Align::Center)
                     .build();
 
@@ -1712,6 +1951,7 @@ impl MailViewerWindow {
                 row_box.append(&actions_box);
 
                 let fn_open_row = att.filename.clone();
+                let mime_open_row = att.mime_type.clone();
                 let ct_open_row = att.content.clone();
                 let win_weak_open_row = self.downgrade();
                 let row_for_pick = row.clone();
@@ -1720,14 +1960,17 @@ impl MailViewerWindow {
                 click.connect_released(move |gesture, n_press, x, y| {
                     if n_press >= 1 {
                         if let Some(picked) = row_for_pick.pick(x, y, gtk::PickFlags::DEFAULT) {
-                            if picked == btn_save_for_pick || picked.is_ancestor(&btn_save_for_pick) {
+                            if picked == btn_save_for_pick
+                                || picked.is_ancestor(&btn_save_for_pick)
+                            {
                                 return;
                             }
                         }
                         gesture.set_state(gtk::EventSequenceState::Claimed);
                         let parent = win_weak_open_row.upgrade().map(|w| w.upcast::<gtk::Window>());
-                        let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                        let _ = crate::services::quick_preview_service::open_attachment_bytes_with_mime(
                             &fn_open_row,
+                            &mime_open_row,
                             ct_open_row.as_ref(),
                             parent.as_ref(),
                         );
@@ -1736,14 +1979,16 @@ impl MailViewerWindow {
                 row.add_controller(click);
 
                 let fn_key_row = att.filename.clone();
+                let mime_key_row = att.mime_type.clone();
                 let ct_key_row = att.content.clone();
                 let win_weak_key_row = self.downgrade();
                 let key_ctrl = gtk::EventControllerKey::new();
                 key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
                     if keyval == gdk::Key::space || keyval == gdk::Key::Return {
                         let parent = win_weak_key_row.upgrade().map(|w| w.upcast::<gtk::Window>());
-                        let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                        let _ = crate::services::quick_preview_service::open_attachment_bytes_with_mime(
                             &fn_key_row,
+                            &mime_key_row,
                             ct_key_row.as_ref(),
                             parent.as_ref(),
                         );
@@ -1943,60 +2188,63 @@ impl MailViewerWindow {
         &self,
         att: &crate::models::mail_message::AttachmentInfo,
     ) -> gtk::Widget {
+        let cat_class = att.visual_category().css_class();
         let card = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(10)
-            .halign(gtk::Align::Fill)
-            .hexpand(true)
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Start)
             .css_classes(["attachment-drawer-card"])
-            .margin_top(0)
-            .margin_bottom(0)
             .focusable(true)
-            .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
+            .tooltip_text(&format!(
+                "{} ({} · {})",
+                att.filename,
+                att.size_formatted,
+                att.type_description()
+            ))
             .build();
         card.set_cursor_from_name(Some("pointer"));
 
-        let icon_name = att.icon_name();
+        // Clean GNOME Files / Libadwaita floating symbolic file icon (zero downloading/decoding)
+        let icon_overlay = gtk::Overlay::new();
+        let icon_stage = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Center)
+            .css_classes(["attachment-tile-icon-stage"])
+            .build();
+
         let icon = gtk::Image::new();
         icon.add_css_class("attachment-type-icon");
-        set_image_icon_with_fallback(&icon, icon_name, "mail-attachment-symbolic");
-        icon.set_pixel_size(24);
-        card.append(&icon);
+        icon.add_css_class(cat_class);
+        set_image_icon_with_fallback(&icon, att.icon_name(), "mail-attachment-symbolic");
+        icon.set_pixel_size(40);
+        icon.set_halign(gtk::Align::Center);
+        icon.set_valign(gtk::Align::Center);
+        icon.set_margin_top(4);
+        icon.set_margin_bottom(2);
+        icon_stage.append(&icon);
+        icon_overlay.set_child(Some(&icon_stage));
 
-        let text_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(2)
-            .valign(gtk::Align::Center)
-            .hexpand(true)
+        let tile_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(0)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Start)
+            .css_classes(["attachment-tile-actions"])
             .build();
-
-        let lbl_name = gtk::Label::builder()
-            .label(&att.filename)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .max_width_chars(28)
-            .css_classes(["attachment-card-name"])
-            .xalign(0.0)
-            .build();
-        text_box.append(&lbl_name);
-
-        let lbl_meta = gtk::Label::builder()
-            .label(&format!("{} • {}", att.size_formatted, att.type_description()))
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .max_width_chars(28)
-            .css_classes(["dim-label", "caption", "attachment-card-meta"])
-            .xalign(0.0)
-            .build();
-        text_box.append(&lbl_meta);
-
-        card.append(&text_box);
 
         let save_icon = gtk::Image::from_icon_name("document-save-symbolic");
-        save_icon.set_pixel_size(15);
+        save_icon.set_pixel_size(12);
         let btn_save = gtk::Button::builder()
             .child(&save_icon)
             .tooltip_text(gettext("Save to Downloads (Right-click for options)"))
-            .css_classes(["flat", "circular", "attachment-card-download-btn"])
-            .valign(gtk::Align::Center)
+            .css_classes([
+                "flat",
+                "circular",
+                "attachment-tile-action-btn",
+                "attachment-card-download-btn",
+            ])
             .focusable(false)
             .build();
         set_accessible_label(&btn_save, &gettext("Save attachment"));
@@ -2022,9 +2270,39 @@ impl MailViewerWindow {
         });
         btn_save.add_controller(btn_rc_gesture);
 
-        card.append(&btn_save);
+        tile_actions.append(&btn_save);
+        icon_overlay.add_overlay(&tile_actions);
+        card.append(&icon_overlay);
+
+        let lbl_name = gtk::Label::builder()
+            .label(&att.filename)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .lines(2)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .justify(gtk::Justification::Center)
+            .max_width_chars(16)
+            .css_classes(["attachment-card-name"])
+            .xalign(0.5)
+            .build();
+        card.append(&lbl_name);
+
+        let ext = att.short_extension_badge();
+        let meta_text = if ext.is_empty() || ext == "FILE" {
+            att.size_formatted.clone()
+        } else {
+            format!("{ext} · {}", att.size_formatted)
+        };
+        let lbl_meta = gtk::Label::builder()
+            .label(&meta_text)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["dim-label", "caption", "attachment-card-meta"])
+            .xalign(0.5)
+            .build();
+        card.append(&lbl_meta);
 
         let fn_open = att.filename.clone();
+        let mime_open = att.mime_type.clone();
         let ct_open = att.content.clone();
         let win_weak_open = self.downgrade();
         let card_for_pick = card.clone();
@@ -2033,14 +2311,17 @@ impl MailViewerWindow {
         click.connect_released(move |gesture, n_press, x, y| {
             if n_press >= 1 {
                 if let Some(picked) = card_for_pick.pick(x, y, gtk::PickFlags::DEFAULT) {
-                    if picked == btn_save_for_pick || picked.is_ancestor(&btn_save_for_pick) {
+                    if picked == btn_save_for_pick
+                        || picked.is_ancestor(&btn_save_for_pick)
+                    {
                         return;
                     }
                 }
                 gesture.set_state(gtk::EventSequenceState::Claimed);
                 let parent = win_weak_open.upgrade().map(|w| w.upcast::<gtk::Window>());
-                let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                let _ = crate::services::quick_preview_service::open_attachment_bytes_with_mime(
                     &fn_open,
+                    &mime_open,
                     ct_open.as_ref(),
                     parent.as_ref(),
                 );
@@ -2049,14 +2330,16 @@ impl MailViewerWindow {
         card.add_controller(click);
 
         let fn_key = att.filename.clone();
+        let mime_key = att.mime_type.clone();
         let ct_key = att.content.clone();
         let win_weak_key = self.downgrade();
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
             if keyval == gdk::Key::space || keyval == gdk::Key::Return {
                 let parent = win_weak_key.upgrade().map(|w| w.upcast::<gtk::Window>());
-                let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                let _ = crate::services::quick_preview_service::open_attachment_bytes_with_mime(
                     &fn_key,
+                    &mime_key,
                     ct_key.as_ref(),
                     parent.as_ref(),
                 );
@@ -2087,9 +2370,10 @@ impl MailViewerWindow {
         att: &crate::models::mail_message::AttachmentInfo,
         max_chars: i32,
     ) -> gtk::Widget {
+        let cat_class = att.visual_category().css_class();
         let chip_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(6)
+            .spacing(5)
             .valign(gtk::Align::Center)
             .css_classes(["attachment-chip"])
             .tooltip_text(&format!("{} ({})", att.filename, att.size_formatted))
@@ -2100,21 +2384,21 @@ impl MailViewerWindow {
         let icon_name = att.icon_name();
         let icon = gtk::Image::new();
         icon.add_css_class("attachment-type-icon");
+        icon.add_css_class(cat_class);
         set_image_icon_with_fallback(&icon, icon_name, "mail-attachment-symbolic");
-        icon.set_pixel_size(15);
+        icon.set_pixel_size(14);
         chip_box.append(&icon);
 
-        let lbl = gtk::Label::builder()
-            .label(&att.filename)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .max_width_chars(max_chars)
-            .css_classes(["attachment-chip-label"])
-            .valign(gtk::Align::Center)
-            .build();
-        chip_box.append(&lbl);
+        let name_widget =
+            crate::views::MailPage::build_attachment_chip_name_widget(&att.filename, max_chars);
+        chip_box.append(&name_widget);
 
+        let compact_size = crate::views::MailPage::compact_attachment_chip_size(
+            att.content.len(),
+            &att.size_formatted,
+        );
         let lbl_size = gtk::Label::builder()
-            .label(&format!("· {}", att.size_formatted))
+            .label(&compact_size)
             .css_classes(["dim-label", "caption", "attachment-chip-size"])
             .valign(gtk::Align::Center)
             .build();
@@ -2155,6 +2439,7 @@ impl MailViewerWindow {
         chip_box.append(&btn_save);
 
         let fn_open = att.filename.clone();
+        let mime_open = att.mime_type.clone();
         let ct_open = att.content.clone();
         let win_weak_open = self.downgrade();
         let chip_for_pick = chip_box.clone();
@@ -2169,8 +2454,9 @@ impl MailViewerWindow {
                 }
                 gesture.set_state(gtk::EventSequenceState::Claimed);
                 let parent = win_weak_open.upgrade().map(|w| w.upcast::<gtk::Window>());
-                let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                let _ = crate::services::quick_preview_service::open_attachment_bytes_with_mime(
                     &fn_open,
+                    &mime_open,
                     ct_open.as_ref(),
                     parent.as_ref(),
                 );
@@ -2179,14 +2465,16 @@ impl MailViewerWindow {
         chip_box.add_controller(click);
 
         let fn_key = att.filename.clone();
+        let mime_key = att.mime_type.clone();
         let ct_key = att.content.clone();
         let win_weak_key = self.downgrade();
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
             if keyval == gdk::Key::space || keyval == gdk::Key::Return {
                 let parent = win_weak_key.upgrade().map(|w| w.upcast::<gtk::Window>());
-                let _ = crate::services::quick_preview_service::open_attachment_bytes(
+                let _ = crate::services::quick_preview_service::open_attachment_bytes_with_mime(
                     &fn_key,
+                    &mime_key,
                     ct_key.as_ref(),
                     parent.as_ref(),
                 );
@@ -2527,6 +2815,10 @@ impl MailViewerWindow {
             &message.resolved_html_body(),
             &style,
         );
+        composer.set_original_attachments(
+            crate::views::mail_page::draft_attachments_from_message(&message),
+            false,
+        );
         if let Some(location) = message.backend_location() {
             composer.set_requested_account(Some(location.source_uid), Some(message.recipient_to()));
         }
@@ -2550,6 +2842,10 @@ impl MailViewerWindow {
             &message.subject(),
             &message.resolved_html_body(),
             &style,
+        );
+        composer.set_original_attachments(
+            crate::views::mail_page::draft_attachments_from_message(&message),
+            false,
         );
         if let Some(location) = message.backend_location() {
             composer.set_requested_account(Some(location.source_uid), Some(message.recipient_to()));
@@ -2585,6 +2881,10 @@ impl MailViewerWindow {
                 &resolved_html,
             )
         };
+        composer.set_original_attachments(
+            crate::views::mail_page::draft_attachments_from_message(&message),
+            true,
+        );
         if let Some(location) = message.backend_location() {
             composer.set_requested_account(Some(location.source_uid), None);
         }
@@ -2913,6 +3213,12 @@ mod tests {
             return;
         };
 
+        let prev_att_mode = AppSettings::try_new().map(|s| {
+            let prev = s.mail_attachment_view_mode();
+            s.set_mail_attachment_view_mode("icons");
+            prev
+        });
+
         let msg = MailMessageObject::new(
             "msg-test-att",
             "inbox",
@@ -3053,7 +3359,7 @@ mod tests {
         assert!(!summary_box.is_visible());
         assert!(!toggle_box.is_visible());
 
-        // When opening a short email, drawer is expanded by default to utilize vertical whitespace
+        // When opening a short email, drawer stays collapsed by default so the attachment bar stays compact
         let short_msg = MailMessageObject::new(
             "msg-test-short",
             "inbox",
@@ -3098,10 +3404,16 @@ mod tests {
         let short_summary = short_win.imp().attachment_summary_box.borrow().clone().expect("summary_box");
         let short_chip = short_win.imp().attachment_chip_box.borrow().clone().expect("chip_box");
         let short_toggle = short_win.imp().attachment_view_toggle_box.borrow().clone().expect("view_toggle_box");
+        let short_viewer = short_win.imp().mail_viewer.borrow().clone().expect("mail_viewer");
 
-        assert!(short_rev.reveals_child(), "Short email drawer should be expanded by default");
+        // Short emails auto-expand the attachment drawer so attachments are immediately visible
+        assert!(short_viewer.has_css_class("mail-viewer-flush"));
+        assert!(short_rev.reveals_child(), "Short email drawer should auto-expand when space is available");
         assert!(short_summary.is_visible());
         assert!(!short_chip.is_visible());
         assert!(short_toggle.is_visible());
+        if let (Some(settings), Some(prev)) = (AppSettings::try_new(), prev_att_mode) {
+            settings.set_mail_attachment_view_mode(&prev);
+        }
     }
 }

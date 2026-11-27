@@ -57,7 +57,14 @@ fn should_fallback_after_file_launcher_error(err: &glib::Error) -> bool {
     !err.matches(gtk::DialogError::Dismissed) && !err.matches(gtk::DialogError::Cancelled)
 }
 
-/// Opens a local file on disk using internal handlers for calendar/contact files,
+pub fn is_eml_filename(filename: &str) -> bool {
+    Path::new(filename.trim())
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("eml"))
+}
+
+/// Opens a local file on disk using internal handlers for calendar/contact/EML files,
 /// direct XDG default app launch (`gio::AppInfo::launch_default_for_uri`) on native
 /// host installs (avoiding the XDG portal "Open With" chooser modal on every click),
 /// or `gtk::FileLauncher` (XDG Desktop Portal `OpenURI.OpenFile`) inside Flatpak.
@@ -70,6 +77,23 @@ pub fn open_file_with_system_viewer(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
+    if ext == "eml" && gtk::is_initialized() {
+        if let Ok(bytes) = std::fs::read(path) {
+            let fname = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("message.eml");
+            if crate::views::MailViewerWindow::open_eml_attachment(
+                fname,
+                &bytes,
+                parent_window,
+            )
+            .is_ok()
+            {
+                return Ok(());
+            }
+        }
+    }
     if matches!(
         ext.as_str(),
         "ics" | "ical" | "ifb" | "vcs" | "vcf" | "vcard"
@@ -119,15 +143,51 @@ pub fn open_file_with_system_viewer(
     }
 }
 
-/// Writes attachment bytes to the cache directory and opens the file in the default viewer.
+/// Writes attachment bytes to the cache directory and opens the file in the default viewer,
+/// or opens `.eml` attachments directly inside Meridian's built-in message viewer.
 pub fn open_attachment_bytes(
     filename: &str,
     content: &[u8],
     parent_window: Option<&gtk::Window>,
 ) -> Result<PathBuf, String> {
     let path = write_attachment_to_cache(filename, content)?;
+    if is_eml_filename(filename) && gtk::is_initialized() {
+        if crate::views::MailViewerWindow::open_eml_attachment(
+            filename,
+            content,
+            parent_window,
+        )
+        .is_ok()
+        {
+            return Ok(path);
+        }
+    }
     open_file_with_system_viewer(&path, parent_window)?;
     Ok(path)
+}
+
+/// Opens an attachment while also inspecting its declared MIME type so `message/rfc822`
+/// parts without an `.eml` filename suffix still open inside Meridian instead of an external browser.
+pub fn open_attachment_bytes_with_mime(
+    filename: &str,
+    mime_type: &str,
+    content: &[u8],
+    parent_window: Option<&gtk::Window>,
+) -> Result<PathBuf, String> {
+    let is_eml = is_eml_filename(filename) || mime_type.to_ascii_lowercase().contains("rfc822");
+    if is_eml && gtk::is_initialized() {
+        let path = write_attachment_to_cache(filename, content)?;
+        if crate::views::MailViewerWindow::open_eml_attachment(
+            filename,
+            content,
+            parent_window,
+        )
+        .is_ok()
+        {
+            return Ok(path);
+        }
+    }
+    open_attachment_bytes(filename, content, parent_window)
 }
 
 /// Previews a file or URI using GNOME Sushi via D-Bus (`org.gnome.NautilusPreviewer2.ShowFile`),

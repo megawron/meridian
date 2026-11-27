@@ -740,6 +740,20 @@ searchbar dropdown > button.combo,
   border-top-right-radius: 12px;
 }
 
+.mail-viewer-flush .mail-preview-card {
+  border-radius: 0;
+  box-shadow: none;
+  border-top: 1px solid alpha(@borders, 0.55);
+}
+
+.mail-viewer-flush .mail-preview-card banner.mail-status-banner,
+.mail-viewer-flush .mail-preview-card .mail-status-banner,
+.mail-viewer-flush .mail-preview-card banner.mail-status-banner > revealer > widget,
+.mail-viewer-flush .mail-preview-card .mail-status-banner > revealer > widget {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
 .link-preview-pill {
   background-color: var(--popover-bg-color);
   color: var(--popover-fg-color);
@@ -1169,10 +1183,10 @@ popover.context-menu separator {
 
 
 
-/* View Options Popover */
+/* View Options Popover (Native Libadwaita Recessed Segmented Pills + Flat Popover Rows) */
 .view-options-popover,
 .mail-columns-popover {
-  padding: 4px;
+  padding: 2px;
 }
 
 .view-options-popover .view-options-heading,
@@ -1186,12 +1200,117 @@ popover.context-menu separator {
   margin-bottom: 2px;
 }
 
-.view-options-popover .linked button,
+.view-options-popover .view-options-segmented {
+  background-color: alpha(currentColor, 0.07);
+  border-radius: 9px;
+  padding: 2px;
+  border: none;
+  box-shadow: none;
+}
+
+.view-options-popover .view-options-segmented > button,
+.view-options-popover .view-options-segmented > togglebutton {
+  min-height: 28px;
+  padding: 3px 10px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  border-radius: 7px;
+  border: none;
+  box-shadow: none;
+  background-color: transparent;
+  color: alpha(currentColor, 0.78);
+  transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.view-options-popover .view-options-segmented > button:hover:not(:checked),
+.view-options-popover .view-options-segmented > togglebutton:hover:not(:checked) {
+  background-color: alpha(currentColor, 0.06);
+  color: currentColor;
+}
+
+.view-options-popover .view-options-segmented > button:checked,
+.view-options-popover .view-options-segmented > togglebutton:checked {
+  background-color: @view_bg_color;
+  color: currentColor;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+}
+
+.dark .view-options-popover .view-options-segmented {
+  background-color: rgba(255, 255, 255, 0.07);
+}
+
+.dark .view-options-popover .view-options-segmented > button:checked,
+.dark .view-options-popover .view-options-segmented > togglebutton:checked {
+  background-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+}
+
+.view-options-popover .linked:not(.view-options-segmented) button,
 .mail-columns-popover .linked button {
   min-height: 28px;
   padding: 3px 12px;
   font-size: 0.9rem;
   font-weight: 500;
+}
+
+.view-options-popover list.view-options-list {
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.view-options-popover list.view-options-list > row {
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 8px;
+  margin: 1px 0;
+  padding: 0;
+  transition: background-color 140ms ease;
+}
+
+.view-options-popover list.view-options-list > row.activatable:hover {
+  background-color: alpha(currentColor, 0.08);
+}
+
+.view-options-popover list.view-options-list > row.activatable:active {
+  background-color: alpha(currentColor, 0.13);
+}
+
+.view-options-popover list.view-options-list > row.view-options-revealer-row {
+  background-color: transparent;
+  padding: 0;
+  margin: 0;
+}
+
+.view-options-popover list.view-options-list > row.view-options-revealer-row:hover {
+  background-color: transparent;
+}
+
+.view-options-popover list.view-options-list > row.view-options-revealer-row row {
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 8px;
+  margin: 1px 0;
+  padding: 0;
+  transition: background-color 140ms ease;
+}
+
+.view-options-popover list.view-options-list > row.view-options-revealer-row row.activatable:hover {
+  background-color: alpha(currentColor, 0.08);
+}
+
+.view-options-popover list.view-options-list > row.view-options-revealer-row row.activatable:active {
+  background-color: alpha(currentColor, 0.13);
+}
+
+.view-options-popover list.view-options-list row > box.header {
+  min-height: 40px;
+  margin-left: 8px;
+  margin-right: 8px;
 }
 
 .view-options-popover checkbutton,
@@ -1208,7 +1327,8 @@ popover.context-menu separator {
 
 .view-options-popover separator,
 .mail-columns-popover separator {
-  margin: 4px 0;
+  margin: 2px 0;
+  opacity: 0.65;
 }
 
 /* ── Mail Detail View ──────────────────────────────────────────────────── */
@@ -1243,9 +1363,8 @@ popover.context-menu separator {
   background-color: alpha(currentColor, 0.105);
   border: none;
   border-radius: 8px;
-  padding: 3px 8px;
-  min-height: 28px;
-  max-height: 28px;
+  padding: 2px 7px;
+  min-height: 30px;
   box-shadow: none;
   transition: background-color 150ms ease;
 }
@@ -1314,7 +1433,7 @@ flowbox > flowboxchild.attachment-flow-child:selected {
 
 .attachment-chip-size {
   font-size: 0.72rem;
-  opacity: 0.72;
+  opacity: 0.62;
 }
 
 .attachment-section-box {
@@ -1379,7 +1498,11 @@ flowbox > flowboxchild.attachment-flow-child:selected {
   border-top: 1px solid alpha(currentColor, 0.10);
   border-radius: 0;
   box-shadow: none;
-  transition: background-color 150ms ease, box-shadow 150ms ease;
+  transition: background-color 150ms ease, box-shadow 180ms ease;
+}
+
+.attachment-section-container.attachment-drawer-elevated {
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.12);
 }
 
 .attachment-section-container.is-floating-card {
@@ -1390,6 +1513,35 @@ flowbox > flowboxchild.attachment-flow-child:selected {
   box-shadow: 0 0 0 1px RGB(0 0 6 / 3%),
               0 1px 3px 1px RGB(0 0 6 / 7%),
               0 2px 6px 2px RGB(0 0 6 / 3%);
+}
+
+.attachment-section-container.is-floating-card.attachment-drawer-elevated {
+  box-shadow: 0 0 0 1px RGB(0 0 6 / 5%),
+              0 -3px 14px RGB(0 0 6 / 11%),
+              0 4px 12px RGB(0 0 6 / 7%);
+}
+
+/* Opaque native Libadwaita surface hierarchy in dark mode:
+ * - Collapsed flush bottom bar matches @window_bg_color (like AdwToolbarView bottom bar)
+ * - Floating card & expanded overlay sheet step up subtly (+4–5%) while staying 100% opaque */
+.dark .attachment-section-container {
+  background-color: var(--window-bg-color, @window_bg_color);
+}
+
+.dark .attachment-section-container.is-floating-card {
+  background-color: color-mix(in srgb, var(--window-fg-color, @window_fg_color) 4%, var(--window-bg-color, @window_bg_color));
+}
+
+.dark .attachment-section-container.attachment-drawer-elevated {
+  background-color: color-mix(in srgb, var(--window-fg-color, @window_fg_color) 5%, var(--window-bg-color, @window_bg_color));
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.44);
+}
+
+.dark .attachment-section-container.is-floating-card.attachment-drawer-elevated {
+  background-color: color-mix(in srgb, var(--window-fg-color, @window_fg_color) 5%, var(--window-bg-color, @window_bg_color));
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06),
+              0 -4px 18px rgba(0, 0, 0, 0.46),
+              0 4px 14px rgba(0, 0, 0, 0.34);
 }
 
 .attachment-drawer-stack {
@@ -1434,8 +1586,8 @@ button.attachment-save-all-btn {
   border: none;
   box-shadow: none;
   border-radius: 8px;
-  min-height: 28px;
-  padding: 3px 10px;
+  min-height: 30px;
+  padding: 2px 10px;
   font-size: 0.82rem;
   font-weight: 600;
   transition: background-color 150ms ease, color 150ms ease;
@@ -1461,25 +1613,22 @@ button.attachment-save-all-btn:active {
   color: inherit;
 }
 
-/* ── Attachment Drawer Cards (Expanded Icons View) ────────────────────────── */
+/* ── Attachment Drawer Tiles (GNOME Files / Libadwaita Borderless Icon Tiles) ── */
 .attachment-drawer-card,
 .card.attachment-drawer-card {
-  background-color: alpha(currentColor, 0.105);
+  background-color: transparent;
   border: none;
   outline: none;
   box-shadow: none;
-  border-radius: 10px;
-  padding: 6px 12px;
-  min-height: 48px;
-  max-height: 52px;
-  min-width: 180px;
-  max-width: 280px;
-  transition: background-color 150ms ease;
+  border-radius: 12px;
+  padding: 8px 6px 6px 6px;
+  min-width: 102px;
+  transition: background-color 140ms ease;
 }
 
 .attachment-drawer-card:hover,
 .card.attachment-drawer-card:hover {
-  background-color: alpha(currentColor, 0.155);
+  background-color: alpha(currentColor, 0.08);
   border: none;
   outline: none;
   box-shadow: none;
@@ -1493,39 +1642,151 @@ button.attachment-save-all-btn:active {
   outline-offset: 1px;
 }
 
+.attachment-tile-icon-stage {
+  min-width: 82px;
+  min-height: 48px;
+  background-color: transparent;
+  border: none;
+}
+
+.attachment-tile-actions {
+  opacity: 0;
+  transition: opacity 130ms ease;
+}
+
+.attachment-drawer-card:hover .attachment-tile-actions,
+.attachment-drawer-card:focus .attachment-tile-actions,
+.attachment-drawer-card:focus-within .attachment-tile-actions {
+  opacity: 1;
+}
+
 .attachment-card-name {
   font-weight: 600;
-  font-size: 0.83rem;
+  font-size: 0.77rem;
+  line-height: 1.2;
   color: inherit;
 }
 
 .attachment-card-meta {
-  font-size: 0.73rem;
-  opacity: 0.65;
+  font-size: 0.70rem;
+  opacity: 0.68;
 }
 
-.attachment-card-download-btn {
-  min-width: 28px;
-  min-height: 28px;
-  padding: 4px;
-  border-radius: 9999px;
-  color: alpha(currentColor, 0.70);
-  background-color: transparent;
+/* ── Semantic File-Type Colors (Light & Explicit .dark High-Contrast Palette) ─── */
+.attachment-type-icon.att-cat-spreadsheet { color: #26a269; }
+.attachment-type-icon.att-cat-pdf { color: #c01c28; }
+.attachment-type-icon.att-cat-image { color: #1c71d8; }
+.attachment-type-icon.att-cat-email { color: #813d9c; }
+.attachment-type-icon.att-cat-calendar { color: #b37400; }
+.attachment-type-icon.att-cat-archive { color: #c64600; }
+.attachment-type-icon.att-cat-document { color: #1a5fb4; }
+.attachment-type-icon.att-cat-media { color: #9141ac; }
+.attachment-type-icon.att-cat-other { color: alpha(currentColor, 0.78); }
+
+label.attachment-ext-badge {
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  min-width: 36px;
+  border: none;
+}
+
+label.attachment-ext-badge.att-cat-spreadsheet { color: #26a269; background-color: rgba(46, 194, 126, 0.16); }
+label.attachment-ext-badge.att-cat-pdf { color: #c01c28; background-color: rgba(224, 27, 36, 0.15); }
+label.attachment-ext-badge.att-cat-image { color: #1c71d8; background-color: rgba(53, 132, 228, 0.16); }
+label.attachment-ext-badge.att-cat-email { color: #813d9c; background-color: rgba(145, 65, 172, 0.17); }
+label.attachment-ext-badge.att-cat-calendar { color: #b37400; background-color: rgba(229, 165, 10, 0.16); }
+label.attachment-ext-badge.att-cat-archive { color: #c64600; background-color: rgba(230, 97, 0, 0.16); }
+label.attachment-ext-badge.att-cat-document { color: #1a5fb4; background-color: rgba(28, 113, 216, 0.15); }
+label.attachment-ext-badge.att-cat-media { color: #9141ac; background-color: rgba(192, 97, 203, 0.16); }
+label.attachment-ext-badge.att-cat-other { color: alpha(currentColor, 0.80); background-color: alpha(currentColor, 0.10); }
+
+.dark .attachment-type-icon.att-cat-spreadsheet { color: #57e389; }
+.dark .attachment-type-icon.att-cat-pdf { color: #ff7b63; }
+.dark .attachment-type-icon.att-cat-image { color: #78aeed; }
+.dark .attachment-type-icon.att-cat-email { color: #dc8add; }
+.dark .attachment-type-icon.att-cat-calendar { color: #f8e45c; }
+.dark .attachment-type-icon.att-cat-archive { color: #ffa348; }
+.dark .attachment-type-icon.att-cat-document { color: #99c1f1; }
+.dark .attachment-type-icon.att-cat-media { color: #f66151; }
+.dark .attachment-type-icon.att-cat-other { color: alpha(currentColor, 0.86); }
+
+.dark label.attachment-ext-badge.att-cat-spreadsheet { color: #57e389; background-color: rgba(87, 227, 137, 0.18); }
+.dark label.attachment-ext-badge.att-cat-pdf { color: #ff7b63; background-color: rgba(255, 123, 99, 0.20); }
+.dark label.attachment-ext-badge.att-cat-image { color: #78aeed; background-color: rgba(120, 174, 237, 0.20); }
+.dark label.attachment-ext-badge.att-cat-email { color: #dc8add; background-color: rgba(220, 138, 221, 0.20); }
+.dark label.attachment-ext-badge.att-cat-calendar { color: #f8e45c; background-color: rgba(248, 228, 92, 0.18); }
+.dark label.attachment-ext-badge.att-cat-archive { color: #ffa348; background-color: rgba(255, 163, 72, 0.20); }
+.dark label.attachment-ext-badge.att-cat-document { color: #99c1f1; background-color: rgba(153, 193, 241, 0.18); }
+.dark label.attachment-ext-badge.att-cat-media { color: #f66151; background-color: rgba(246, 97, 81, 0.20); }
+.dark label.attachment-ext-badge.att-cat-other { color: alpha(currentColor, 0.88); background-color: alpha(currentColor, 0.14); }
+
+button.attachment-overflow-count-btn {
+  min-height: 30px;
+  padding: 2px 10px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  background-color: alpha(@accent_bg_color, 0.14);
+  color: @accent_color;
   border: none;
   box-shadow: none;
-  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
+  transition: background-color 140ms ease, color 140ms ease;
 }
 
-.attachment-card-download-btn:hover {
-  background-color: alpha(currentColor, 0.12);
-  color: @accent_color;
-  transform: scale(1.05);
+button.attachment-overflow-count-btn:hover {
+  background-color: alpha(@accent_bg_color, 0.24);
 }
 
-.attachment-card-download-btn:active {
-  background-color: alpha(currentColor, 0.20);
-  color: @accent_color;
-  transform: scale(0.95);
+.dark button.attachment-overflow-count-btn {
+  background-color: alpha(@accent_bg_color, 0.22);
+  color: color-mix(in srgb, @accent_color 50%, white);
+}
+
+.dark button.attachment-overflow-count-btn:hover {
+  background-color: alpha(@accent_bg_color, 0.32);
+  color: color-mix(in srgb, @accent_color 35%, white);
+}
+
+.dark button.attachment-overflow-count-btn:active {
+  background-color: alpha(@accent_bg_color, 0.40);
+}
+
+label.attachment-type-summary-pill {
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 0.73rem;
+  font-weight: 500;
+  background-color: alpha(currentColor, 0.08);
+  color: alpha(currentColor, 0.72);
+}
+
+button.flat.circular.attachment-tile-action-btn,
+button.flat.circular.attachment-tile-action-btn.attachment-card-download-btn {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  margin: 0;
+  border-radius: 9999px;
+  background-color: alpha(currentColor, 0.11);
+  color: alpha(currentColor, 0.85);
+  border: none;
+  box-shadow: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+button.flat.circular.attachment-tile-action-btn:hover,
+button.flat.circular.attachment-tile-action-btn.attachment-card-download-btn:hover {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+}
+
+button.flat.circular.attachment-tile-action-btn:active,
+button.flat.circular.attachment-tile-action-btn.attachment-card-download-btn:active {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
 }
 
 .attachment-chip-download-btn {
@@ -2572,10 +2833,9 @@ picture.attachment-card-thumbnail {
 }
 
 .attachment-list-row {
-  border-radius: 4px;
-  padding: 0 6px;
-  min-height: 28px;
-  max-height: 28px;
+  border-radius: 6px;
+  padding: 1px 6px;
+  min-height: 30px;
   margin: 0;
   transition: background-color 120ms ease;
 }
@@ -7722,6 +7982,32 @@ button.composer-table-grid-cell:hover {
   background-color: alpha(@accent_bg_color, 0.22);
 }
 
+/* ── Extension Permissions & Trust Indicators ───────────────────────────── */
+.ext-trust-icon-safe {
+  color: @success_color;
+}
 
+.ext-trust-icon-warn {
+  color: @warning_color;
+}
 
+.ext-trust-icon-danger {
+  color: @error_color;
+}
 
+label.ext-perm-badge {
+  border-radius: 9999px;
+  padding: 2px 8px;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+label.ext-perm-badge.high-risk {
+  background-color: alpha(@error_color, 0.14);
+  color: @error_color;
+}
+
+label.ext-perm-badge.blocked {
+  background-color: alpha(@warning_color, 0.16);
+  color: @warning_color;
+}

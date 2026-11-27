@@ -54,6 +54,7 @@ mod imp {
         pub on_mdn_send: RefCell<Option<Box<dyn Fn() + 'static>>>,
         pub last_measured_content_height: Cell<Option<i32>>,
         pub adapted_card_height: Cell<Option<i32>>,
+        pub adaptive_card_height_enabled: Cell<bool>,
         pub last_parent_height: Cell<i32>,
         #[cfg(target_os = "linux")]
         pub webview: RefCell<Option<webkit6::WebView>>,
@@ -132,6 +133,7 @@ mod imp {
     impl ObjectImpl for MailViewer {
         fn constructed(&self) {
             self.zoom_level.set(1.0);
+            self.adaptive_card_height_enabled.set(true);
             self.parent_constructed();
             self.obj().build_ui();
         }
@@ -826,6 +828,13 @@ impl MailViewer {
                         if let Some(viewer) = viewer_weak_key.upgrade() {
                             viewer.zoom_reset();
                             return glib::Propagation::Stop;
+                        }
+                    }
+                    gtk::gdk::Key::f | gtk::gdk::Key::F => {
+                        if let Some(viewer) = viewer_weak_key.upgrade() {
+                            if viewer.activate_action("win.find-in-message", None).is_ok() {
+                                return glib::Propagation::Stop;
+                            }
                         }
                     }
                     _ => {}
@@ -3292,10 +3301,17 @@ impl MailViewer {
         );
     }
 
+    pub fn set_adaptive_card_height_enabled(&self, enabled: bool) {
+        self.imp().adaptive_card_height_enabled.set(enabled);
+        if !enabled {
+            self.apply_adapted_height(0);
+        }
+    }
+
     pub fn apply_adapted_height(&self, content_height: i32) {
-        if content_height <= 0 {
+        if !self.imp().adaptive_card_height_enabled.get() || content_height <= 0 {
             self.set_scroll_continues(false);
-            if self.imp().adapted_card_height.get().is_some() {
+            if self.imp().adapted_card_height.get().is_some() || !self.vexpands() {
                 self.imp().adapted_card_height.set(None);
                 self.set_vexpand(true);
                 self.set_valign(gtk::Align::Fill);
@@ -3361,21 +3377,21 @@ impl MailViewer {
 
         let mut banner_extra = 0;
         if self.imp().banner.is_revealed() || self.imp().banner.is_visible() {
-            banner_extra += 28;
+            banner_extra += 44;
         }
         if self.imp().trash_banner.is_revealed() || self.imp().trash_banner.is_visible() {
-            banner_extra += 28;
+            banner_extra += 44;
         }
         if self.imp().junk_banner.is_revealed() || self.imp().junk_banner.is_visible() {
-            banner_extra += 28;
+            banner_extra += 44;
         }
         if self.imp().mdn_banner.is_revealed() || self.imp().mdn_banner.is_visible() {
-            banner_extra += 28;
+            banner_extra += 44;
         }
 
         let zoom = self.zoom_level();
         let zoomed_content_height = ((content_height as f64) * zoom).ceil() as i32;
-        let needed_total = (zoomed_content_height + banner_extra).max(52);
+        let needed_total = (zoomed_content_height + banner_extra + 6).max(52);
         let is_actually_short = available_height > 100
             && needed_total + 16 < available_height;
 

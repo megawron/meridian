@@ -5541,6 +5541,10 @@ impl CalendarPage {
         self.refresh_calendar_views();
         self.refresh_event_list_visibility();
         self.apply_pending_focus_target();
+
+        if let Some(win) = self.root().and_downcast::<crate::window::MeridianWindow>() {
+            win.sync_mail_agenda_snapshot(&snapshot_index.snapshot);
+        }
     }
 
     fn finish_calendar_snapshot_load(

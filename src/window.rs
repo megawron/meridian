@@ -576,14 +576,28 @@ impl MeridianWindow {
                         .unwrap_or_else(|| serde_json::json!({}));
 
                     let result: Result<serde_json::Value, String> = match method {
-                        "get_context" => Ok(serde_json::json!({
-                            "active_view": win.active_view_name(),
-                            "extension_id": ext_owned.manifest.id,
-                            "permissions": ext_owned.manifest.permissions,
-                        })),
+                        "get_context" => {
+                            let canonical_perms: Vec<&str> = ext_owned
+                                .manifest
+                                .declared_permissions()
+                                .into_iter()
+                                .map(|p| p.as_str())
+                                .collect();
+                            Ok(serde_json::json!({
+                                "active_view": win.active_view_name(),
+                                "extension_id": ext_owned.manifest.id,
+                                "permissions": canonical_perms,
+                            }))
+                        }
                         "get_selected_mail" => {
-                            if !ext_owned.has_permission("read_mail") {
-                                Err("Permission denied: extension must declare 'read_mail'".to_string())
+                            use crate::services::extension_service::ExtensionPermission;
+                            let can_body =
+                                ext_owned.has_permission_kind(ExtensionPermission::ReadMailBody);
+                            let can_headers = can_body
+                                || ext_owned
+                                    .has_permission_kind(ExtensionPermission::ReadMailHeaders);
+                            if !can_headers {
+                                Err("Permission denied: extension must declare 'mail.headers' or 'mail.body'".to_string())
                             } else if let Some(mp) = win.mail_page() {
                                 if let Some((subj, body, mid, sender, rcpts, _tid)) =
                                     mp.selected_message_conversion_snapshot()
@@ -593,7 +607,11 @@ impl MeridianWindow {
                                         "subject": subj,
                                         "sender": sender,
                                         "recipients": rcpts,
-                                        "body_text": body,
+                                        "body_text": if can_body {
+                                            serde_json::Value::String(body)
+                                        } else {
+                                            serde_json::Value::Null
+                                        },
                                     }))
                                 } else {
                                     Ok(serde_json::Value::Null)
@@ -618,8 +636,9 @@ impl MeridianWindow {
                             Ok(serde_json::json!(true))
                         }
                         "open_reply_draft" => {
-                            if !ext_owned.has_permission("modify_mail") {
-                                Err("Permission denied: extension must declare 'modify_mail'".to_string())
+                            use crate::services::extension_service::ExtensionPermission;
+                            if !ext_owned.has_permission_kind(ExtensionPermission::ComposeMail) {
+                                Err("Permission denied: extension must declare 'mail.compose'".to_string())
                             } else {
                                 let html = params.get("html").and_then(|v| v.as_str()).unwrap_or("");
                                 let compose = if let Some(mp) = win.mail_page()
@@ -640,8 +659,9 @@ impl MeridianWindow {
                             }
                         }
                         "create_task" => {
-                            if !ext_owned.has_permission("modify_mail") {
-                                Err("Permission denied: extension must declare 'modify_mail'".to_string())
+                            use crate::services::extension_service::ExtensionPermission;
+                            if !ext_owned.has_permission_kind(ExtensionPermission::WriteTasks) {
+                                Err("Permission denied: extension must declare 'tasks.write'".to_string())
                             } else {
                                 let title = params
                                     .get("title")
@@ -662,7 +682,8 @@ impl MeridianWindow {
                             }
                         }
                         "open_url" => {
-                            if !ext_owned.has_permission("network") {
+                            use crate::services::extension_service::ExtensionPermission;
+                            if !ext_owned.has_permission_kind(ExtensionPermission::Network) {
                                 Err("Permission denied: extension must declare 'network'".to_string())
                             } else {
                                 let url = params.get("url").and_then(|v| v.as_str()).unwrap_or("");
@@ -769,7 +790,9 @@ impl MeridianWindow {
                 let html_path = root_dir.join(view.html_file.trim());
                 if let Ok(mut html) = std::fs::read_to_string(&html_path) {
                     // Enforce `network` permission strictly on local HTML extensions via CSP
-                    if !ext.has_permission("network") {
+                    if !ext.has_permission_kind(
+                        crate::services::extension_service::ExtensionPermission::Network,
+                    ) {
                         let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self' 'unsafe-inline' data: blob:; connect-src 'none';\">";
                         if let Some(pos) = html.to_ascii_lowercase().find("<head>") {
                             html.insert_str(pos + 6, csp);
@@ -781,11 +804,27 @@ impl MeridianWindow {
                     web_view.load_html(&html, Some(&base));
                 }
             }
+            root.append(&web_view);
         } else if view.url.starts_with("https://") || view.url.starts_with("http://") {
-            web_view.load_uri(&view.url);
+            if ext.has_permission_kind(
+                crate::services::extension_service::ExtensionPermission::Network,
+            ) {
+                web_view.load_uri(&view.url);
+                root.append(&web_view);
+            } else {
+                let blocked = adw::StatusPage::builder()
+                    .icon_name("network-offline-symbolic")
+                    .title(gettext("Network Access Blocked"))
+                    .description(gettext(
+                        "This extension attempted to open a remote webpage without declaring the network permission.",
+                    ))
+                    .vexpand(true)
+                    .build();
+                root.append(&blocked);
+            }
+        } else {
+            root.append(&web_view);
         }
-
-        root.append(&web_view);
         unsafe {
             root.set_data("meridian-ext-last-url", view.url.clone());
         }
@@ -1326,6 +1365,11 @@ impl MeridianWindow {
         if let Some(stack) = self.imp().view_stack.borrow().as_ref() {
             stack.set_visible_child_name(view_name);
         }
+        if view_name == "mail" {
+            if let Some(mp) = self.mail_page() {
+                mp.sync_agenda_from_cache_if_empty();
+            }
+        }
         if let Some(settings) = AppSettings::try_new() {
             settings.set_active_view(view_name);
         }
@@ -1636,6 +1680,18 @@ impl MeridianWindow {
     pub(crate) fn refresh_calendar_page(&self) {
         if let Some(calendar_page) = self.calendar_page() {
             calendar_page.reload_calendar_data();
+        }
+        if let Some(mail_page) = self.mail_page() {
+            mail_page.refresh_today_tasks();
+        }
+    }
+
+    pub(crate) fn sync_mail_agenda_snapshot(
+        &self,
+        snapshot: &crate::services::calendar_store_service::CalendarSnapshot,
+    ) {
+        if let Some(mail_page) = self.mail_page() {
+            mail_page.apply_calendar_snapshot_to_agenda(snapshot);
         }
     }
 
